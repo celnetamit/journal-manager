@@ -1,0 +1,54 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+pip-wheel-metadata/
+
+# --- Distribution / packaging ---
+build/
+dist/
+*.egg-info/
+*.egg
+
+# --- Testing / caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Secrets & runtime state (NEVER commit) ---
+config.json
+analytics.db
+journals_embedded.json
+
+# --- Streamlit ---
+.streamlit/secrets.toml
+
+# --- App data & outputs ---
+/data/
+/media/
+/outbound/
+*.log
+nohup.out
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# --- Test artifacts ---
+test_*.docx
+test_input.docx
+test_output.docx
+test_color.docx

@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy to config.json and fill in, OR better, set the GEMINI_API_KEY environment variable (config.json is ignored by git).",
+  "gemini_api_key": ""
+}

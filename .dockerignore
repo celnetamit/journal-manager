@@ -1,0 +1,32 @@
+# --- Secrets & runtime state ---
+__pycache__/
+*.pyc
+venv/
+env/
+.git/
+.gitignore
+.gitattributes
+.dockerignore
+.dockerenv
+README.md
+Dockerfile
+docker-compose.yml
+.streamlit/
+
+# --- Secrets & runtime data ---
+config.json
+analytics.db
+data/
+media/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Local artifacts ---
+test_*.docx
+test_input.docx
+test_output.docx
+test_color.docx
+nohup.out
+.streamlit/secrets.toml

@@ -1,0 +1,47 @@
+# Local development stack.
+#   - streamlit app on http://localhost:8501
+#   - postgres on localhost:5432
+#
+# Usage:
+#   docker compose up --build
+#
+# For Coolify deployment, see README.md (this file is for local dev only).
+
+services:
+  app:
+    build: .
+    image: manuscript-editor-pro:local
+    container_name: manuscript-editor-pro
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      DATABASE_URL: postgresql://manuscript:manuscript@db:5432/manuscript
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DATA_DIR: /data
+      OUTPUT_DIR: /data/outbound
+    volumes:
+      - app_data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: manuscript-editor-pro-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: manuscript
+      POSTGRES_PASSWORD: manuscript
+      POSTGRES_DB: manuscript
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U manuscript -d manuscript"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  app_data:
+  pg_data:
