@@ -6,3 +6,4 @@ requests>=2.31
 google-genai>=1.0
 bcrypt>=4.1
 psycopg[binary,pool]>=3.2
+streamlit-cookies-manager-v2>=0.3.1

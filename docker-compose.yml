@@ -13,11 +13,14 @@ services:
     image: manuscript-editor-pro:local
     container_name: manuscript-editor-pro
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8501:8501"
     environment:
       DATABASE_URL: postgresql://manuscript:manuscript@db:5432/manuscript
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/api}
       DATA_DIR: /data
       OUTPUT_DIR: /data/outbound
     volumes:

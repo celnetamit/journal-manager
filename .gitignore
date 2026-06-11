@@ -25,6 +25,10 @@ htmlcov/
 .tox/
 
 # --- Secrets & runtime state (NEVER commit) ---
+.env
+.env.local
+.env.*
+!.env.example
 config.json
 analytics.db
 journals_embedded.json
@@ -52,3 +56,4 @@ test_*.docx
 test_input.docx
 test_output.docx
 test_color.docx
+output_log*.txt

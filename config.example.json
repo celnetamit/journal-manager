@@ -1,4 +1,9 @@
 {
-  "_comment": "Copy to config.json and fill in, OR better, set the GEMINI_API_KEY environment variable (config.json is ignored by git).",
+  "_comment": "Copy to config.json in the repo root and fill in, or set settings in the app sidebar. This file is ignored by git.",
+  "provider": "gemini",
+  "api_key": "",
+  "base_url": "",
+  "text_model": "gemini-2.5-pro",
+  "embed_model": "text-embedding-004",
   "gemini_api_key": ""
 }

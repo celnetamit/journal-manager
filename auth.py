@@ -15,6 +15,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import secrets
 from contextlib import contextmanager
 from typing import Any, Iterator, List, Optional, Tuple
 
@@ -86,6 +87,13 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             c.execute(f"ALTER TABLE process_logs ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
             pass
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS login_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
 
 
 def _ensure_schema_pg(cur: Any) -> None:
@@ -114,6 +122,13 @@ def _ensure_schema_pg(cur: Any) -> None:
     )
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS user_id INTEGER")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS redline_path TEXT")
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS login_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )"""
+    )
 
 
 # --- Password hashing ---
@@ -206,6 +221,69 @@ def _upgrade_hash(cur: Any, user_id: int, pw: str) -> None:
         "UPDATE users SET password_hash=? WHERE id=?"
     )
     cur.execute(upd, (hash_pw(pw), user_id))
+
+
+# --- Persistent login tokens ---
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def issue_login_token(user_id: int) -> str:
+    """Create a persistent login token for browser refreshes."""
+    token = secrets.token_urlsafe(32)
+    token_hash = _token_hash(token)
+    sql = (
+        "INSERT INTO login_tokens (token_hash, user_id) VALUES (%s, %s)"
+        if _is_postgres() else
+        "INSERT INTO login_tokens (token_hash, user_id) VALUES (?, ?)"
+    )
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (token_hash, user_id))
+        conn.commit()
+    return token
+
+
+def resolve_login_token(token: str) -> Optional[dict]:
+    """Look up a login token and return the linked user if valid."""
+    if not token:
+        return None
+    token_hash = _token_hash(token)
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT u.id, u.username
+               FROM login_tokens lt
+               JOIN users u ON u.id = lt.user_id
+               WHERE lt.token_hash=%s"""
+            if _is_postgres() else
+            """SELECT u.id, u.username
+               FROM login_tokens lt
+               JOIN users u ON u.id = lt.user_id
+               WHERE lt.token_hash=?""",
+            (token_hash,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {"user_id": int(row["id"]), "username": row["username"]}
+
+
+def revoke_login_token(token: str) -> None:
+    """Remove a persistent login token."""
+    if not token:
+        return
+    token_hash = _token_hash(token)
+    sql = (
+        "DELETE FROM login_tokens WHERE token_hash=%s"
+        if _is_postgres() else
+        "DELETE FROM login_tokens WHERE token_hash=?"
+    )
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (token_hash,))
+        conn.commit()
 
 
 # --- Analytics logging ---

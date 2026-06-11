@@ -3,7 +3,7 @@
 AI-powered scientific copyediting and journal-recommendation platform.
 Upload a `.docx` manuscript and get back a **redline Word document with
 native Track Changes**, journal recommendations, a cover letter, and
-polished titles — driven by Google Gemini.
+polished titles — driven by your selected LLM provider.
 
 ---
 
@@ -14,7 +14,7 @@ polished titles — driven by Google Gemini.
 - **Style-aware copyediting** — CMOS, APA, MLA, IEEE.
 - **Live Crossref DOI validation** for bibliography entries.
 - **Auto-numbered citations** + bibliography re-sort.
-- **Semantic journal recommendations** via Gemini embeddings.
+- **Semantic journal recommendations** via the selected embedding model.
 - **Cover letter generation** for the top recommended journal.
 - **Title & abstract polish** suggestions.
 - **Per-user history** with re-downloadable redline files.
@@ -35,6 +35,23 @@ docker compose up --build
 Open <http://localhost:8501>. Postgres runs on `localhost:5432`
 (`manuscript:manuscript/manuscript`). All app data (DB, redline files,
 embeddings) is persisted in the named volume `app_data`.
+
+In the app sidebar you can choose the LLM provider and set the API key,
+base URL, text model, and embedding model. Gemini remains the default,
+but OpenRouter, Ollama, and custom OpenAI-compatible endpoints are
+supported.
+
+If the app itself runs in Docker and Ollama is installed on your host
+machine, the compose file points the Ollama base URL at
+`http://host.docker.internal:11434/api` so the container can reach it.
+
+The login form also has a `Remember me on this device` option. When
+enabled, the app stores an opaque login token in a browser cookie so
+refreshing the page keeps you signed in. Logging out clears that cookie.
+
+Local config resolution is `CONFIG_FILE` first, then `./config.json`,
+then `./data/config.json`. Docker/Coolify usually use `/data/config.json`
+through the mounted volume.
 
 To re-build the journal embeddings (only needed if `journals.json` changes):
 
@@ -61,9 +78,14 @@ streamlit run app.py
 
 | Variable                | Default                       | Notes                                                    |
 |-------------------------|-------------------------------|----------------------------------------------------------|
-| `GEMINI_API_KEY`        | *(empty)*                     | **Required.** Read by `config.py`.                       |
+| `GEMINI_API_KEY`        | *(empty)*                     | **Required** for Gemini if `LLM_API_KEY` is not set.     |
+| `LLM_PROVIDER`          | `gemini`                      | Optional if you set provider in the sidebar/config file. |
+| `LLM_API_KEY`           | *(empty)*                     | Generic API key override for supported providers.        |
+| `LLM_TEXT_MODEL`        | `gemini-2.5-pro`              | Optional default text model.                             |
+| `LLM_EMBED_MODEL`       | `text-embedding-004`          | Optional default embedding model.                        |
+| `LLM_BASE_URL`          | `http://host.docker.internal:11434/api` | Default Ollama/OpenRouter/OpenAI-compatible endpoint in Docker. |
 | `DATABASE_URL`          | `sqlite:///./data/analytics.db` | Set to your Postgres URL in production.                |
-| `DATA_DIR`              | `./data`                      | Where `config.json`, analytics DB, and embeddings live.  |
+| `DATA_DIR`              | `./data`                      | Where analytics DB and generated embeddings live.       |
 | `OUTPUT_DIR`            | `$DATA_DIR/outbound`          | Where generated redline `.docx` files are written.       |
 | `JOURNALS_FILE`         | `./journals.json`             | Source journals catalogue.                               |
 | `JOURNALS_EMBEDDED_FILE`| `./journals_embedded.json`    | Pre-computed embeddings (build with `embed_journals.py`).|
@@ -83,13 +105,13 @@ streamlit run app.py
 ├── app.py                 # Streamlit entrypoint
 ├── config.py              # env-var + path resolution
 ├── auth.py                # bcrypt + Postgres/SQLite auth + analytics
-├── editor.py              # docx + Gemini pipeline
+├── editor.py              # docx + LLM pipeline
 ├── embed_journals.py      # CLI to (re)build journals_embedded.json
 ├── requirements.txt
 ├── Dockerfile             # production image
 ├── docker-compose.yml     # local-dev stack (app + Postgres)
 ├── .streamlit/config.toml # prod server settings
-├── config.example.json    # template for local-only API key
+├── config.example.json    # template for local-only LLM settings
 ├── .gitignore
 ├── .dockerignore
 ├── journals.json          # source journal catalogue (tracked)
@@ -184,7 +206,8 @@ is enabled) and rebuilds. The `/data` volume is preserved.
 ## Security notes
 
 - **API keys** are read from the `GEMINI_API_KEY` env var first,
-  falling back to `config.json` for local dev. `config.json` is
+  falling back to `config.json` for local dev. `.env`,
+  `config.json`, `analytics.db`, and `journals_embedded.json` are all
   `.gitignore`d.
 - **Passwords** are hashed with **bcrypt (rounds=12)**. Legacy
   unsalted-SHA-256 hashes from the original prototype are
@@ -194,13 +217,16 @@ is enabled) and rebuilds. The `/data` volume is preserved.
 - The container runs as a **non-root** user (`uid 1000`).
 - XSRF protection is enabled (`enableXsrfProtection = true`).
 
-### Things you should still do
+### Public launch checklist
 
-1. **Rotate the Gemini key** that was previously committed to
-   `config.json` before the first deploy.
-2. Put the app behind **Coolify's automatic HTTPS** (default).
-3. If you expose this beyond your team, add a real rate-limit
-   proxy in front (Caddy / Traefik with `limit_req`).
+Use [LAUNCH_CHECKLIST.md](/home/itb09/.openclaw/workspace/manuscript_platform/LAUNCH_CHECKLIST.md) as the go/no-go gate before exposing the app publicly.
+
+The current highest-priority items are:
+
+1. Rotate any previously committed API keys and confirm there are no secrets left in git history.
+2. Verify the app starts cleanly in the target runtime and that the optional cookie dependency does not block startup.
+3. Put the app behind HTTPS and add upstream rate limiting if you will expose it beyond a small trusted group.
+4. Complete one production-like end-to-end test with login, upload, processing, and download.
 
 ---
 

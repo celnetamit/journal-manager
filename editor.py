@@ -1,19 +1,19 @@
-"""Document editing and Gemini-driven helpers.
+"""Document editing and LLM-driven helpers.
 
-Uses the modern `google-genai` SDK (the legacy `google-generativeai` package
-is deprecated). All API key / path lookups go through `config.py`.
+Uses provider-specific adapters for Gemini, OpenRouter, Ollama, and
+OpenAI-compatible endpoints. All API key / path lookups go through
+`config.py`.
 """
 from __future__ import annotations
 
 import datetime
 import difflib
 import json
-import os
 import random
 import re
 import time
 import concurrent.futures
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import docx
 from docx.oxml import OxmlElement
@@ -24,44 +24,151 @@ import requests
 import config as app_config
 
 
-# Model names — centralized so they can be overridden via env if needed.
-TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-2.5-pro")
-EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
+def _normalize_settings(settings: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    return app_config.normalize_llm_settings(settings or app_config.get_llm_settings())
 
 
-# --- Gemini helpers (new SDK) ---
+# --- Provider helpers ---
 
 def _client(api_key: Optional[str] = None):
     return app_config.get_gemini_client(api_key=api_key)
 
 
-def _generate_text(prompt: str, api_key: Optional[str] = None,
+def _post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None,
+               timeout: int = 120) -> Dict[str, Any]:
+    resp = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected non-object JSON response")
+    return data
+
+
+def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
                    response_mime_type: Optional[str] = None) -> str:
-    """Call Gemini for text generation, with a small rate-limit pause."""
-    from google.genai import types
-    kwargs = {}
-    if response_mime_type:
-        kwargs["config"] = types.GenerateContentConfig(
-            response_mime_type=response_mime_type,
+    """Generate text through the selected provider."""
+    cfg = _normalize_settings(settings)
+    provider = cfg["provider"]
+
+    if provider == "gemini":
+        from google.genai import types
+
+        kwargs = {}
+        if response_mime_type:
+            kwargs["config"] = types.GenerateContentConfig(
+                response_mime_type=response_mime_type,
+            )
+        resp = _client(cfg["api_key"]).models.generate_content(
+            model=cfg["text_model"], contents=prompt, **kwargs,
         )
-    resp = _client(api_key).models.generate_content(
-        model=TEXT_MODEL, contents=prompt, **kwargs,
-    )
-    time.sleep(1)  # gentle rate-limit padding
-    return (resp.text or "").strip()
+        time.sleep(1)
+        return (resp.text or "").strip()
+
+    if provider in {"openrouter", "openai-compatible", "custom"}:
+        base = cfg["base_url"].rstrip("/")
+        if not base:
+            raise RuntimeError("Base URL is required for this provider.")
+        payload: Dict[str, Any] = {
+            "model": cfg["text_model"],
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if response_mime_type == "application/json":
+            payload["response_format"] = {"type": "json_object"}
+        headers = {"Content-Type": "application/json"}
+        if cfg["api_key"]:
+            headers["Authorization"] = f"Bearer {cfg['api_key']}"
+        data = _post_json(f"{base}/chat/completions", payload, headers=headers)
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected chat completion response: {data}") from exc
+        time.sleep(0.6)
+        return (text or "").strip()
+
+    if provider == "ollama":
+        base = cfg["base_url"].rstrip("/")
+        if not base:
+            raise RuntimeError("Ollama base URL is required.")
+        payload = {
+            "model": cfg["text_model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        data = _post_json(f"{base}/chat", payload, timeout=180)
+        try:
+            text = data["message"]["content"]
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected Ollama chat response: {data}") from exc
+        time.sleep(0.6)
+        return (text or "").strip()
+
+    raise RuntimeError(f"Unsupported LLM provider: {provider}")
 
 
-def _embed(text: str, api_key: Optional[str] = None) -> List[float]:
-    resp = _client(api_key).models.embed_content(model=EMBED_MODEL, contents=text)
-    time.sleep(0.3)
-    if not resp.embeddings:
-        raise RuntimeError("Empty embedding response")
-    return list(resp.embeddings[0].values)
+def _embed(text: str, settings: Optional[Dict[str, Any]] = None) -> List[float]:
+    cfg = _normalize_settings(settings)
+    provider = cfg["provider"]
+
+    if provider == "gemini":
+        resp = _client(cfg["api_key"]).models.embed_content(
+            model=cfg["embed_model"], contents=text,
+        )
+        time.sleep(0.3)
+        if not resp.embeddings:
+            raise RuntimeError("Empty embedding response")
+        return list(resp.embeddings[0].values)
+
+    if provider in {"openrouter", "openai-compatible", "custom"}:
+        base = cfg["base_url"].rstrip("/")
+        if not base:
+            raise RuntimeError("Base URL is required for this provider.")
+        payload = {"model": cfg["embed_model"], "input": text}
+        headers = {"Content-Type": "application/json"}
+        if cfg["api_key"]:
+            headers["Authorization"] = f"Bearer {cfg['api_key']}"
+        data = _post_json(f"{base}/embeddings", payload, headers=headers, timeout=180)
+        try:
+            vector = data["data"][0]["embedding"]
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected embeddings response: {data}") from exc
+        time.sleep(0.3)
+        return list(vector)
+
+    if provider == "ollama":
+        base = cfg["base_url"].rstrip("/")
+        if not base:
+            raise RuntimeError("Ollama base URL is required.")
+        payload = {"model": cfg["embed_model"], "input": text}
+        data = _post_json(f"{base}/embed", payload, timeout=180)
+        try:
+            vector = data["embeddings"][0]
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected Ollama embeddings response: {data}") from exc
+        time.sleep(0.3)
+        return list(vector)
+
+    raise RuntimeError(f"Unsupported LLM provider: {provider}")
+
+
+def test_text_generation(prompt: str, settings: Optional[Dict[str, Any]] = None) -> str:
+    """Run a small text-generation probe with the selected provider."""
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("Prompt cannot be empty.")
+    return _generate_text(prompt, settings=settings)
+
+
+def test_embedding(text: str, settings: Optional[Dict[str, Any]] = None) -> List[float]:
+    """Run an embedding probe with the selected provider."""
+    text = text.strip()
+    if not text:
+        raise ValueError("Text cannot be empty.")
+    return _embed(text, settings=settings)
 
 
 # --- High-level operations ---
 
-def align_global_citations(paras: List[str], api_key: str, ref_style: str) -> List[str]:
+def align_global_citations(paras: List[str], settings: Dict[str, Any], ref_style: str) -> List[str]:
     """Second pass: convert in-text citations to sequential [1], [2] and
     re-sort the bibliography to match."""
     indexed_paras = {str(i): p for i, p in enumerate(paras) if p.strip()}
@@ -87,7 +194,7 @@ Input JSON dictionary (Key = Index, Value = Paragraph Text):
 {json.dumps(indexed_paras)}
 """
     try:
-        text = _generate_text(prompt, api_key=api_key, response_mime_type="application/json")
+        text = _generate_text(prompt, settings=settings, response_mime_type="application/json")
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
             print("Warning: No JSON dict found for global citations.")
@@ -142,7 +249,7 @@ def fetch_crossref_doi(citation_text: str) -> Optional[str]:
 
 
 def ai_edit_chunk(
-    chunk_texts: List[str], api_key: str, edit_style: str, ref_style: str,
+    chunk_texts: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool,
 ) -> List[str]:
     prompt = f"""You are a professional academic copyeditor.
@@ -169,7 +276,7 @@ Input JSON:
 """
 
     try:
-        text = _generate_text(prompt, api_key=api_key, response_mime_type="application/json")
+        text = _generate_text(prompt, settings=settings, response_mime_type="application/json")
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             print("Warning: No JSON array found in response.")
@@ -297,18 +404,47 @@ def cosine_similarity(v1, v2) -> float:
     return float(np.dot(v1, v2) / (n1 * n2))
 
 
-def recommend_journals(abstract: str, api_key: str, k: int = 3) -> List[dict]:
+def _build_journal_embeddings(settings: Dict[str, Any]) -> str:
+    in_path = app_config.journals_path()
+    out_path = app_config.journals_embedded_path_for_settings(settings)
+
+    with in_path.open("r") as f:
+        journals = json.load(f)
+
+    texts = [j["name"] + " " + " ".join(j.get("topics", [])) for j in journals]
+    embeddings = []
+    for i in range(0, len(texts), 100):
+        batch = texts[i:i + 100]
+        for t in batch:
+            embeddings.append(_embed(t, settings=settings))
+        time.sleep(0.5)
+        print(f"  embedded {min(i + 100, len(texts))}/{len(texts)}")
+
+    for j, emb in zip(journals, embeddings):
+        j["embedding"] = emb
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w") as f:
+        json.dump(journals, f)
+    return str(out_path)
+
+
+def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> List[dict]:
     try:
-        vec = _embed(abstract, api_key=api_key)
+        vec = _embed(abstract, settings=settings)
         abstract_emb = np.array(vec)
     except Exception as e:
         print(f"Embedding error: {e}")
         abstract_emb = None
 
-    journals_path = app_config.journals_embedded_path()
+    journals_path = app_config.journals_embedded_path_for_settings(settings)
     if not journals_path.exists():
-        print(f"Warning: {journals_path} not found; recommendations will be random.")
-        return []
+        try:
+            print(f"Building journal embeddings at {journals_path} ...")
+            _build_journal_embeddings(settings)
+        except Exception as e:
+            print(f"Warning: {journals_path} not found and rebuild failed: {e}")
+            return []
 
     with journals_path.open("r") as f:
         journals = json.load(f)
@@ -342,7 +478,7 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
     return report
 
 
-def generate_cover_letter(abstract: str, journal_name: str, api_key: str) -> str:
+def generate_cover_letter(abstract: str, journal_name: str, settings: Dict[str, Any]) -> str:
     prompt = (
         f"Write a professional, compelling manuscript submission cover letter "
         f"tailored to the journal '{journal_name}' based on the following "
@@ -350,13 +486,13 @@ def generate_cover_letter(abstract: str, journal_name: str, api_key: str) -> str
         f"Abstract:\n{abstract}"
     )
     try:
-        return _generate_text(prompt, api_key=api_key)
+        return _generate_text(prompt, settings=settings)
     except Exception as e:
         print(f"Cover letter error: {e}")
         return "Error generating cover letter."
 
 
-def generate_title_abstract_polish(abstract: str, api_key: str) -> str:
+def generate_title_abstract_polish(abstract: str, settings: Dict[str, Any]) -> str:
     prompt = (
         "Based on this draft abstract, generate 3 highly optimized, impactful "
         "title options and 1 fully polished, compelling abstract that maximizes "
@@ -364,7 +500,7 @@ def generate_title_abstract_polish(abstract: str, api_key: str) -> str:
         f"Text:\n{abstract}"
     )
     try:
-        return _generate_text(prompt, api_key=api_key)
+        return _generate_text(prompt, settings=settings)
     except Exception as e:
         print(f"Title/abstract polish error: {e}")
         return "Error generating polish."
@@ -373,7 +509,7 @@ def generate_title_abstract_polish(abstract: str, api_key: str) -> str:
 # --- Orchestration ---
 
 def process_document_async(
-    paras: List[str], api_key: str, edit_style: str, ref_style: str,
+    paras: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool, progress_callback,
 ) -> List[str]:
     edited_paras = [""] * len(paras)
@@ -397,7 +533,7 @@ def process_document_async(
     completed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
         future_to_chunk = {
-            ex.submit(ai_edit_chunk, chunk_texts, api_key, edit_style, ref_style,
+            ex.submit(ai_edit_chunk, chunk_texts, settings, edit_style, ref_style,
                       lang, custom_dict, use_crossref): chunk_inds
             for chunk_inds, chunk_texts in chunks
         }
