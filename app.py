@@ -94,7 +94,12 @@ def _clear_auth_cookie() -> None:
 def _restore_auth_from_cookie() -> None:
     if st.session_state.user_id:
         return
-    token = str(cookies.get("auth_token", "") or "")
+    try:
+        token = str(cookies.get("auth_token", "") or "")
+    except Exception:
+        # Cookie component isn't ready yet (first render, or bare-mode import
+        # where st.stop() above is a no-op). Skip restore; it reruns when ready.
+        return
     if not token:
         return
     resolved = auth.resolve_login_token(token)
@@ -130,19 +135,105 @@ if not is_authenticated:
 _PROVIDER_LABELS = {
     "gemini": "Gemini",
     "openrouter": "OpenRouter",
-    "ollama": "Ollama",
     "openai-compatible": "OpenAI-compatible",
     "custom": "Custom",
 }
 _PROVIDER_REQUIREMENTS = {
     "gemini": "Needs an API key. Base URL is not used.",
-    "openrouter": "Needs an API key and base URL.",
-    "ollama": "Needs a base URL. API key is usually not required.",
+    "openrouter": "Uses OpenRouter's fixed OpenAI-compatible endpoint and needs an API key.",
     "openai-compatible": "Needs a base URL. API key is optional depending on the endpoint.",
     "custom": "Needs a base URL. API key and models depend on the endpoint.",
 }
 _API_KEY_PROVIDERS = {"gemini", "openrouter"}
-_BASE_URL_PROVIDERS = {"openrouter", "ollama", "openai-compatible", "custom"}
+_BASE_URL_PROVIDERS = {"openai-compatible", "custom"}
+_OPENROUTER_BASE_URL = app_config.OPENROUTER_BASE_URL
+_SIDEBAR_SETTING_KEYS = {
+    "provider": "llm_sidebar_provider",
+    "api_key": "llm_sidebar_api_key",
+    "base_url": "llm_sidebar_base_url",
+    "text_model": "llm_sidebar_text_model",
+    "embed_model": "llm_sidebar_embed_model",
+}
+_SIDEBAR_LAST_PROVIDER_KEY = "llm_sidebar_last_provider"
+_SIDEBAR_NOTICE_KEY = "llm_sidebar_notice"
+_OPENROUTER_SUMMARY_KEY = "llm_openrouter_summary"
+
+
+def _text_test_prompt_for_provider(provider: str) -> str:
+    if provider == "openrouter":
+        return (
+            "Using the OpenRouter endpoint https://openrouter.ai/api/v1 and the model "
+            "openai/gpt-4o-mini, write one short paragraph explaining how an "
+            "OpenAI-compatible gateway helps route requests across different models."
+        )
+    if provider == "gemini":
+        return (
+            "Write one concise sentence about a scientific manuscript assistant."
+        )
+    return "Write one short sentence describing a manuscript editing assistant."
+
+
+def _embed_test_text_for_provider(provider: str) -> str:
+    if provider == "openrouter":
+        return (
+            "OpenRouter endpoint: https://openrouter.ai/api/v1 | Embedding model: "
+            "openai/text-embedding-3-small | OpenRouter can route chat and embedding "
+            "requests through an OpenAI-compatible API."
+        )
+    return "Machine learning helps with scientific manuscript recommendations."
+
+
+def _openrouter_sidebar_settings() -> dict[str, str]:
+    defaults = app_config.default_settings_for_provider("openrouter")
+    return {
+        "provider": "openrouter",
+        "api_key": "",
+        "base_url": defaults["base_url"],
+        "text_model": defaults["text_model"],
+        "embed_model": defaults["embed_model"],
+    }
+
+
+def _openrouter_summary_card() -> dict[str, str]:
+    settings = _openrouter_sidebar_settings()
+    return {
+        "title": "OpenRouter setup",
+        "provider": "OpenRouter",
+        "base_url": settings["base_url"],
+        "text_model": settings["text_model"],
+        "embed_model": settings["embed_model"],
+        "note": "These values were copied into the sidebar draft. Paste your API key, then save.",
+    }
+
+
+def _ensure_sidebar_draft_settings(settings: dict[str, str]) -> None:
+    for field, key in _SIDEBAR_SETTING_KEYS.items():
+        if key not in st.session_state:
+            st.session_state[key] = settings[field]
+
+    if _SIDEBAR_LAST_PROVIDER_KEY not in st.session_state:
+        st.session_state[_SIDEBAR_LAST_PROVIDER_KEY] = settings["provider"]
+
+
+def _sync_sidebar_defaults(provider: str) -> None:
+    previous_provider = str(st.session_state.get(_SIDEBAR_LAST_PROVIDER_KEY, "")).strip()
+    if previous_provider == provider:
+        return
+
+    defaults = app_config.default_settings_for_provider(provider)
+    st.session_state[_SIDEBAR_SETTING_KEYS["base_url"]] = defaults["base_url"]
+    st.session_state[_SIDEBAR_SETTING_KEYS["text_model"]] = defaults["text_model"]
+    st.session_state[_SIDEBAR_SETTING_KEYS["embed_model"]] = defaults["embed_model"]
+    st.session_state[_SIDEBAR_LAST_PROVIDER_KEY] = provider
+
+
+def _apply_openrouter_sidebar_settings() -> None:
+    st.session_state.update(_openrouter_sidebar_settings())
+    st.session_state[_SIDEBAR_LAST_PROVIDER_KEY] = "openrouter"
+    st.session_state[_SIDEBAR_NOTICE_KEY] = (
+        "Copied OpenRouter defaults into the sidebar. Paste your API key, then save."
+    )
+    st.session_state[_OPENROUTER_SUMMARY_KEY] = _openrouter_summary_card()
 
 
 def _provider_label(provider: str) -> str:
@@ -156,6 +247,13 @@ def _llm_setting_errors(settings: dict[str, str]) -> list[str]:
         errors.append(f"{_provider_label(provider)} requires an API key.")
     if provider in _BASE_URL_PROVIDERS and not settings.get("base_url", "").strip():
         errors.append(f"{_provider_label(provider)} requires a base URL.")
+    if provider == "openrouter":
+        base_url = settings.get("base_url", "").strip().rstrip("/")
+        if base_url and base_url != _OPENROUTER_BASE_URL:
+            errors.append(
+                "OpenRouter should usually use https://openrouter.ai/api/v1. "
+                "If you are using a proxy, double-check the endpoint."
+            )
     if not settings.get("text_model", "").strip():
         errors.append("Text model cannot be empty.")
     if not settings.get("embed_model", "").strip():
@@ -167,6 +265,9 @@ llm_settings = app_config.get_llm_settings()
 if is_authenticated:
     with st.sidebar:
         st.success(f"Logged in as **{st.session_state.username}**")
+        if st.session_state.get(_SIDEBAR_NOTICE_KEY):
+            st.info(st.session_state[_SIDEBAR_NOTICE_KEY])
+            del st.session_state[_SIDEBAR_NOTICE_KEY]
         if st.button("Logout"):
             if st.session_state.login_token:
                 auth.revoke_login_token(st.session_state.login_token)
@@ -177,8 +278,13 @@ if is_authenticated:
             st.rerun()
 
         st.header("⚙️ LLM Settings")
+        _ensure_sidebar_draft_settings(llm_settings)
         provider_order = list(_PROVIDER_LABELS.keys())
-        current_provider = llm_settings["provider"] if llm_settings["provider"] in _PROVIDER_LABELS else "gemini"
+        current_provider = (
+            st.session_state[_SIDEBAR_SETTING_KEYS["provider"]]
+            if st.session_state[_SIDEBAR_SETTING_KEYS["provider"]] in _PROVIDER_LABELS
+            else "gemini"
+        )
         provider_index = provider_order.index(current_provider)
 
         with st.form("llm_settings_form"):
@@ -188,25 +294,43 @@ if is_authenticated:
                 index=provider_index,
                 format_func=_provider_label,
                 help="Pick the backend that will power editing, citation alignment, journal matching, and cover-letter generation.",
+                key=_SIDEBAR_SETTING_KEYS["provider"],
             )
 
             defaults = app_config.default_settings_for_provider(provider)
+            _sync_sidebar_defaults(provider)
             st.caption(_PROVIDER_REQUIREMENTS.get(provider, "Configure the model settings for this provider."))
+            if provider == "openrouter":
+                st.info(
+                    "OpenRouter is OpenAI-compatible. Use your OpenRouter API key, the "
+                    f"default endpoint `{_OPENROUTER_BASE_URL}`, and OpenRouter model IDs "
+                    "such as `openai/gpt-4o-mini`."
+                )
 
             needs_api_key = provider in {"gemini", "openrouter"}
-            needs_base_url = provider in {"openrouter", "ollama", "openai-compatible", "custom"}
+            needs_base_url = provider in {"openai-compatible", "custom"}
             api_key = st.text_input(
                 "API Key",
-                value=llm_settings["api_key"],
+                key=_SIDEBAR_SETTING_KEYS["api_key"],
                 type="password",
-                help="Required for Gemini and OpenRouter. Optional for other providers.",
+                help=(
+                    "Required for Gemini. For OpenRouter, paste your OpenRouter API key "
+                    "from https://openrouter.ai/keys."
+                    if provider == "openrouter"
+                    else "Required for Gemini and OpenRouter. Optional for other providers."
+                ),
             )
 
-            if needs_base_url:
+            if provider == "openrouter":
+                base_url = _OPENROUTER_BASE_URL
+                st.caption("OpenRouter uses a fixed endpoint: https://openrouter.ai/api/v1")
+            elif needs_base_url:
                 base_url = st.text_input(
                     "Base URL",
-                    value=llm_settings["base_url"] or defaults["base_url"],
-                    help="The provider endpoint, for example OpenRouter or a local Ollama URL.",
+                    key=_SIDEBAR_SETTING_KEYS["base_url"],
+                    help=(
+                        "The provider endpoint, for example an OpenAI-compatible proxy."
+                    ),
                 )
             else:
                 base_url = ""
@@ -214,14 +338,22 @@ if is_authenticated:
 
             text_model = st.text_input(
                 "Text model",
-                value=llm_settings["text_model"] or defaults["text_model"],
-                help="This model will handle editing, citation cleanup, cover letters, and title polish.",
+                key=_SIDEBAR_SETTING_KEYS["text_model"],
+                help=(
+                    "Starter defaults are provider-specific, but you can change this to any valid model ID."
+                    if provider == "openrouter"
+                    else "This model will handle editing, citation cleanup, cover letters, and title polish."
+                ),
             )
 
             embed_model = st.text_input(
                 "Embedding model",
-                value=llm_settings["embed_model"] or defaults["embed_model"],
-                help="This model is used for journal recommendations.",
+                key=_SIDEBAR_SETTING_KEYS["embed_model"],
+                help=(
+                    "Starter defaults are provider-specific, but you can change this to any valid embedding model ID."
+                    if provider == "openrouter"
+                    else "This model is used for journal recommendations."
+                ),
             )
 
             save_llm = st.form_submit_button("Save LLM Settings")
@@ -241,13 +373,17 @@ if is_authenticated:
                 for error in errors:
                     st.error(error)
             else:
+                api_key_to_save = st.session_state[_SIDEBAR_SETTING_KEYS["api_key"]]
+                base_url_to_save = (
+                    "" if provider == "gemini" else base_url
+                )
                 app_config.save_llm_settings(
                     {
                         "provider": provider,
-                        "api_key": api_key,
-                        "base_url": "" if provider == "gemini" else base_url,
-                        "text_model": text_model,
-                        "embed_model": embed_model,
+                        "api_key": api_key_to_save,
+                        "base_url": base_url_to_save,
+                        "text_model": st.session_state[_SIDEBAR_SETTING_KEYS["text_model"]],
+                        "embed_model": st.session_state[_SIDEBAR_SETTING_KEYS["embed_model"]],
                     }
                 )
                 st.success(f"Saved {_provider_label(provider)} settings.")
@@ -490,31 +626,49 @@ with tab_test:
         st.warning(f"Saved settings issue: {warning} Save a valid configuration in the sidebar before testing.")
 
     if "llm_text_test_prompt" not in st.session_state:
-        st.session_state.llm_text_test_prompt = (
-            "Write one short sentence describing a manuscript editing assistant."
+        st.session_state.llm_text_test_prompt = _text_test_prompt_for_provider(
+            current_settings["provider"]
         )
     if "llm_embed_test_text" not in st.session_state:
-        st.session_state.llm_embed_test_text = (
-            "Machine learning helps with scientific manuscript recommendations."
+        st.session_state.llm_embed_test_text = _embed_test_text_for_provider(
+            current_settings["provider"]
+        )
+
+    if current_settings["provider"] == "openrouter":
+        summary = st.session_state.get(_OPENROUTER_SUMMARY_KEY)
+        if isinstance(summary, dict):
+            st.markdown(
+                f"""
+                <div style="padding: 0.9rem 1rem; border: 1px solid rgba(49, 51, 63, 0.18);
+                border-radius: 0.75rem; background: rgba(250, 250, 252, 0.96);">
+                  <strong>{summary['title']}</strong><br>
+                  Provider: {summary['provider']}<br>
+                  Base URL: <code>{summary['base_url']}</code><br>
+                  Text model: <code>{summary['text_model']}</code><br>
+                  Embedding model: <code>{summary['embed_model']}</code><br>
+                  <span style="opacity: 0.78;">{summary['note']}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.info(
+            "OpenRouter setup: use `https://openrouter.ai/api/v1`, an OpenRouter API key, "
+            "and model IDs such as `openai/gpt-4o-mini` before running the test."
         )
 
     st.markdown("**One-click prompt presets**")
     preset_col1, preset_col2, preset_col3 = st.columns(3)
     with preset_col1:
         if st.button("Gemini preset", width="stretch"):
-            st.session_state.llm_text_test_prompt = (
-                "Write one concise sentence about a scientific manuscript assistant."
-            )
+            st.session_state.llm_text_test_prompt = _text_test_prompt_for_provider("gemini")
     with preset_col2:
         if st.button("OpenRouter preset", width="stretch"):
-            st.session_state.llm_text_test_prompt = (
-                "Return valid JSON with keys provider, model, and status, each as a short string."
-            )
+            st.session_state.llm_text_test_prompt = _text_test_prompt_for_provider("openrouter")
+            st.session_state.llm_embed_test_text = _embed_test_text_for_provider("openrouter")
     with preset_col3:
-        if st.button("Ollama preset", width="stretch"):
-            st.session_state.llm_text_test_prompt = (
-                "Write a short paragraph explaining why local LLMs are useful for private document editing."
-            )
+        if st.button("Copy OpenRouter settings", width="stretch"):
+            _apply_openrouter_sidebar_settings()
+            st.rerun()
 
     col_left, col_right = st.columns(2)
     with col_left:
