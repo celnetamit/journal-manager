@@ -164,7 +164,21 @@ def get_llm_settings() -> Dict[str, str]:
     return normalize_llm_settings(_load_raw_config())
 
 
+def llm_config_locked() -> bool:
+    """When true, LLM provider/key config is managed by the deployment only.
+
+    Set LLM_CONFIG_LOCKED=1 in production so users can't overwrite the shared
+    global config.json (provider, API key, models) from the in-app sidebar.
+    """
+    return os.environ.get("LLM_CONFIG_LOCKED", "0").strip().lower() in {"1", "true", "yes"}
+
+
 def save_llm_settings(settings: Dict[str, Any]) -> None:
+    if llm_config_locked():
+        raise RuntimeError(
+            "LLM settings are locked by the deployment (LLM_CONFIG_LOCKED). "
+            "Configure them via environment variables instead."
+        )
     cfg = config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
     normalized = normalize_llm_settings(settings)

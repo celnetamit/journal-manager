@@ -278,116 +278,129 @@ if is_authenticated:
             st.rerun()
 
         st.header("⚙️ LLM Settings")
-        _ensure_sidebar_draft_settings(llm_settings)
-        provider_order = list(_PROVIDER_LABELS.keys())
-        current_provider = (
-            st.session_state[_SIDEBAR_SETTING_KEYS["provider"]]
-            if st.session_state[_SIDEBAR_SETTING_KEYS["provider"]] in _PROVIDER_LABELS
-            else "gemini"
-        )
-        provider_index = provider_order.index(current_provider)
-
-        with st.form("llm_settings_form"):
-            provider = st.selectbox(
-                "LLM Provider",
-                provider_order,
-                index=provider_index,
-                format_func=_provider_label,
-                help="Pick the backend that will power editing, citation alignment, journal matching, and cover-letter generation.",
-                key=_SIDEBAR_SETTING_KEYS["provider"],
+        if app_config.llm_config_locked():
+            # Production: provider/key are env-managed. Don't render the editable
+            # form (it writes a shared global config.json any user could overwrite).
+            st.caption(
+                "Model provider and API key are managed by the deployment and "
+                "can't be changed here."
             )
+            st.markdown(f"**Provider:** {_provider_label(llm_settings['provider'])}")
+            if llm_settings.get("base_url"):
+                st.caption(f"Endpoint: {llm_settings['base_url']}")
+            st.caption(f"Text model: `{llm_settings['text_model']}`")
+            st.caption(f"Embedding model: `{llm_settings['embed_model']}`")
+        else:
+            _ensure_sidebar_draft_settings(llm_settings)
+            provider_order = list(_PROVIDER_LABELS.keys())
+            current_provider = (
+                st.session_state[_SIDEBAR_SETTING_KEYS["provider"]]
+                if st.session_state[_SIDEBAR_SETTING_KEYS["provider"]] in _PROVIDER_LABELS
+                else "gemini"
+            )
+            provider_index = provider_order.index(current_provider)
 
-            defaults = app_config.default_settings_for_provider(provider)
-            _sync_sidebar_defaults(provider)
-            st.caption(_PROVIDER_REQUIREMENTS.get(provider, "Configure the model settings for this provider."))
-            if provider == "openrouter":
-                st.info(
-                    "OpenRouter is OpenAI-compatible. Use your OpenRouter API key, the "
-                    f"default endpoint `{_OPENROUTER_BASE_URL}`, and OpenRouter model IDs "
-                    "such as `openai/gpt-4o-mini`."
+            with st.form("llm_settings_form"):
+                provider = st.selectbox(
+                    "LLM Provider",
+                    provider_order,
+                    index=provider_index,
+                    format_func=_provider_label,
+                    help="Pick the backend that will power editing, citation alignment, journal matching, and cover-letter generation.",
+                    key=_SIDEBAR_SETTING_KEYS["provider"],
                 )
 
-            needs_api_key = provider in {"gemini", "openrouter"}
-            needs_base_url = provider in {"openai-compatible", "custom"}
-            api_key = st.text_input(
-                "API Key",
-                key=_SIDEBAR_SETTING_KEYS["api_key"],
-                type="password",
-                help=(
-                    "Required for Gemini. For OpenRouter, paste your OpenRouter API key "
-                    "from https://openrouter.ai/keys."
-                    if provider == "openrouter"
-                    else "Required for Gemini and OpenRouter. Optional for other providers."
-                ),
-            )
+                defaults = app_config.default_settings_for_provider(provider)
+                _sync_sidebar_defaults(provider)
+                st.caption(_PROVIDER_REQUIREMENTS.get(provider, "Configure the model settings for this provider."))
+                if provider == "openrouter":
+                    st.info(
+                        "OpenRouter is OpenAI-compatible. Use your OpenRouter API key, the "
+                        f"default endpoint `{_OPENROUTER_BASE_URL}`, and OpenRouter model IDs "
+                        "such as `openai/gpt-4o-mini`."
+                    )
 
-            if provider == "openrouter":
-                base_url = _OPENROUTER_BASE_URL
-                st.caption("OpenRouter uses a fixed endpoint: https://openrouter.ai/api/v1")
-            elif needs_base_url:
-                base_url = st.text_input(
-                    "Base URL",
-                    key=_SIDEBAR_SETTING_KEYS["base_url"],
+                needs_api_key = provider in {"gemini", "openrouter"}
+                needs_base_url = provider in {"openai-compatible", "custom"}
+                api_key = st.text_input(
+                    "API Key",
+                    key=_SIDEBAR_SETTING_KEYS["api_key"],
+                    type="password",
                     help=(
-                        "The provider endpoint, for example an OpenAI-compatible proxy."
+                        "Required for Gemini. For OpenRouter, paste your OpenRouter API key "
+                        "from https://openrouter.ai/keys."
+                        if provider == "openrouter"
+                        else "Required for Gemini and OpenRouter. Optional for other providers."
                     ),
                 )
-            else:
-                base_url = ""
-                st.caption("Gemini uses Google-managed endpoints, so no base URL is needed.")
 
-            text_model = st.text_input(
-                "Text model",
-                key=_SIDEBAR_SETTING_KEYS["text_model"],
-                help=(
-                    "Starter defaults are provider-specific, but you can change this to any valid model ID."
-                    if provider == "openrouter"
-                    else "This model will handle editing, citation cleanup, cover letters, and title polish."
-                ),
-            )
+                if provider == "openrouter":
+                    base_url = _OPENROUTER_BASE_URL
+                    st.caption("OpenRouter uses a fixed endpoint: https://openrouter.ai/api/v1")
+                elif needs_base_url:
+                    base_url = st.text_input(
+                        "Base URL",
+                        key=_SIDEBAR_SETTING_KEYS["base_url"],
+                        help=(
+                            "The provider endpoint, for example an OpenAI-compatible proxy."
+                        ),
+                    )
+                else:
+                    base_url = ""
+                    st.caption("Gemini uses Google-managed endpoints, so no base URL is needed.")
 
-            embed_model = st.text_input(
-                "Embedding model",
-                key=_SIDEBAR_SETTING_KEYS["embed_model"],
-                help=(
-                    "Starter defaults are provider-specific, but you can change this to any valid embedding model ID."
-                    if provider == "openrouter"
-                    else "This model is used for journal recommendations."
-                ),
-            )
-
-            save_llm = st.form_submit_button("Save LLM Settings")
-
-        if save_llm:
-            errors = _llm_setting_errors(
-                {
-                    "provider": provider,
-                    "api_key": api_key,
-                    "base_url": base_url,
-                    "text_model": text_model,
-                    "embed_model": embed_model,
-                }
-            )
-
-            if errors:
-                for error in errors:
-                    st.error(error)
-            else:
-                api_key_to_save = st.session_state[_SIDEBAR_SETTING_KEYS["api_key"]]
-                base_url_to_save = (
-                    "" if provider == "gemini" else base_url
+                text_model = st.text_input(
+                    "Text model",
+                    key=_SIDEBAR_SETTING_KEYS["text_model"],
+                    help=(
+                        "Starter defaults are provider-specific, but you can change this to any valid model ID."
+                        if provider == "openrouter"
+                        else "This model will handle editing, citation cleanup, cover letters, and title polish."
+                    ),
                 )
-                app_config.save_llm_settings(
+
+                embed_model = st.text_input(
+                    "Embedding model",
+                    key=_SIDEBAR_SETTING_KEYS["embed_model"],
+                    help=(
+                        "Starter defaults are provider-specific, but you can change this to any valid embedding model ID."
+                        if provider == "openrouter"
+                        else "This model is used for journal recommendations."
+                    ),
+                )
+
+                save_llm = st.form_submit_button("Save LLM Settings")
+
+            if save_llm:
+                errors = _llm_setting_errors(
                     {
                         "provider": provider,
-                        "api_key": api_key_to_save,
-                        "base_url": base_url_to_save,
-                        "text_model": st.session_state[_SIDEBAR_SETTING_KEYS["text_model"]],
-                        "embed_model": st.session_state[_SIDEBAR_SETTING_KEYS["embed_model"]],
+                        "api_key": api_key,
+                        "base_url": base_url,
+                        "text_model": text_model,
+                        "embed_model": embed_model,
                     }
                 )
-                st.success(f"Saved {_provider_label(provider)} settings.")
-                st.rerun()
+
+                if errors:
+                    for error in errors:
+                        st.error(error)
+                else:
+                    api_key_to_save = st.session_state[_SIDEBAR_SETTING_KEYS["api_key"]]
+                    base_url_to_save = (
+                        "" if provider == "gemini" else base_url
+                    )
+                    app_config.save_llm_settings(
+                        {
+                            "provider": provider,
+                            "api_key": api_key_to_save,
+                            "base_url": base_url_to_save,
+                            "text_model": st.session_state[_SIDEBAR_SETTING_KEYS["text_model"]],
+                            "embed_model": st.session_state[_SIDEBAR_SETTING_KEYS["embed_model"]],
+                        }
+                    )
+                    st.success(f"Saved {_provider_label(provider)} settings.")
+                    st.rerun()
 
         st.divider()
         st.header("🛠️ Style Settings")

@@ -36,6 +36,26 @@ def test_openrouter_keeps_its_own_base_url(monkeypatch) -> None:
     assert settings["base_url"] == "https://openrouter.ai/api/v1"
 
 
+def test_llm_config_unlocked_by_default(monkeypatch) -> None:
+    import config
+
+    monkeypatch.delenv("LLM_CONFIG_LOCKED", raising=False)
+    assert config.llm_config_locked() is False
+
+
+def test_llm_config_lock_refuses_save(monkeypatch) -> None:
+    import config
+
+    monkeypatch.setenv("LLM_CONFIG_LOCKED", "1")
+    assert config.llm_config_locked() is True
+    try:
+        config.save_llm_settings({"provider": "gemini", "api_key": "should-not-persist"})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("save_llm_settings must refuse while LLM_CONFIG_LOCKED is set")
+
+
 def test_provider_labels_exclude_ollama() -> None:
     import app
 
