@@ -25,6 +25,11 @@ DEFAULT_LLM_SETTINGS: Dict[str, str] = {
     "embed_model": "text-embedding-004",
 }
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+LEGACY_PROVIDER_ALIASES = {
+    "ollama": "openrouter",
+}
+
 PROVIDER_DEFAULTS: Dict[str, Dict[str, str]] = {
     "gemini": {
         "base_url": "",
@@ -32,14 +37,9 @@ PROVIDER_DEFAULTS: Dict[str, Dict[str, str]] = {
         "embed_model": "text-embedding-004",
     },
     "openrouter": {
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "text_model": "openai/gpt-4o-mini",
         "embed_model": "openai/text-embedding-3-small",
-    },
-    "ollama": {
-        "base_url": "http://localhost:11434/api",
-        "text_model": "llama3.2",
-        "embed_model": "nomic-embed-text",
     },
     "openai-compatible": {
         "base_url": "",
@@ -96,6 +96,7 @@ def _load_raw_config() -> Dict[str, Any]:
 
 def _provider_key(provider: Optional[str]) -> str:
     value = (provider or DEFAULT_LLM_PROVIDER).strip().lower()
+    value = LEGACY_PROVIDER_ALIASES.get(value, value)
     return value if value in PROVIDER_DEFAULTS else DEFAULT_LLM_PROVIDER
 
 
@@ -138,7 +139,9 @@ def normalize_llm_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, s
         gemini_env_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if gemini_env_key:
             settings["api_key"] = gemini_env_key
-    if env_base_url:
+    if provider == "openrouter":
+        settings["base_url"] = OPENROUTER_BASE_URL
+    elif env_base_url and provider in {"openai-compatible", "custom"}:
         settings["base_url"] = env_base_url
     if env_text_model:
         settings["text_model"] = env_text_model

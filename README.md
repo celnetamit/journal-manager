@@ -38,12 +38,12 @@ embeddings) is persisted in the named volume `app_data`.
 
 In the app sidebar you can choose the LLM provider and set the API key,
 base URL, text model, and embedding model. Gemini remains the default,
-but OpenRouter, Ollama, and custom OpenAI-compatible endpoints are
-supported.
+but OpenRouter and custom OpenAI-compatible endpoints are supported.
 
-If the app itself runs in Docker and Ollama is installed on your host
-machine, the compose file points the Ollama base URL at
-`http://host.docker.internal:11434/api` so the container can reach it.
+OpenRouter uses its own OpenAI-compatible endpoint
+(`https://openrouter.ai/api/v1`) and OpenRouter model IDs. The sidebar
+prefills those values so you do not need to reuse a stale local URL
+when you switch providers.
 
 The login form also has a `Remember me on this device` option. When
 enabled, the app stores an opaque login token in a browser cookie so
@@ -83,7 +83,7 @@ streamlit run app.py
 | `LLM_API_KEY`           | *(empty)*                     | Generic API key override for supported providers.        |
 | `LLM_TEXT_MODEL`        | `gemini-2.5-pro`              | Optional default text model.                             |
 | `LLM_EMBED_MODEL`       | `text-embedding-004`          | Optional default embedding model.                        |
-| `LLM_BASE_URL`          | `http://host.docker.internal:11434/api` | Default Ollama/OpenRouter/OpenAI-compatible endpoint in Docker. |
+| `LLM_BASE_URL`          | *(empty)* | Base URL for OpenAI-compatible/custom endpoints. OpenRouter keeps its own default endpoint. |
 | `DATABASE_URL`          | `sqlite:///./data/analytics.db` | Set to your Postgres URL in production.                |
 | `DATA_DIR`              | `./data`                      | Where analytics DB and generated embeddings live.       |
 | `OUTPUT_DIR`            | `$DATA_DIR/outbound`          | Where generated redline `.docx` files are written.       |

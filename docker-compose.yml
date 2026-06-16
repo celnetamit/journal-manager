@@ -20,7 +20,7 @@ services:
     environment:
       DATABASE_URL: postgresql://manuscript:manuscript@db:5432/manuscript
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/api}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
       DATA_DIR: /data
       OUTPUT_DIR: /data/outbound
     volumes:

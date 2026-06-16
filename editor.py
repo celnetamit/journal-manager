@@ -1,6 +1,6 @@
 """Document editing and LLM-driven helpers.
 
-Uses provider-specific adapters for Gemini, OpenRouter, Ollama, and
+Uses provider-specific adapters for Gemini, OpenRouter, and
 OpenAI-compatible endpoints. All API key / path lookups go through
 `config.py`.
 """
@@ -85,23 +85,6 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
         time.sleep(0.6)
         return (text or "").strip()
 
-    if provider == "ollama":
-        base = cfg["base_url"].rstrip("/")
-        if not base:
-            raise RuntimeError("Ollama base URL is required.")
-        payload = {
-            "model": cfg["text_model"],
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-        }
-        data = _post_json(f"{base}/chat", payload, timeout=180)
-        try:
-            text = data["message"]["content"]
-        except Exception as exc:
-            raise RuntimeError(f"Unexpected Ollama chat response: {data}") from exc
-        time.sleep(0.6)
-        return (text or "").strip()
-
     raise RuntimeError(f"Unsupported LLM provider: {provider}")
 
 
@@ -131,19 +114,6 @@ def _embed(text: str, settings: Optional[Dict[str, Any]] = None) -> List[float]:
             vector = data["data"][0]["embedding"]
         except Exception as exc:
             raise RuntimeError(f"Unexpected embeddings response: {data}") from exc
-        time.sleep(0.3)
-        return list(vector)
-
-    if provider == "ollama":
-        base = cfg["base_url"].rstrip("/")
-        if not base:
-            raise RuntimeError("Ollama base URL is required.")
-        payload = {"model": cfg["embed_model"], "input": text}
-        data = _post_json(f"{base}/embed", payload, timeout=180)
-        try:
-            vector = data["embeddings"][0]
-        except Exception as exc:
-            raise RuntimeError(f"Unexpected Ollama embeddings response: {data}") from exc
         time.sleep(0.3)
         return list(vector)
 
