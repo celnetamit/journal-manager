@@ -8,6 +8,56 @@ def test_app_imports_without_optional_cookie_dependency() -> None:
     assert app.COOKIE_MANAGER_AVAILABLE in {True, False}
 
 
+def test_login_throttle_locks_after_max_attempts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("LOGIN_MAX_ATTEMPTS", "3")
+
+    import importlib
+    import config
+    import auth
+
+    importlib.reload(config)
+    importlib.reload(auth)
+
+    assert auth.register("throttle_user", "correct-pw") is True
+    for _ in range(3):
+        assert auth.login("throttle_user", "wrong-pw") is None
+    assert auth.is_locked_out("throttle_user") is True
+    # Correct credentials are refused while locked out.
+    assert auth.login("throttle_user", "correct-pw") is None
+
+
+def test_expired_login_token_is_rejected(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("LOGIN_TOKEN_TTL_DAYS", "30")
+
+    import importlib
+    import config
+    import auth
+
+    importlib.reload(config)
+    importlib.reload(auth)
+
+    assert auth.register("token_user", "correct-pw") is True
+    user_id = auth.login("token_user", "correct-pw")
+    assert user_id is not None
+
+    token = auth.issue_login_token(user_id)
+    assert auth.resolve_login_token(token) is not None
+
+    # Backdate the token past the TTL; it must no longer resolve.
+    with auth._connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE login_tokens SET created_at=? WHERE token_hash=?",
+            ("2000-01-01 00:00:00", auth._token_hash(token)),
+        )
+        conn.commit()
+    assert auth.resolve_login_token(token) is None
+
+
 def test_llm_settings_shape() -> None:
     import config
 

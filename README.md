@@ -92,6 +92,11 @@ streamlit run app.py
 | `GEMINI_TEXT_MODEL`     | `gemini-2.5-pro`              | Override the chat model.                                 |
 | `GEMINI_EMBED_MODEL`    | `text-embedding-004`          | Override the embedding model.                            |
 | `PORT`                  | `8501`                        | Streamlit listen port.                                   |
+| `LLM_CONFIG_LOCKED`     | `0` (`1` in Docker image)     | When `1`, provider/key come from env only; the in-app sidebar is read-only and cannot overwrite the shared config. Recommended for public deployments. |
+| `LOGIN_MAX_ATTEMPTS`    | `10`                          | Failed logins per username before a temporary lockout (`0` disables). |
+| `LOGIN_LOCKOUT_MINUTES` | `15`                          | Sliding window over which failed logins are counted.     |
+| `LOGIN_TOKEN_TTL_DAYS`  | `30`                          | Persistent "remember me" token lifetime (`0` = never expires). |
+| `STREAMLIT_CLIENT_SHOW_ERROR_DETAILS` | `none` (Docker image) | Keep tracebacks out of the browser in production.        |
 
 > **Never commit `config.json`, `analytics.db`, or `journals_embedded.json`.**
 > They are listed in `.gitignore`.

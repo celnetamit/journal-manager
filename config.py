@@ -268,6 +268,28 @@ def log_job_to_stdout() -> bool:
     return os.environ.get("LOG_TO_STDOUT", "0") == "1"
 
 
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default)).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def login_token_ttl_days() -> int:
+    """Persistent login token lifetime in days. 0 disables expiry."""
+    return _env_int("LOGIN_TOKEN_TTL_DAYS", 30, minimum=0)
+
+
+def login_max_attempts() -> int:
+    """Failed logins allowed per username within the lockout window. 0 disables."""
+    return _env_int("LOGIN_MAX_ATTEMPTS", 10, minimum=0)
+
+
+def login_lockout_minutes() -> int:
+    """Sliding window (minutes) over which failed logins are counted."""
+    return _env_int("LOGIN_LOCKOUT_MINUTES", 15, minimum=1)
+
+
 # --- Gemini client (lazy import to keep import time low) ---
 
 

@@ -17,6 +17,7 @@ import re
 import sqlite3
 import secrets
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, List, Optional, Tuple
 
 import bcrypt
@@ -94,6 +95,13 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             created_at TEXT DEFAULT (datetime('now'))
         )"""
     )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            attempted_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
 
 
 def _ensure_schema_pg(cur: Any) -> None:
@@ -129,6 +137,13 @@ def _ensure_schema_pg(cur: Any) -> None:
             created_at TIMESTAMPTZ DEFAULT now()
         )"""
     )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS login_attempts (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            attempted_at TIMESTAMPTZ DEFAULT now()
+        )"""
+    )
 
 
 # --- Password hashing ---
@@ -146,6 +161,64 @@ def hash_pw(pw: str) -> str:
 
 def _verify_sha256(pw: str, stored: str) -> bool:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest() == stored
+
+
+# --- Time helpers (cross-engine) ---
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ts_param(dt: datetime) -> Any:
+    """Bind a cutoff timestamp the way each engine stores it.
+
+    Postgres columns are TIMESTAMPTZ (accept a tz-aware datetime); SQLite
+    stores datetime('now') as a UTC 'YYYY-MM-DD HH:MM:SS' string, which
+    compares lexicographically in the same format.
+    """
+    if _is_postgres():
+        return dt
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# --- Login throttling (brute-force resistance) ---
+
+def _record_failed_login(cur: Any, username: str) -> None:
+    cur.execute(
+        "INSERT INTO login_attempts (username) VALUES (%s)"
+        if _is_postgres() else
+        "INSERT INTO login_attempts (username) VALUES (?)",
+        (username,),
+    )
+
+
+def _clear_login_attempts(cur: Any, username: str) -> None:
+    cur.execute(
+        "DELETE FROM login_attempts WHERE username=%s"
+        if _is_postgres() else
+        "DELETE FROM login_attempts WHERE username=?",
+        (username,),
+    )
+
+
+def is_locked_out(username: str) -> bool:
+    """True if too many failed logins for this username inside the window."""
+    max_attempts = app_config.login_max_attempts()
+    if not username or max_attempts <= 0:
+        return False
+    cutoff = _ts_param(_now_utc() - timedelta(minutes=app_config.login_lockout_minutes()))
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM login_attempts "
+            "WHERE username=%s AND attempted_at > %s"
+            if _is_postgres() else
+            "SELECT COUNT(*) AS n FROM login_attempts "
+            "WHERE username=? AND attempted_at > ?",
+            (username, cutoff),
+        )
+        row = cur.fetchone()
+        return bool(row) and int(row["n"]) >= max_attempts
 
 
 # --- Public API ---
@@ -183,6 +256,9 @@ def login(username: str, pw: str) -> Optional[int]:
     if not username or not pw:
         return None
 
+    if is_locked_out(username):
+        return None
+
     with _connect() as conn:
         cur = conn.cursor()
         sel = (
@@ -192,7 +268,13 @@ def login(username: str, pw: str) -> Optional[int]:
         )
         cur.execute(sel, (username,))
         row = cur.fetchone()
+
+        def _fail() -> None:
+            _record_failed_login(cur, username)
+            conn.commit()
+
         if row is None:
+            _fail()
             return None
 
         user_id = row["id"]
@@ -201,16 +283,22 @@ def login(username: str, pw: str) -> Optional[int]:
         if _looks_like_sha256(stored):
             if _verify_sha256(pw, stored):
                 _upgrade_hash(cur, user_id, pw)
+                _clear_login_attempts(cur, username)
                 conn.commit()
                 return user_id
+            _fail()
             return None
 
         try:
             if bcrypt.checkpw(pw.encode("utf-8"), stored.encode("utf-8")):
+                _clear_login_attempts(cur, username)
+                conn.commit()
                 return user_id
         except ValueError:
             # Stored hash is malformed
+            _fail()
             return None
+        _fail()
         return None
 
 
@@ -241,8 +329,23 @@ def issue_login_token(user_id: int) -> str:
     with _connect() as conn:
         cur = conn.cursor()
         cur.execute(sql, (token_hash, user_id))
+        _purge_expired_tokens(cur)
         conn.commit()
     return token
+
+
+def _purge_expired_tokens(cur: Any) -> None:
+    """Best-effort cleanup so expired tokens don't accumulate."""
+    ttl_days = app_config.login_token_ttl_days()
+    if ttl_days <= 0:
+        return
+    cutoff = _ts_param(_now_utc() - timedelta(days=ttl_days))
+    cur.execute(
+        "DELETE FROM login_tokens WHERE created_at <= %s"
+        if _is_postgres() else
+        "DELETE FROM login_tokens WHERE created_at <= ?",
+        (cutoff,),
+    )
 
 
 def resolve_login_token(token: str) -> Optional[dict]:
@@ -250,20 +353,36 @@ def resolve_login_token(token: str) -> Optional[dict]:
     if not token:
         return None
     token_hash = _token_hash(token)
+    ttl_days = app_config.login_token_ttl_days()
+    cutoff = _ts_param(_now_utc() - timedelta(days=ttl_days)) if ttl_days > 0 else None
     with _connect() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT u.id, u.username
-               FROM login_tokens lt
-               JOIN users u ON u.id = lt.user_id
-               WHERE lt.token_hash=%s"""
-            if _is_postgres() else
-            """SELECT u.id, u.username
-               FROM login_tokens lt
-               JOIN users u ON u.id = lt.user_id
-               WHERE lt.token_hash=?""",
-            (token_hash,),
-        )
+        if cutoff is None:
+            cur.execute(
+                """SELECT u.id, u.username
+                   FROM login_tokens lt
+                   JOIN users u ON u.id = lt.user_id
+                   WHERE lt.token_hash=%s"""
+                if _is_postgres() else
+                """SELECT u.id, u.username
+                   FROM login_tokens lt
+                   JOIN users u ON u.id = lt.user_id
+                   WHERE lt.token_hash=?""",
+                (token_hash,),
+            )
+        else:
+            cur.execute(
+                """SELECT u.id, u.username
+                   FROM login_tokens lt
+                   JOIN users u ON u.id = lt.user_id
+                   WHERE lt.token_hash=%s AND lt.created_at > %s"""
+                if _is_postgres() else
+                """SELECT u.id, u.username
+                   FROM login_tokens lt
+                   JOIN users u ON u.id = lt.user_id
+                   WHERE lt.token_hash=? AND lt.created_at > ?""",
+                (token_hash, cutoff),
+            )
         row = cur.fetchone()
         if row is None:
             return None

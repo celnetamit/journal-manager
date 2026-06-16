@@ -454,19 +454,26 @@ if not st.session_state.user_id:
             help=remember_help,
         )
         if st.button("Login", type="primary"):
-            uid = auth.login(lu, lp)
-            if uid:
-                st.session_state.user_id = uid
-                st.session_state.username = lu
-                if remember_me:
-                    st.session_state.login_token = auth.issue_login_token(uid)
-                    cookies["auth_token"] = st.session_state.login_token
-                    cookies.save()
+            if auth.is_locked_out(lu):
+                st.error(
+                    "Too many failed login attempts. Please wait a few minutes "
+                    "and try again."
+                )
+            else:
+                uid = auth.login(lu, lp)
+                if uid:
+                    st.session_state.user_id = uid
+                    st.session_state.username = lu
+                    if remember_me:
+                        st.session_state.login_token = auth.issue_login_token(uid)
+                        cookies["auth_token"] = st.session_state.login_token
+                        cookies.save()
+                    else:
+                        st.session_state.login_token = ""
+                        _clear_auth_cookie()
+                    st.rerun()
                 else:
-                    st.session_state.login_token = ""
-                    _clear_auth_cookie()
-                st.rerun()
-            st.error("Invalid credentials.")
+                    st.error("Invalid credentials.")
     with tab_reg:
         ru = st.text_input("Username", key="ru")
         rp = st.text_input("Password", type="password", key="rp")
