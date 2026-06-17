@@ -58,7 +58,11 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
             kwargs["config"] = types.GenerateContentConfig(
                 response_mime_type=response_mime_type,
             )
-        resp = _client(cfg["api_key"]).models.generate_content(
+        # Hold the client in a local so it stays alive for the SDK's internal
+        # retry loop; a temporary would be GC'd mid-call and close its httpx
+        # transport ("Cannot send a request, as the client has been closed.").
+        client = _client(cfg["api_key"])
+        resp = client.models.generate_content(
             model=cfg["text_model"], contents=prompt, **kwargs,
         )
         time.sleep(1)
@@ -93,7 +97,8 @@ def _embed(text: str, settings: Optional[Dict[str, Any]] = None) -> List[float]:
     provider = cfg["provider"]
 
     if provider == "gemini":
-        resp = _client(cfg["api_key"]).models.embed_content(
+        client = _client(cfg["api_key"])
+        resp = client.models.embed_content(
             model=cfg["embed_model"], contents=text,
         )
         time.sleep(0.3)
@@ -151,6 +156,10 @@ Task:
 2. Convert all in-text citations to sequential bracketed numbers (e.g., "[1]", "[1, 2, 3]") based on the EXACT order they first appear in the text.
 3. Locate the bibliography/reference list at the end of the text.
 4. Re-order and re-number the actual bibliography entries so that they match the new numerical sequence of the in-text citations.
+
+IN-TEXT CITATION FORMATTING (apply to every in-text bracketed citation you output):
+- Put a single space after each comma when listing multiple citations, e.g. "[1, 2, 3]" (NOT "[1,2,3]").
+- For a consecutive range, use an en dash (–) with no surrounding spaces, e.g. "[3–7]" (NOT "[3-7]" or "[3—7]").
 
 CRITICAL OUTPUT INSTRUCTIONS:
 - Return ONLY a valid JSON dictionary.
@@ -231,6 +240,26 @@ Rules:
 I am providing a JSON array of text paragraphs from a manuscript.
 Proofread them strictly following the specified guidelines. Fix spelling, grammar, and typography.
 Properly format any references or bibliography items encountered.
+
+IN-HOUSE REFERENCE RULES (these OVERRIDE the base reference style above for any reference/bibliography entry):
+1. AUTHOR LIMIT: If a reference lists MORE THAN 6 authors, keep only the first 6 authors and append "et al." (e.g., "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, et al."). If there are 6 or fewer authors, list them ALL and do NOT add "et al.". Never add "et al." to a list that already shows all authors.
+1a. STRIP TITLES: Remove any honorific or professional title prefixes attached to an author name (e.g. "Mr", "Mrs", "Ms", "Dr", "Dr.", "Prof", "Prof.", "Professor", "Er", "Er.", "Sir", "Sri", "Smt", "Md" when used as a courtesy title, "PhD"/"MD"/"FRCS" when used as a leading prefix). Keep only the actual name. Example: "Dr. Smith JA, Prof Jones BR" -> "Smith JA, Jones BR". Do this in BOTH the bibliography entries and any in-text author-date citations.
+2. JOURNAL ABBREVIATION: For JOURNAL references, abbreviate the journal name using standard ISO 4 / Index Medicus (NLM) abbreviations (e.g., "Journal of Science" -> "J Sci"; "New England Journal of Medicine" -> "N Engl J Med"; "Nature" stays "Nature"). Do NOT abbreviate book titles, publisher names, or chapter titles.
+3. SOURCE-TYPE STRUCTURE: Before formatting each reference, identify whether it is a JOURNAL ARTICLE or a BOOK/BOOK CHAPTER, then structure it accordingly:
+   - JOURNAL ARTICLE: Authors. Article title. Abbreviated Journal Name. Year;Volume(Issue):Pages. (include DOI if present)
+   - BOOK: Authors/Editors. Book Title. Edition. Place of publication: Publisher; Year. (do NOT abbreviate the title)
+   - BOOK CHAPTER: Authors. Chapter title. In: Editors, editors. Book Title. Place: Publisher; Year. p. Pages.
+   Only treat an item as a reference if it is clearly a citation/bibliography entry; do NOT restructure ordinary body text.
+
+IN-HOUSE HEADING RULES (apply to any paragraph that is a section/subsection heading, e.g. "Introduction", "Materials and Methods"):
+1. TITLE CASE: Capitalize headings in title case (capitalize the first and last word and all major words; keep articles, coordinating conjunctions, and short prepositions such as "a", "an", "the", "of", "and", "in", "for", "to" lowercase unless they are the first/last word). Example: "fundamentals of functional genomics" -> "Fundamentals of Functional Genomics".
+2. NO NUMBERING: Remove any leading numbering or auto-number prefixes from headings (e.g. "1. Introduction", "1.2 Methods", "Chapter 3: Results", "IV. Discussion" -> "Introduction", "Methods", "Results", "Discussion"). Keep the heading text itself intact.
+3. STRUCTURE: Preserve the heading's hierarchy/level and order; only fix its capitalization and remove numbering. Do NOT merge a heading into body text or turn body text into a heading. Do NOT add a trailing period or colon to a heading.
+
+IN-HOUSE IN-TEXT CITATION RULES (apply to citation markers that appear inside body sentences, e.g. "[1]", "[1,2]", "[3-7]"):
+1. SPACE AFTER COMMA: When multiple citations are listed, put a single space after each comma, e.g. "[1,2,3]" -> "[1, 2, 3]".
+2. EN-DASH FOR RANGES: For a consecutive citation range, use an en dash (–) with no surrounding spaces between the first and last number, e.g. "[3-7]", "[3 to 7]", "[3—7]" -> "[3–7]".
+3. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these two rules; they apply only to in-text citation markers.
 """
     if custom_dict:
         prompt += f"\nCRITICAL CUSTOM DICTIONARY (DO NOT ALTER OR REFORMAT THESE TERMS):\n{custom_dict}\n"
