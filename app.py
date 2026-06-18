@@ -7,9 +7,8 @@ This module wires together:
 """
 from __future__ import annotations
 
-import concurrent.futures
+import json
 import os
-import tempfile
 import time
 
 import pandas as pd
@@ -56,23 +55,10 @@ except ModuleNotFoundError:
 
 import auth
 import config as app_config
+import pipeline
 from editor import (
-    align_global_citations,
-    build_journal_report,
-    enforce_author_limit,
-    generate_ai_review,
-    markdown_to_docx,
-    build_jats_xml,
-    validate_jats,
     JATS_MIME,
     HOUSE_RULE_GROUPS,
-    generate_cover_letter,
-    generate_redline_docx,
-    generate_report,
-    generate_title_abstract_polish,
-    process_document_async,
-    read_docx,
-    recommend_journals,
     test_embedding,
     test_text_generation,
 )
@@ -85,6 +71,17 @@ if not cookies.ready():
     st.stop()
 
 auth.init_auth()
+
+# Start the background job worker (idempotent — one thread per process).
+pipeline.start_worker_once()
+
+# Best-effort retention cleanup of generated output files, once per session.
+if not st.session_state.get("_outputs_purged"):
+    try:
+        app_config.purge_old_outputs()
+    except Exception as _purge_exc:  # cleanup must never block the app
+        print(f"[startup] output purge skipped: {_purge_exc}")
+    st.session_state["_outputs_purged"] = True
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
@@ -539,6 +536,91 @@ if not st.session_state.user_id:
 
 # --- Main UI ---
 
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _render_result(result: dict, kp: str) -> None:
+    """Render a completed job's reports and downloads. `kp` keys the widgets."""
+    res_col1, res_col2 = st.columns([1.5, 1])
+    with res_col1:
+        st.subheader("📊 Editorial Report")
+        st.markdown(result.get("report_md", ""))
+
+        ai_md = result.get("ai_review_md")
+        if ai_md:
+            st.subheader("🧑‍⚖️ AI Peer Review")
+            with st.expander("Read the AI reviewer's report", expanded=True):
+                st.markdown(ai_md)
+
+        st.subheader("📚 Semantic Journal Recommendations")
+        st.caption(
+            "Ranked by semantic similarity between your manuscript and each "
+            "journal's scope (title + focus topics), computed with vector "
+            "embeddings. A higher match % means a closer fit."
+        )
+        for i, j in enumerate(result.get("recommended", []), 1):
+            score = j.get("score", 0)
+            match_pct = f"{int(score * 100)}% Match" if score > 0 else "Recommended"
+            impact_str = f" | Impact Factor: {j.get('impact_factor')}" if j.get("impact_factor") else ""
+            with st.expander(f"**{i}. {j['name']}** ({match_pct}{impact_str})", expanded=(i == 1)):
+                st.write(f"**Publisher:** {j.get('publisher', 'Unknown')}")
+                topics = j.get("topics", [])
+                st.write(f"**Focus Topics:** {', '.join(topics).title()}")
+                matched = j.get("matched_topics", [])
+                if matched:
+                    st.write(f"**Matched Topics:** {', '.join(t.title() for t in matched)}")
+                reason = j.get("reason", "")
+                if reason:
+                    st.markdown(f"**Why recommended:** {reason}")
+
+        with st.expander("✉️ Auto-Generated Submission Cover Letter", expanded=False):
+            st.info(f"Custom tailored for: **{result.get('best_journal', 'the journal')}**")
+            st.markdown(result.get("cover_letter", ""))
+
+        with st.expander("💡 Title & Abstract Polish", expanded=False):
+            st.markdown(result.get("polished_titles", ""))
+
+    with res_col2:
+        st.subheader("📥 Download Results")
+        st.info("Your redline document features native Word Track Changes.")
+        downloads = [
+            ("redline_path", "Download Redline Manuscript", "manuscript_redline.docx", _DOCX_MIME, "primary"),
+            ("journal_report_path", "📚 Download Journal Recommendations", "top_journal_recommendations.docx", _DOCX_MIME, "secondary"),
+            ("review_report_path", "📑 Download Review Report", "editorial_review_report.docx", _DOCX_MIME, "secondary"),
+            ("ai_review_path", "🧑‍⚖️ Download AI Peer Review", "ai_peer_review.docx", _DOCX_MIME, "secondary"),
+            ("jats_path", "🏷️ Download JATS/XML (production)", "manuscript_jats.xml", JATS_MIME, "secondary"),
+        ]
+        for key, label, fname, mime, btype in downloads:
+            path = result.get(key) or ""
+            if path and os.path.exists(path):
+                with open(path, "rb") as fh:
+                    st.download_button(
+                        label=label, data=fh, file_name=fname, mime=mime,
+                        type=btype, key=f"dl_{key}_{kp}",
+                    )
+        if result.get("jats_ok"):
+            st.caption("✓ Structurally valid JATS")
+        elif result.get("jats_issues"):
+            st.warning("JATS structural issues:\n- " + "\n- ".join(result["jats_issues"]))
+
+
+def _render_job(job: dict) -> None:
+    """Render a job's live status (auto-refreshing) or its final result."""
+    status = job["status"]
+    if status in ("queued", "running"):
+        st.info(f"**{job.get('stage', 'Queued')}** — job #{job['id']} · {job['filename']}")
+        st.progress(float(job.get("progress") or 0.0))
+        st.caption("Processing runs in the background. You can close this tab and come back.")
+        time.sleep(2)
+        st.rerun()
+    elif status == "error":
+        st.error(f"Processing failed for **{job['filename']}**: {job.get('error_message')}")
+    elif status == "done":
+        result = json.loads(job.get("result_json") or "{}")
+        st.success(f"✅ Completed in {result.get('duration', '?')}s — {job['filename']}")
+        _render_result(result, kp=str(job["id"]))
+
+
 st.title("📝 Automated Manuscript Copyediting & Proofreading")
 
 tab_editor, tab_test, tab_history, tab_analytics = st.tabs(
@@ -553,236 +635,70 @@ with tab_editor:
 
     uploaded_file = st.file_uploader("Upload Manuscript (.docx)", type=["docx"])
 
-    if uploaded_file is not None:
-        if st.button("Process Manuscript", type="primary"):
-            provider = llm_settings["provider"]
-            if provider in _API_KEY_PROVIDERS and not llm_settings["api_key"].strip():
-                st.error("Please enter an API key for the selected provider in the sidebar to continue.")
-                st.stop()
-            if provider in _BASE_URL_PROVIDERS and not llm_settings["base_url"].strip():
-                st.error("Please enter a base URL for the selected provider in the sidebar to continue.")
-                st.stop()
-            if not llm_settings["text_model"].strip():
-                st.error("Please enter a text model in the sidebar to continue.")
-                st.stop()
-            if not llm_settings["embed_model"].strip():
-                st.error("Please enter an embedding model in the sidebar to continue.")
-                st.stop()
+    if uploaded_file is not None and st.button("Process Manuscript", type="primary"):
+        provider = llm_settings["provider"]
+        if provider in _API_KEY_PROVIDERS and not llm_settings["api_key"].strip():
+            st.error("Please enter an API key for the selected provider in the sidebar to continue.")
+            st.stop()
+        if provider in _BASE_URL_PROVIDERS and not llm_settings["base_url"].strip():
+            st.error("Please enter a base URL for the selected provider in the sidebar to continue.")
+            st.stop()
+        if not llm_settings["text_model"].strip():
+            st.error("Please enter a text model in the sidebar to continue.")
+            st.stop()
+        if not llm_settings["embed_model"].strip():
+            st.error("Please enter an embedding model in the sidebar to continue.")
+            st.stop()
 
-            status_text = st.empty()
-            progress_bar = st.progress(0)
+        out_dir = app_config.output_dir()
+        ts = int(time.time())
+        input_path = out_dir / f"user_{st.session_state.user_id}_{ts}_input.docx"
+        input_path.write_bytes(uploaded_file.getvalue())
+        options = {
+            "user_id": st.session_state.user_id,
+            "filename": uploaded_file.name,
+            "edit_style": edit_style,
+            "ref_style": ref_style,
+            "lang_type": lang_type,
+            "custom_dict": custom_dict,
+            "use_crossref": use_crossref,
+            "reorder_citations": reorder_citations,
+            "enabled_rule_ids": enabled_rule_ids,
+            "custom_rules": custom_rules,
+            "ai_review_enabled": ai_review_enabled,
+        }
+        job_id = auth.create_job(
+            st.session_state.user_id, uploaded_file.name, str(input_path),
+            json.dumps(options),
+        )
+        st.session_state.active_job_id = job_id
+        st.success(f"Queued for processing (job #{job_id}). It runs in the background — "
+                   "you can close this tab and come back.")
+        st.rerun()
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_in:
-                tmp_in.write(uploaded_file.read())
-                tmp_in_path = tmp_in.name
-
-            start_time = time.time()
-            status_val = "Success"
-            err_msg = ""
-            paras_count = 0
-
-            try:
-                status_text.info("Reading document...")
-                original_paragraphs = read_docx(tmp_in_path)
-                paras_count = len(original_paragraphs)
-
-                if not original_paragraphs:
-                    st.error("Document appears to be empty.")
-                else:
-                    # Kick off the AI peer reviewer NOW so it runs in parallel with copyediting.
-                    review_pool = None
-                    review_future = None
-                    if ai_review_enabled:
-                        review_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                        review_future = review_pool.submit(
-                            generate_ai_review, "\n".join(original_paragraphs), llm_settings,
-                        )
-
-                    status_text.info("Analyzing and Copyediting manuscript... (parallel chunks)")
-
-                    def update_progress(fraction: float) -> None:
-                        progress_bar.progress(min(max(fraction, 0.0), 1.0))
-
-                    edited_paragraphs = process_document_async(
-                        original_paragraphs, llm_settings, edit_style,
-                        ref_style, lang_type, custom_dict, use_crossref, update_progress,
-                        enabled_rule_ids, custom_rules,
-                    )
-
-                    if reorder_citations:
-                        status_text.info("Performing Global Citation Alignment & Bibliography Sorting...")
-                        edited_paragraphs = align_global_citations(
-                            edited_paragraphs, llm_settings, ref_style, enabled_rule_ids,
-                        )
-
-                    # Deterministic safety net: mechanically enforce the 6-author limit
-                    edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
-
-                    status_text.info("Generating Redline tracking document...")
-
-                    out_dir = app_config.output_dir()
-                    perm_out_path = out_dir / f"user_{st.session_state.user_id}_{int(time.time())}_redline.docx"
-                    generate_redline_docx(tmp_in_path, edited_paragraphs, str(perm_out_path))
-
-                    status_text.info("Generating Editorial Report and Publication Tools...")
-                    report = generate_report(
-                        edit_style, ref_style, lang_type, use_crossref, custom_dict,
-                        enabled_rule_ids, custom_rules,
-                    )
-
-                    proxy_abstract = " ".join(original_paragraphs[:15])[:1500]
-                    recommended = recommend_journals(proxy_abstract, llm_settings)
-                    journal_report_md = build_journal_report(recommended)
-
-                    ts = int(time.time())
-                    review_report_path = out_dir / f"user_{st.session_state.user_id}_{ts}_review.docx"
-                    journal_report_path = out_dir / f"user_{st.session_state.user_id}_{ts}_journals.docx"
-                    markdown_to_docx(report, str(review_report_path))
-                    markdown_to_docx(journal_report_md, str(journal_report_path))
-
-                    # JATS/XML production export of the edited manuscript
-                    status_text.info("Generating JATS/XML production file...")
-                    jats_path = out_dir / f"user_{st.session_state.user_id}_{ts}_jats.xml"
-                    best_journal_name = recommended[0]["name"] if recommended else None
-                    jats_xml = build_jats_xml(
-                        edited_paragraphs, journal_title=best_journal_name,
-                    )
-                    jats_path.write_text(jats_xml, encoding="utf-8")
-                    jats_ok, jats_issues = validate_jats(jats_xml)
-
-                    # Collect the parallel AI peer review and persist it as .docx
-                    ai_review_md = ""
-                    ai_review_path = ""
-                    if review_future is not None:
-                        status_text.info("Finalizing AI Peer Review...")
-                        try:
-                            ai_review_md = review_future.result()
-                        except Exception as review_exc:
-                            ai_review_md = f"_AI peer review failed: {review_exc}_"
-                        finally:
-                            review_pool.shutdown(wait=False)
-                        ai_review_path = out_dir / f"user_{st.session_state.user_id}_{ts}_aireview.docx"
-                        markdown_to_docx(ai_review_md, str(ai_review_path))
-
-                    status_text.info("Generating Cover Letter...")
-                    best_journal = recommended[0]["name"] if recommended else "the journal"
-                    cover_letter = generate_cover_letter(proxy_abstract, best_journal, llm_settings)
-
-                    status_text.info("Polishing Abstract & Titles...")
-                    polished_titles = generate_title_abstract_polish(proxy_abstract, llm_settings)
-
-                    status_text.empty()
-                    progress_bar.empty()
-                    st.success("Manuscript processing complete!")
-
-                    duration = time.time() - start_time
-                    auth.log_job(
-                        st.session_state.user_id, uploaded_file.name, paras_count,
-                        edit_style, ref_style, lang_type, duration, status_val,
-                        str(perm_out_path), err_msg,
-                        journal_report_path=str(journal_report_path),
-                        review_report_path=str(review_report_path),
-                        ai_review_path=str(ai_review_path) if ai_review_path else "",
-                        jats_path=str(jats_path),
-                    )
-
-                    res_col1, res_col2 = st.columns([1.5, 1])
-                    with res_col1:
-                        st.subheader("📊 Editorial Report")
-                        st.markdown(report)
-
-                        if ai_review_md:
-                            st.subheader("🧑‍⚖️ AI Peer Review")
-                            with st.expander("Read the AI reviewer's report", expanded=True):
-                                st.markdown(ai_review_md)
-
-                        st.subheader("📚 Semantic Journal Recommendations")
-                        st.caption(
-                            "Ranked by semantic similarity between your manuscript and each "
-                            "journal's scope (title + focus topics), computed with vector "
-                            "embeddings. A higher match % means a closer fit."
-                        )
-                        for i, j in enumerate(recommended, 1):
-                            score = j.get("score", 0)
-                            match_pct = f"{int(score * 100)}% Match" if score > 0 else "Recommended"
-                            impact_str = f" | Impact Factor: {j.get('impact_factor')}" if j.get("impact_factor") else ""
-                            with st.expander(f"**{i}. {j['name']}** ({match_pct}{impact_str})", expanded=(i == 1)):
-                                st.write(f"**Publisher:** {j.get('publisher', 'Unknown')}")
-                                topics = j.get("topics", [])
-                                st.write(f"**Focus Topics:** {', '.join(topics).title()}")
-                                matched = j.get("matched_topics", [])
-                                if matched:
-                                    st.write(f"**Matched Topics:** {', '.join(t.title() for t in matched)}")
-                                reason = j.get("reason", "")
-                                if reason:
-                                    st.markdown(f"**Why recommended:** {reason}")
-
-                        with st.expander("✉️ Auto-Generated Submission Cover Letter", expanded=False):
-                            st.info(f"Custom tailored for: **{best_journal}**")
-                            st.markdown(cover_letter)
-
-                        with st.expander("💡 Title & Abstract Polish", expanded=False):
-                            st.markdown(polished_titles)
-
-                    with res_col2:
-                        st.subheader("📥 Download Results")
-                        st.info("Your redline document features native Word Track Changes.")
-                        with open(perm_out_path, "rb") as f:
-                            st.download_button(
-                                label="Download Redline Manuscript",
-                                data=f,
-                                file_name=f"manuscript_{edit_style[:4]}_redline.docx",
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                type="primary",
-                            )
-                        _docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        with open(journal_report_path, "rb") as jf:
-                            st.download_button(
-                                label="📚 Download Journal Recommendations",
-                                data=jf,
-                                file_name="top_journal_recommendations.docx",
-                                mime=_docx_mime,
-                            )
-                        with open(review_report_path, "rb") as vf:
-                            st.download_button(
-                                label="📑 Download Review Report",
-                                data=vf,
-                                file_name="editorial_review_report.docx",
-                                mime=_docx_mime,
-                            )
-                        if ai_review_path and os.path.exists(ai_review_path):
-                            with open(ai_review_path, "rb") as af:
-                                st.download_button(
-                                    label="🧑‍⚖️ Download AI Peer Review",
-                                    data=af,
-                                    file_name="ai_peer_review.docx",
-                                    mime=_docx_mime,
-                                )
-                        with open(jats_path, "rb") as xf:
-                            st.download_button(
-                                label="🏷️ Download JATS/XML (production)",
-                                data=xf,
-                                file_name="manuscript_jats.xml",
-                                mime=JATS_MIME,
-                                help="Publisher-ready JATS Journal Publishing XML — "
-                                     "feeds typesetting, HTML/PDF, and indexing pipelines.",
-                            )
-                        if jats_ok:
-                            st.caption("✓ Structurally valid JATS")
-                        else:
-                            st.warning("JATS structural issues:\n- " + "\n- ".join(jats_issues))
-            except Exception as e:
-                status_val = "Error"
-                err_msg = str(e)
-                st.error(f"Processing error: {err_msg}")
-                duration = time.time() - start_time
-                auth.log_job(
-                    st.session_state.user_id, uploaded_file.name, paras_count,
-                    edit_style, ref_style, lang_type, duration, status_val, "", err_msg,
-                )
-            finally:
-                if os.path.exists(tmp_in_path):
-                    os.remove(tmp_in_path)
+    st.divider()
+    _jobs = auth.fetch_user_jobs(st.session_state.user_id, limit=15)
+    if not _jobs:
+        st.info(
+            "Upload a manuscript and click **Process**. Jobs run in the background, "
+            "so you can close the tab and return — your results wait for you here."
+        )
+    else:
+        _ids = [j["id"] for j in _jobs]
+        _labels = {
+            j["id"]: f"#{j['id']} · {j['filename']} · {j['status']}"
+            for j in _jobs
+        }
+        _active = st.session_state.get("active_job_id")
+        _default = _ids.index(_active) if _active in _ids else 0
+        _selected = st.selectbox(
+            "Processing jobs", _ids, index=_default,
+            format_func=lambda i: _labels.get(i, f"#{i}"),
+        )
+        st.session_state.active_job_id = _selected
+        _job = auth.get_job(_selected)
+        if _job:
+            _render_job(_job)
 
 
 with tab_test:

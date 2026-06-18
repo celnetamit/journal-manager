@@ -121,6 +121,23 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             custom_rules TEXT DEFAULT ''
         )"""
     )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            filename TEXT,
+            input_path TEXT,
+            options_json TEXT,
+            status TEXT DEFAULT 'queued',
+            progress REAL DEFAULT 0,
+            stage TEXT DEFAULT 'Queued',
+            result_json TEXT,
+            error_message TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            started_at TEXT,
+            finished_at TEXT
+        )"""
+    )
 
 
 def _ensure_schema_pg(cur: Any) -> None:
@@ -176,6 +193,23 @@ def _ensure_schema_pg(cur: Any) -> None:
             user_id INTEGER PRIMARY KEY,
             disabled_groups TEXT DEFAULT '[]',
             custom_rules TEXT DEFAULT ''
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS jobs (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER,
+            filename TEXT,
+            input_path TEXT,
+            options_json TEXT,
+            status TEXT DEFAULT 'queued',
+            progress DOUBLE PRECISION DEFAULT 0,
+            stage TEXT DEFAULT 'Queued',
+            result_json TEXT,
+            error_message TEXT,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            started_at TIMESTAMPTZ,
+            finished_at TIMESTAMPTZ
         )"""
     )
 
@@ -499,6 +533,134 @@ def fetch_user_history(user_id: int) -> List[dict]:
             (user_id,),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+# --- Background job queue ---
+
+def _now_sql() -> str:
+    return "now()" if _is_postgres() else "datetime('now')"
+
+
+def create_job(user_id: int, filename: str, input_path: str, options_json: str) -> int:
+    """Enqueue a processing job. Returns the new job id."""
+    with _connect() as conn:
+        cur = conn.cursor()
+        if _is_postgres():
+            cur.execute(
+                """INSERT INTO jobs (user_id, filename, input_path, options_json, status, stage)
+                   VALUES (%s,%s,%s,%s,'queued','Queued') RETURNING id""",
+                (user_id, filename, input_path, options_json),
+            )
+            job_id = cur.fetchone()["id"]
+        else:
+            cur.execute(
+                """INSERT INTO jobs (user_id, filename, input_path, options_json, status, stage)
+                   VALUES (?,?,?,?,'queued','Queued')""",
+                (user_id, filename, input_path, options_json),
+            )
+            job_id = cur.lastrowid
+        conn.commit()
+        return job_id
+
+
+def claim_next_job() -> Optional[dict]:
+    """Atomically move the oldest queued job to 'running' and return it."""
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        jid = dict(row)["id"]
+        cur.execute(
+            f"""UPDATE jobs SET status='running', stage='Starting', started_at={_now_sql()}
+                WHERE id={'%s' if _is_postgres() else '?'} AND status='queued'""",
+            (jid,),
+        )
+        claimed = cur.rowcount
+        conn.commit()
+        if not claimed:
+            return None
+    return get_job(jid)
+
+
+def update_job_progress(job_id: int, progress: float, stage: str) -> None:
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE jobs SET progress={ph}, stage={ph} WHERE id={ph}",
+                (float(progress), stage, job_id),
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[auth.update_job_progress] error: {e}")
+
+
+def complete_job(job_id: int, result_json: str) -> None:
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE jobs SET status='done', progress=1.0, stage='Complete',
+                result_json={ph}, finished_at={_now_sql()} WHERE id={ph}""",
+            (result_json, job_id),
+        )
+        conn.commit()
+
+
+def fail_job(job_id: int, error_message: str) -> None:
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE jobs SET status='error', stage='Error', error_message={ph},
+                finished_at={_now_sql()} WHERE id={ph}""",
+            (error_message, job_id),
+        )
+        conn.commit()
+
+
+def get_job(job_id: int) -> Optional[dict]:
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM jobs WHERE id={ph}", (job_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def fetch_user_jobs(user_id: int, limit: int = 15) -> List[dict]:
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT id, filename, status, progress, stage, created_at, finished_at
+                FROM jobs WHERE user_id={ph} ORDER BY created_at DESC, id DESC LIMIT {ph}""",
+            (user_id, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def requeue_running_jobs() -> int:
+    """On startup, return jobs left 'running' by a crashed/restarted process back
+    to 'queued' so the worker can pick them up again. Returns count requeued."""
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE jobs SET status='queued', stage='Re-queued', progress=0, started_at=NULL "
+                "WHERE status='running'"
+            )
+            n = cur.rowcount
+            conn.commit()
+            return n or 0
+    except Exception as e:
+        print(f"[auth.requeue_running_jobs] error: {e}")
+        return 0
 
 
 # --- Per-user publisher / house rules ---
