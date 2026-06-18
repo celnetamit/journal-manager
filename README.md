@@ -116,6 +116,9 @@ streamlit run app.py
 | `GEMINI_EMBED_MODEL`    | `text-embedding-004`          | Override the embedding model.                            |
 | `PORT`                  | `8501`                        | Streamlit listen port.                                   |
 | `LLM_CONFIG_LOCKED`     | `0` (`1` in Docker image)     | When `1`, provider/key come from env only; the in-app sidebar is read-only and cannot overwrite the shared config. Recommended for public deployments. |
+| `ALLOWED_LOGIN_DOMAINS` | `celnet.in,conwiz.in,stmjournals.com` | Comma-separated email domains permitted to sign in via Google SSO. |
+| `ADMIN_EMAILS`          | `amit.rai@celnet.in`          | Comma-separated emails granted the **admin** role on login.        |
+| `SEED_ADMIN_USERNAME` / `SEED_ADMIN_PASSWORD` | *(empty)*   | Optional break-glass password admin, upserted on startup when both are set. |
 | `LOGIN_MAX_ATTEMPTS`    | `10`                          | Failed logins per username before a temporary lockout (`0` disables). |
 | `LOGIN_LOCKOUT_MINUTES` | `15`                          | Sliding window over which failed logins are counted.     |
 | `LOGIN_TOKEN_TTL_DAYS`  | `30`                          | Persistent "remember me" token lifetime (`0` = never expires). |
@@ -228,6 +231,48 @@ curl -s http://localhost:8501/_stcore/health
 
 Push to `main`. Coolify auto-detects the new commit (if **Auto Deploy**
 is enabled) and rebuilds. The `/data` volume is preserved.
+
+---
+
+## Google SSO (organization login)
+
+The app supports **Google sign-in** (Streamlit native OIDC) restricted to your
+organization's domains, with an automatic admin.
+
+- **Login mode:** Google is the primary login. Password sign-in is kept only as a
+  break-glass for **admin** accounts (self-registration is disabled when SSO is on).
+- **Allowed domains:** `ALLOWED_LOGIN_DOMAINS` (default `celnet.in`, `conwiz.in`,
+  `stmjournals.com`). Any other domain is rejected after Google auth.
+- **Admin:** `ADMIN_EMAILS` (default `amit.rai@celnet.in`) is granted the admin role
+  on first login.
+
+### Setup
+
+1. **Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID**
+   (type *Web application*). Add an authorized redirect URI:
+   - local: `http://localhost:8501/oauth2callback`
+   - prod: `https://your-app.example.com/oauth2callback`
+2. Provide the OAuth config **either** via a file **or** env vars:
+   - **File:** copy [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example)
+     to `.streamlit/secrets.toml` (gitignored) and fill in the values.
+   - **Env only (no file):** set the env vars below; the app writes
+     `.streamlit/secrets.toml` from them at startup (a hand-written file with an
+     `[auth]` section is never overwritten):
+
+     | Variable | Example |
+     |---|---|
+     | `GOOGLE_CLIENT_ID` | `123.apps.googleusercontent.com` |
+     | `GOOGLE_CLIENT_SECRET` | `GOCSPX-...` |
+     | `OAUTH_REDIRECT_URI` | `https://ce4.celnet.in/oauth2callback` |
+     | `OAUTH_COOKIE_SECRET` | 64-hex (`python -c "import secrets; print(secrets.token_hex(32))"`) |
+     | `OAUTH_SERVER_METADATA_URL` | *(optional; defaults to Google's)* |
+3. `Authlib` is already in `requirements.txt` (required by Streamlit native auth).
+4. (Optional) Set `SEED_ADMIN_USERNAME` / `SEED_ADMIN_PASSWORD` for a password
+   break-glass admin in case Google is unavailable.
+
+> If `[auth]` is **not** present in secrets, the app falls back to the original
+> username/password login + registration (handy for local dev), so you are never
+> locked out during setup.
 
 ---
 

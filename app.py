@@ -64,6 +64,10 @@ from editor import (
 )
 
 
+# Materialize Google OAuth secrets from env (before any st.secrets access) so
+# the whole app can be configured purely via environment variables.
+app_config.materialize_auth_secrets()
+
 st.set_page_config(page_title="Manuscript Editor Pro", layout="wide", page_icon="📝")
 
 cookies = CookieManager(prefix="manuscript-editor-pro/")
@@ -71,6 +75,7 @@ if not cookies.ready():
     st.stop()
 
 auth.init_auth()
+auth.ensure_seed_admin()  # optional break-glass admin from env
 
 # Start the background job worker (idempotent — one thread per process).
 pipeline.start_worker_once()
@@ -117,7 +122,47 @@ def _restore_auth_from_cookie() -> None:
     st.session_state.login_token = token
 
 
+def _google_auth_configured() -> bool:
+    """True when Streamlit native OIDC auth is set up in secrets.toml."""
+    try:
+        return "auth" in st.secrets
+    except Exception:
+        return False
+
+
+def _google_user():
+    if not _google_auth_configured():
+        return None
+    try:
+        if st.user.is_logged_in:
+            return st.user
+    except Exception:
+        return None
+    return None
+
+
+def _restore_google_auth() -> None:
+    """If signed in via Google, enforce the domain allowlist and map the email
+    to a local user record (creating it on first login)."""
+    if st.session_state.user_id:
+        return
+    guser = _google_user()
+    if not guser:
+        return
+    email = getattr(guser, "email", "") or ""
+    if not app_config.email_domain_allowed(email):
+        st.session_state["_sso_denied_email"] = email
+        return
+    uid = auth.get_or_create_oauth_user(email, getattr(guser, "name", "") or "")
+    if uid:
+        st.session_state.user_id = uid
+        st.session_state.username = email
+        st.session_state.role = auth.get_user_role(uid)
+        st.session_state["_sso_denied_email"] = ""
+
+
 _restore_auth_from_cookie()
+_restore_google_auth()
 is_authenticated = bool(st.session_state.user_id)
 
 if not is_authenticated:
@@ -270,7 +315,10 @@ llm_settings = app_config.get_llm_settings()
 
 if is_authenticated:
     with st.sidebar:
-        st.success(f"Logged in as **{st.session_state.username}**")
+        _role = st.session_state.get("role") or auth.get_user_role(st.session_state.user_id)
+        st.session_state.role = _role
+        _badge = " · 🛡️ Admin" if _role == "admin" else ""
+        st.success(f"Logged in as **{st.session_state.username}**{_badge}")
         if st.session_state.get(_SIDEBAR_NOTICE_KEY):
             st.info(st.session_state[_SIDEBAR_NOTICE_KEY])
             del st.session_state[_SIDEBAR_NOTICE_KEY]
@@ -281,6 +329,13 @@ if is_authenticated:
             st.session_state.user_id = None
             st.session_state.username = None
             st.session_state.login_token = ""
+            st.session_state["_sso_denied_email"] = ""
+            # Also end the Google session, if any (triggers its own rerun).
+            if _google_user():
+                try:
+                    st.logout()
+                except Exception:
+                    pass
             st.rerun()
 
         st.header("⚙️ LLM Settings")
@@ -483,10 +538,29 @@ else:
 
 # --- Auth gate ---
 
-if not st.session_state.user_id:
-    st.title("🔐 Manuscript Editor Pro - Login")
-    st.markdown("Welcome to the AI-powered scientific copyediting and journaling platform.")
+def _admin_password_login() -> None:
+    """Break-glass password sign-in, restricted to admin-role accounts."""
+    lu = st.text_input("Admin username", key="alu")
+    lp = st.text_input("Password", type="password", key="alp")
+    if st.button("Admin sign-in", key="admin_login_btn"):
+        if auth.is_locked_out(lu):
+            st.error("Too many failed attempts. Please wait a few minutes and try again.")
+            return
+        uid = auth.login(lu, lp)
+        if uid and auth.is_admin(uid):
+            st.session_state.user_id = uid
+            st.session_state.username = lu
+            st.session_state.role = "admin"
+            st.rerun()
+        elif uid:
+            st.error("Password sign-in is restricted to administrators. Please use Google.")
+        else:
+            st.error("Invalid credentials.")
 
+
+def _legacy_password_auth() -> None:
+    """Full username/password login + registration. Used only when Google SSO
+    is not configured (local dev / pre-SSO) so nobody is locked out."""
     tab_login, tab_reg = st.tabs(["Login", "Register"])
     with tab_login:
         lu = st.text_input("Username", key="lu")
@@ -504,15 +578,13 @@ if not st.session_state.user_id:
         )
         if st.button("Login", type="primary"):
             if auth.is_locked_out(lu):
-                st.error(
-                    "Too many failed login attempts. Please wait a few minutes "
-                    "and try again."
-                )
+                st.error("Too many failed login attempts. Please wait a few minutes and try again.")
             else:
                 uid = auth.login(lu, lp)
                 if uid:
                     st.session_state.user_id = uid
                     st.session_state.username = lu
+                    st.session_state.role = auth.get_user_role(uid)
                     if remember_me:
                         st.session_state.login_token = auth.issue_login_token(uid)
                         cookies["auth_token"] = st.session_state.login_token
@@ -531,6 +603,36 @@ if not st.session_state.user_id:
                 st.success("Account created! Please login in the other tab.")
             else:
                 st.error("Username already taken or invalid.")
+
+
+if not st.session_state.user_id:
+    st.title("🔐 Manuscript Editor Pro — Sign in")
+
+    if _google_auth_configured():
+        _domains = ", ".join(app_config.allowed_login_domains())
+        denied = st.session_state.get("_sso_denied_email")
+        if denied:
+            st.error(
+                f"**{denied}** is not permitted. Please use a {_domains} account."
+            )
+            if st.button("Sign out and try another account"):
+                st.session_state["_sso_denied_email"] = ""
+                try:
+                    st.logout()
+                except Exception:
+                    st.rerun()
+        st.markdown("Sign in with your organization Google account.")
+        if st.button("Sign in with Google", type="primary"):
+            st.login("google")
+        st.caption(f"Allowed domains: {_domains}")
+        with st.expander("Administrator sign-in (break-glass)"):
+            _admin_password_login()
+    else:
+        st.warning(
+            "Google SSO is not configured (no `[auth]` in secrets). "
+            "Falling back to local accounts."
+        )
+        _legacy_password_auth()
     st.stop()
 
 

@@ -64,9 +64,21 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
-            password_hash TEXT
+            password_hash TEXT,
+            email TEXT,
+            role TEXT DEFAULT 'member',
+            auth_provider TEXT DEFAULT 'password'
         )"""
     )
+    for col, decl in (
+        ("email", "TEXT"),
+        ("role", "TEXT DEFAULT 'member'"),
+        ("auth_provider", "TEXT DEFAULT 'password'"),
+    ):
+        try:
+            c.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError:
+            pass
     c.execute(
         """CREATE TABLE IF NOT EXISTS process_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,9 +157,15 @@ def _ensure_schema_pg(cur: Any) -> None:
         """CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            role TEXT DEFAULT 'member',
+            auth_provider TEXT DEFAULT 'password'
         )"""
     )
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT")
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'member'")
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'password'")
     cur.execute(
         """CREATE TABLE IF NOT EXISTS process_logs (
             id SERIAL PRIMARY KEY,
@@ -377,6 +395,96 @@ def _upgrade_hash(cur: Any, user_id: int, pw: str) -> None:
         "UPDATE users SET password_hash=? WHERE id=?"
     )
     cur.execute(upd, (hash_pw(pw), user_id))
+
+
+# --- Google SSO / roles ---
+
+def get_or_create_oauth_user(email: str, name: str = "") -> Optional[int]:
+    """Map a verified SSO email to a users row (creating it on first login).
+    The username is the email; admins (per config) are promoted automatically."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    role = "admin" if app_config.is_admin_email(email) else None
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT id, role FROM users WHERE username={ph}", (email,))
+        row = cur.fetchone()
+        if row:
+            r = dict(row)
+            uid = r["id"]
+            new_role = role or (r.get("role") or "member")
+            cur.execute(
+                f"UPDATE users SET email={ph}, auth_provider='google', role={ph} WHERE id={ph}",
+                (email, new_role, uid),
+            )
+            conn.commit()
+            return uid
+        cur.execute(
+            f"""INSERT INTO users (username, password_hash, email, role, auth_provider)
+                VALUES ({ph},{ph},{ph},{ph},'google')""",
+            (email, "", email, role or "member"),
+        )
+        conn.commit()
+        cur.execute(f"SELECT id FROM users WHERE username={ph}", (email,))
+        return dict(cur.fetchone())["id"]
+
+
+def get_user_role(user_id: Optional[int]) -> str:
+    if user_id is None:
+        return "member"
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT role FROM users WHERE id={ph}", (user_id,))
+            row = cur.fetchone()
+            return (dict(row).get("role") if row else None) or "member"
+    except Exception:
+        return "member"
+
+
+def is_admin(user_id: Optional[int]) -> bool:
+    return get_user_role(user_id) == "admin"
+
+
+def set_user_role(user_id: int, role: str) -> None:
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE users SET role={ph} WHERE id={ph}", (role, user_id))
+        conn.commit()
+
+
+def ensure_seed_admin() -> None:
+    """If SEED_ADMIN_USERNAME / SEED_ADMIN_PASSWORD are set, upsert a break-glass
+    password admin. Safe to call on every startup."""
+    creds = app_config.seed_admin_credentials()
+    if not creds:
+        return
+    username, pw = creds
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT id FROM users WHERE username={ph}", (username,))
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    f"""UPDATE users SET password_hash={ph}, role='admin',
+                        auth_provider='password' WHERE id={ph}""",
+                    (hash_pw(pw), dict(row)["id"]),
+                )
+            else:
+                cur.execute(
+                    f"""INSERT INTO users (username, password_hash, role, auth_provider)
+                        VALUES ({ph},{ph},'admin','password')""",
+                    (username, hash_pw(pw)),
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"[auth.ensure_seed_admin] error: {e}")
 
 
 # --- Persistent login tokens ---

@@ -14,7 +14,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 DEFAULT_LLM_PROVIDER = "gemini"
@@ -317,6 +317,83 @@ def login_max_attempts() -> int:
 def login_lockout_minutes() -> int:
     """Sliding window (minutes) over which failed logins are counted."""
     return _env_int("LOGIN_LOCKOUT_MINUTES", 15, minimum=1)
+
+
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def materialize_auth_secrets() -> bool:
+    """Streamlit native auth reads Google OAuth config only from
+    .streamlit/secrets.toml. To allow pure-env configuration, write that file
+    from env vars (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / OAUTH_REDIRECT_URI /
+    OAUTH_COOKIE_SECRET) at startup. Returns True if a file was written. A
+    manually-provided secrets.toml with an [auth] section is never overwritten."""
+    cid = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    csec = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    redirect = os.environ.get("OAUTH_REDIRECT_URI", "").strip()
+    cookie = os.environ.get("OAUTH_COOKIE_SECRET", "").strip()
+    metadata = os.environ.get(
+        "OAUTH_SERVER_METADATA_URL",
+        "https://accounts.google.com/.well-known/openid-configuration",
+    ).strip()
+    if not (cid and csec and redirect and cookie):
+        return False
+
+    content = (
+        "[auth]\n"
+        f'redirect_uri = "{_toml_escape(redirect)}"\n'
+        f'cookie_secret = "{_toml_escape(cookie)}"\n\n'
+        "[auth.google]\n"
+        f'client_id = "{_toml_escape(cid)}"\n'
+        f'client_secret = "{_toml_escape(csec)}"\n'
+        f'server_metadata_url = "{_toml_escape(metadata)}"\n'
+    )
+    for target in (Path(".streamlit/secrets.toml"),
+                   Path.home() / ".streamlit" / "secrets.toml"):
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and "[auth]" in target.read_text(encoding="utf-8"):
+                return False  # respect a hand-written secrets file
+            target.write_text(content, encoding="utf-8")
+            return True
+        except OSError as e:
+            print(f"[config.materialize_auth_secrets] {target}: {e}")
+            continue
+    return False
+
+
+def allowed_login_domains() -> List[str]:
+    """Email domains permitted to sign in via Google SSO. Comma-separated env
+    override; defaults to the Celnet group domains."""
+    raw = os.environ.get("ALLOWED_LOGIN_DOMAINS", "celnet.in,conwiz.in,stmjournals.com")
+    return [d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()]
+
+
+def admin_emails() -> List[str]:
+    """Emails granted the admin role on login. Comma-separated env override."""
+    raw = os.environ.get("ADMIN_EMAILS", "amit.rai@celnet.in")
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+
+def email_domain_allowed(email: str) -> bool:
+    if not email or "@" not in email:
+        return False
+    domain = email.rsplit("@", 1)[1].strip().lower()
+    allowed = allowed_login_domains()
+    return (not allowed) or domain in allowed
+
+
+def is_admin_email(email: str) -> bool:
+    return bool(email) and email.strip().lower() in admin_emails()
+
+
+def seed_admin_credentials() -> Optional[tuple]:
+    """Optional break-glass admin from env (SEED_ADMIN_USERNAME +
+    SEED_ADMIN_PASSWORD). Returns (username, password) or None."""
+    user = os.environ.get("SEED_ADMIN_USERNAME", "").strip()
+    pw = os.environ.get("SEED_ADMIN_PASSWORD", "")
+    return (user, pw) if user and pw else None
 
 
 def jats_copyright_holder() -> str:
