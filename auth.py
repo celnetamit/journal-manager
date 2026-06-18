@@ -82,7 +82,8 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             user_id INTEGER,
             redline_path TEXT,
             journal_report_path TEXT,
-            review_report_path TEXT
+            review_report_path TEXT,
+            ai_review_path TEXT
         )"""
     )
     # Idempotent column adds (SQLite has no IF NOT EXISTS for columns)
@@ -91,6 +92,7 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         ("redline_path", "TEXT"),
         ("journal_report_path", "TEXT"),
         ("review_report_path", "TEXT"),
+        ("ai_review_path", "TEXT"),
     ):
         try:
             c.execute(f"ALTER TABLE process_logs ADD COLUMN {col} {decl}")
@@ -142,13 +144,15 @@ def _ensure_schema_pg(cur: Any) -> None:
             user_id INTEGER,
             redline_path TEXT,
             journal_report_path TEXT,
-            review_report_path TEXT
+            review_report_path TEXT,
+            ai_review_path TEXT
         )"""
     )
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS user_id INTEGER")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS redline_path TEXT")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS journal_report_path TEXT")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS review_report_path TEXT")
+    cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS ai_review_path TEXT")
     cur.execute(
         """CREATE TABLE IF NOT EXISTS login_tokens (
             token_hash TEXT PRIMARY KEY,
@@ -446,24 +450,25 @@ def log_job(
     error_message: str = "",
     journal_report_path: str = "",
     review_report_path: str = "",
+    ai_review_path: str = "",
 ) -> None:
     sql = (
         """INSERT INTO process_logs
            (user_id, filename, paragraphs_count, edit_style, ref_style,
             language, duration_seconds, status, error_message, redline_path,
-            journal_report_path, review_report_path)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+            journal_report_path, review_report_path, ai_review_path)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
         if _is_postgres() else
         """INSERT INTO process_logs
            (user_id, filename, paragraphs_count, edit_style, ref_style,
             language, duration_seconds, status, error_message, redline_path,
-            journal_report_path, review_report_path)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
+            journal_report_path, review_report_path, ai_review_path)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
     )
     params: Tuple[Any, ...] = (
         user_id, filename, paragraphs_count, edit_style, ref_style,
         language, duration_seconds, status, error_message, redline_path,
-        journal_report_path, review_report_path,
+        journal_report_path, review_report_path, ai_review_path,
     )
     try:
         with _connect() as conn:
@@ -480,11 +485,11 @@ def fetch_user_history(user_id: int) -> List[dict]:
         cur = conn.cursor()
         cur.execute(
             """SELECT timestamp, filename, edit_style, status, redline_path,
-                      journal_report_path, review_report_path
+                      journal_report_path, review_report_path, ai_review_path
                FROM process_logs WHERE user_id=%s ORDER BY timestamp DESC"""
             if _is_postgres() else
             """SELECT timestamp, filename, edit_style, status, redline_path,
-                      journal_report_path, review_report_path
+                      journal_report_path, review_report_path, ai_review_path
                FROM process_logs WHERE user_id=? ORDER BY timestamp DESC""",
             (user_id,),
         )

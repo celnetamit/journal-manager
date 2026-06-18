@@ -9,8 +9,10 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import os
 import random
 import re
+import threading
 import time
 import concurrent.futures
 from typing import Any, Dict, List, Optional
@@ -28,20 +30,71 @@ def _normalize_settings(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return app_config.normalize_llm_settings(settings or app_config.get_llm_settings())
 
 
+# --- Concurrency / rate-limit control ---
+#
+# A single process-wide semaphore caps how many LLM text/embedding calls are
+# in flight at once, shared across the copyedit worker pool AND the parallel
+# AI reviewer. This keeps peak load on the provider fixed no matter how many
+# tasks run concurrently, so adding the reviewer can't push us past the
+# provider's concurrency ceiling. Tunable per provider tier via env.
+def _llm_max_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("LLM_MAX_CONCURRENCY", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+_LLM_SEMAPHORE = threading.Semaphore(_llm_max_concurrency())
+
+# Max retries for a 429 (Too Many Requests) before giving up, and the initial
+# backoff delay in seconds (doubled after each failed attempt).
+_RATE_LIMIT_MAX_RETRIES = int(os.getenv("LLM_RATE_LIMIT_RETRIES", "4"))
+_RATE_LIMIT_BASE_DELAY = float(os.getenv("LLM_RATE_LIMIT_BASE_DELAY", "2.0"))
+
+
 # --- Provider helpers ---
 
 def _client(api_key: Optional[str] = None):
     return app_config.get_gemini_client(api_key=api_key)
 
 
+def _retry_after_seconds(resp: "requests.Response", fallback: float) -> float:
+    """Honor a numeric Retry-After header (seconds) when the server provides one."""
+    header = resp.headers.get("Retry-After")
+    if header:
+        try:
+            return max(0.0, float(header))
+        except (TypeError, ValueError):
+            pass
+    return fallback
+
+
 def _post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None,
                timeout: int = 120) -> Dict[str, Any]:
-    resp = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
-    resp.raise_for_status()
-    data = resp.json()
-    if not isinstance(data, dict):
-        raise RuntimeError("Unexpected non-object JSON response")
-    return data
+    delay = _RATE_LIMIT_BASE_DELAY
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        resp = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
+        # On 429 (Too Many Requests), wait and retry with exponential backoff,
+        # preferring the server's Retry-After hint when present.
+        if resp.status_code == 429:
+            if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+                wait = _retry_after_seconds(resp, delay)
+                print(f"Rate limited (429); retrying in {wait:.1f}s "
+                      f"(attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})")
+                time.sleep(wait)
+                delay *= 2
+                continue
+            raise RuntimeError(
+                f"Rate limited (429): still throttled after "
+                f"{_RATE_LIMIT_MAX_RETRIES} attempts."
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Unexpected non-object JSON response")
+        return data
+    # Unreachable: the loop always returns or raises above.
+    raise RuntimeError("Rate limited (429): exceeded retry attempts.")
 
 
 def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
@@ -50,79 +103,84 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
     cfg = _normalize_settings(settings)
     provider = cfg["provider"]
 
-    if provider == "gemini":
-        from google.genai import types
+    # Cap concurrent provider calls (shared across the copyedit pool and the
+    # parallel AI reviewer) so total in-flight load stays bounded.
+    with _LLM_SEMAPHORE:
+        if provider == "gemini":
+            from google.genai import types
 
-        kwargs = {}
-        if response_mime_type:
-            kwargs["config"] = types.GenerateContentConfig(
-                response_mime_type=response_mime_type,
+            kwargs = {}
+            if response_mime_type:
+                kwargs["config"] = types.GenerateContentConfig(
+                    response_mime_type=response_mime_type,
+                )
+            # Hold the client in a local so it stays alive for the SDK's internal
+            # retry loop; a temporary would be GC'd mid-call and close its httpx
+            # transport ("Cannot send a request, as the client has been closed.").
+            client = _client(cfg["api_key"])
+            resp = client.models.generate_content(
+                model=cfg["text_model"], contents=prompt, **kwargs,
             )
-        # Hold the client in a local so it stays alive for the SDK's internal
-        # retry loop; a temporary would be GC'd mid-call and close its httpx
-        # transport ("Cannot send a request, as the client has been closed.").
-        client = _client(cfg["api_key"])
-        resp = client.models.generate_content(
-            model=cfg["text_model"], contents=prompt, **kwargs,
-        )
-        time.sleep(1)
-        return (resp.text or "").strip()
+            time.sleep(1)
+            return (resp.text or "").strip()
 
-    if provider in {"openrouter", "openai-compatible", "custom"}:
-        base = cfg["base_url"].rstrip("/")
-        if not base:
-            raise RuntimeError("Base URL is required for this provider.")
-        payload: Dict[str, Any] = {
-            "model": cfg["text_model"],
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if response_mime_type == "application/json":
-            payload["response_format"] = {"type": "json_object"}
-        headers = {"Content-Type": "application/json"}
-        if cfg["api_key"]:
-            headers["Authorization"] = f"Bearer {cfg['api_key']}"
-        data = _post_json(f"{base}/chat/completions", payload, headers=headers)
-        try:
-            text = data["choices"][0]["message"]["content"]
-        except Exception as exc:
-            raise RuntimeError(f"Unexpected chat completion response: {data}") from exc
-        time.sleep(0.6)
-        return (text or "").strip()
+        if provider in {"openrouter", "openai-compatible", "custom"}:
+            base = cfg["base_url"].rstrip("/")
+            if not base:
+                raise RuntimeError("Base URL is required for this provider.")
+            payload: Dict[str, Any] = {
+                "model": cfg["text_model"],
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if response_mime_type == "application/json":
+                payload["response_format"] = {"type": "json_object"}
+            headers = {"Content-Type": "application/json"}
+            if cfg["api_key"]:
+                headers["Authorization"] = f"Bearer {cfg['api_key']}"
+            data = _post_json(f"{base}/chat/completions", payload, headers=headers)
+            try:
+                text = data["choices"][0]["message"]["content"]
+            except Exception as exc:
+                raise RuntimeError(f"Unexpected chat completion response: {data}") from exc
+            time.sleep(0.6)
+            return (text or "").strip()
 
-    raise RuntimeError(f"Unsupported LLM provider: {provider}")
+        raise RuntimeError(f"Unsupported LLM provider: {provider}")
 
 
 def _embed(text: str, settings: Optional[Dict[str, Any]] = None) -> List[float]:
     cfg = _normalize_settings(settings)
     provider = cfg["provider"]
 
-    if provider == "gemini":
-        client = _client(cfg["api_key"])
-        resp = client.models.embed_content(
-            model=cfg["embed_model"], contents=text,
-        )
-        time.sleep(0.3)
-        if not resp.embeddings:
-            raise RuntimeError("Empty embedding response")
-        return list(resp.embeddings[0].values)
+    # Share the same concurrency cap as text generation.
+    with _LLM_SEMAPHORE:
+        if provider == "gemini":
+            client = _client(cfg["api_key"])
+            resp = client.models.embed_content(
+                model=cfg["embed_model"], contents=text,
+            )
+            time.sleep(0.3)
+            if not resp.embeddings:
+                raise RuntimeError("Empty embedding response")
+            return list(resp.embeddings[0].values)
 
-    if provider in {"openrouter", "openai-compatible", "custom"}:
-        base = cfg["base_url"].rstrip("/")
-        if not base:
-            raise RuntimeError("Base URL is required for this provider.")
-        payload = {"model": cfg["embed_model"], "input": text}
-        headers = {"Content-Type": "application/json"}
-        if cfg["api_key"]:
-            headers["Authorization"] = f"Bearer {cfg['api_key']}"
-        data = _post_json(f"{base}/embeddings", payload, headers=headers, timeout=180)
-        try:
-            vector = data["data"][0]["embedding"]
-        except Exception as exc:
-            raise RuntimeError(f"Unexpected embeddings response: {data}") from exc
-        time.sleep(0.3)
-        return list(vector)
+        if provider in {"openrouter", "openai-compatible", "custom"}:
+            base = cfg["base_url"].rstrip("/")
+            if not base:
+                raise RuntimeError("Base URL is required for this provider.")
+            payload = {"model": cfg["embed_model"], "input": text}
+            headers = {"Content-Type": "application/json"}
+            if cfg["api_key"]:
+                headers["Authorization"] = f"Bearer {cfg['api_key']}"
+            data = _post_json(f"{base}/embeddings", payload, headers=headers, timeout=180)
+            try:
+                vector = data["data"][0]["embedding"]
+            except Exception as exc:
+                raise RuntimeError(f"Unexpected embeddings response: {data}") from exc
+            time.sleep(0.3)
+            return list(vector)
 
-    raise RuntimeError(f"Unsupported LLM provider: {provider}")
+        raise RuntimeError(f"Unsupported LLM provider: {provider}")
 
 
 def test_text_generation(prompt: str, settings: Optional[Dict[str, Any]] = None) -> str:
@@ -687,6 +745,45 @@ def generate_title_abstract_polish(abstract: str, settings: Dict[str, Any]) -> s
     except Exception as e:
         print(f"Title/abstract polish error: {e}")
         return "Error generating polish."
+
+
+# --- AI peer reviewer ---
+
+# Cap the manuscript text sent to the reviewer to keep within model context.
+_AI_REVIEW_MAX_CHARS = 16000
+
+
+def generate_ai_review(manuscript_text: str, settings: Dict[str, Any]) -> str:
+    """Act as an expert academic peer reviewer and produce a structured review
+    report in Markdown (summary, significance, strengths, weaknesses,
+    methodology, minor issues, and a clear recommendation)."""
+    excerpt = (manuscript_text or "").strip()[:_AI_REVIEW_MAX_CHARS]
+    if not excerpt:
+        return "_No manuscript text was available to review._"
+    prompt = (
+        "You are an expert academic peer reviewer for a scholarly journal. "
+        "Review the manuscript below as a referee would and write a rigorous, "
+        "constructive review report. Be specific and cite concrete issues from "
+        "the text. Use this exact Markdown structure with these headings:\n\n"
+        "# AI Peer Review Report\n"
+        "## Summary\n(2-4 sentences summarizing the manuscript's aims and findings.)\n"
+        "## Significance & Originality\n(Is the contribution novel and important to its field?)\n"
+        "## Strengths\n(Bulleted list.)\n"
+        "## Major Concerns\n(Bulleted list of substantive issues: methodology, evidence, "
+        "logic, unsupported claims, missing controls, statistics.)\n"
+        "## Minor Issues\n(Bulleted list: clarity, figures, typos, references.)\n"
+        "## Recommendation\n(State exactly ONE of: Accept, Minor Revision, Major Revision, "
+        "Reject — then one sentence justifying it.)\n"
+        "## Confidence\n(High / Medium / Low — your confidence in this assessment.)\n\n"
+        "If the text is only a partial manuscript, review what is provided and say so. "
+        "Do not invent content that is not present.\n\n"
+        f"MANUSCRIPT:\n{excerpt}"
+    )
+    try:
+        return _generate_text(prompt, settings=settings)
+    except Exception as e:
+        print(f"AI review error: {e}")
+        return "Error generating AI peer review."
 
 
 # --- Orchestration ---

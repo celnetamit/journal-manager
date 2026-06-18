@@ -7,6 +7,7 @@ This module wires together:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import tempfile
 import time
@@ -59,6 +60,7 @@ from editor import (
     align_global_citations,
     build_journal_report,
     enforce_author_limit,
+    generate_ai_review,
     markdown_to_docx,
     HOUSE_RULE_GROUPS,
     generate_cover_letter,
@@ -428,6 +430,12 @@ if is_authenticated:
             "Live Crossref DOI Validation", value=True,
             help="Scans bibliography for verified DOIs.",
         )
+        ai_review_enabled = st.checkbox(
+            "AI Peer Reviewer", value=True,
+            help="Runs an expert AI referee in parallel and produces a downloadable "
+                 "peer-review report (strengths, concerns, and an accept/revise/reject "
+                 "recommendation).",
+        )
         custom_dict = st.text_area(
             "Custom Dictionary / Acronyms",
             placeholder="e.g. mTOR, mRNA, do not change capitalization of ABC.",
@@ -578,6 +586,15 @@ with tab_editor:
                 if not original_paragraphs:
                     st.error("Document appears to be empty.")
                 else:
+                    # Kick off the AI peer reviewer NOW so it runs in parallel with copyediting.
+                    review_pool = None
+                    review_future = None
+                    if ai_review_enabled:
+                        review_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                        review_future = review_pool.submit(
+                            generate_ai_review, "\n".join(original_paragraphs), llm_settings,
+                        )
+
                     status_text.info("Analyzing and Copyediting manuscript... (parallel chunks)")
 
                     def update_progress(fraction: float) -> None:
@@ -620,6 +637,20 @@ with tab_editor:
                     markdown_to_docx(report, str(review_report_path))
                     markdown_to_docx(journal_report_md, str(journal_report_path))
 
+                    # Collect the parallel AI peer review and persist it as .docx
+                    ai_review_md = ""
+                    ai_review_path = ""
+                    if review_future is not None:
+                        status_text.info("Finalizing AI Peer Review...")
+                        try:
+                            ai_review_md = review_future.result()
+                        except Exception as review_exc:
+                            ai_review_md = f"_AI peer review failed: {review_exc}_"
+                        finally:
+                            review_pool.shutdown(wait=False)
+                        ai_review_path = out_dir / f"user_{st.session_state.user_id}_{ts}_aireview.docx"
+                        markdown_to_docx(ai_review_md, str(ai_review_path))
+
                     status_text.info("Generating Cover Letter...")
                     best_journal = recommended[0]["name"] if recommended else "the journal"
                     cover_letter = generate_cover_letter(proxy_abstract, best_journal, llm_settings)
@@ -638,12 +669,18 @@ with tab_editor:
                         str(perm_out_path), err_msg,
                         journal_report_path=str(journal_report_path),
                         review_report_path=str(review_report_path),
+                        ai_review_path=str(ai_review_path) if ai_review_path else "",
                     )
 
                     res_col1, res_col2 = st.columns([1.5, 1])
                     with res_col1:
                         st.subheader("📊 Editorial Report")
                         st.markdown(report)
+
+                        if ai_review_md:
+                            st.subheader("🧑‍⚖️ AI Peer Review")
+                            with st.expander("Read the AI reviewer's report", expanded=True):
+                                st.markdown(ai_review_md)
 
                         st.subheader("📚 Semantic Journal Recommendations")
                         for i, j in enumerate(recommended, 1):
@@ -688,6 +725,14 @@ with tab_editor:
                                 file_name="editorial_review_report.docx",
                                 mime=_docx_mime,
                             )
+                        if ai_review_path and os.path.exists(ai_review_path):
+                            with open(ai_review_path, "rb") as af:
+                                st.download_button(
+                                    label="🧑‍⚖️ Download AI Peer Review",
+                                    data=af,
+                                    file_name="ai_peer_review.docx",
+                                    mime=_docx_mime,
+                                )
             except Exception as e:
                 status_val = "Error"
                 err_msg = str(e)
@@ -856,7 +901,7 @@ with tab_history:
                 cols[2].write(row["status"])
 
                 if row["status"] == "Success":
-                    dl_cols = st.columns(3)
+                    dl_cols = st.columns(4)
                     rp = row.get("redline_path") or ""
                     if rp and os.path.exists(rp):
                         with open(rp, "rb") as rf:
@@ -883,6 +928,15 @@ with tab_history:
                                 file_name=f"editorial_review_report_{idx}.docx",
                                 mime=_docx_mime,
                                 key=f"dl_review_{idx}",
+                            )
+                    ap = row.get("ai_review_path") or ""
+                    if ap and os.path.exists(ap):
+                        with open(ap, "rb") as af:
+                            dl_cols[3].download_button(
+                                "🧑‍⚖️ AI Review", data=af,
+                                file_name=f"ai_peer_review_{idx}.docx",
+                                mime=_docx_mime,
+                                key=f"dl_aireview_{idx}",
                             )
                 st.divider()
 
