@@ -683,6 +683,11 @@ with tab_editor:
                                 st.markdown(ai_review_md)
 
                         st.subheader("📚 Semantic Journal Recommendations")
+                        st.caption(
+                            "Ranked by semantic similarity between your manuscript and each "
+                            "journal's scope (title + focus topics), computed with vector "
+                            "embeddings. A higher match % means a closer fit."
+                        )
                         for i, j in enumerate(recommended, 1):
                             score = j.get("score", 0)
                             match_pct = f"{int(score * 100)}% Match" if score > 0 else "Recommended"
@@ -691,6 +696,12 @@ with tab_editor:
                                 st.write(f"**Publisher:** {j.get('publisher', 'Unknown')}")
                                 topics = j.get("topics", [])
                                 st.write(f"**Focus Topics:** {', '.join(topics).title()}")
+                                matched = j.get("matched_topics", [])
+                                if matched:
+                                    st.write(f"**Matched Topics:** {', '.join(t.title() for t in matched)}")
+                                reason = j.get("reason", "")
+                                if reason:
+                                    st.markdown(f"**Why recommended:** {reason}")
 
                         with st.expander("✉️ Auto-Generated Submission Cover Letter", expanded=False):
                             st.info(f"Custom tailored for: **{best_journal}**")

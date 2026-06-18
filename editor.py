@@ -597,6 +597,70 @@ def _build_journal_embeddings(settings: Dict[str, Any]) -> str:
     return str(out_path)
 
 
+def _matched_topics(abstract: str, topics: List[str]) -> List[str]:
+    """Journal focus topics whose keywords actually appear in the manuscript
+    text — concrete, explainable evidence behind a recommendation."""
+    text = (abstract or "").lower()
+    matched: List[str] = []
+    for t in topics:
+        phrase = (t or "").lower().strip()
+        if not phrase:
+            continue
+        words = re.findall(r"[a-z]{4,}", phrase)
+        if phrase in text or any(w in text for w in words):
+            matched.append(t)
+    return matched
+
+
+def _score_tier(score: float) -> str:
+    if score >= 0.75:
+        return "a strong topical match"
+    if score >= 0.5:
+        return "a good topical match"
+    if score > 0:
+        return "a moderate topical match"
+    return "a fallback candidate"
+
+
+def _explain_journal_match(abstract: str, journal: Dict[str, Any]) -> str:
+    """Build a grounded, human-readable reason for why this journal was ranked,
+    reflecting the actual logic (semantic similarity + topic overlap). Also
+    records `matched_topics` on the journal dict."""
+    score = journal.get("score", 0) or 0
+    topics = journal.get("topics", [])
+    matched = _matched_topics(abstract, topics)
+    journal["matched_topics"] = matched
+
+    parts: List[str] = []
+    if score > 0:
+        parts.append(
+            f"Semantic similarity of {int(score * 100)}% between your manuscript and "
+            f"this journal's scope (its title and focus topics) — {_score_tier(score)}."
+        )
+    else:
+        parts.append(
+            "Selected as a fallback candidate: semantic scoring was unavailable, so a "
+            "provisional ranking was used."
+        )
+    if matched:
+        parts.append(
+            "Direct overlap with the journal's focus areas: "
+            + ", ".join(t.title() for t in matched) + "."
+        )
+    elif topics:
+        parts.append(
+            "No exact keyword overlap, but the journal's focus areas ("
+            + ", ".join(t.title() for t in topics)
+            + ") are semantically close to your manuscript's content."
+        )
+    if journal.get("impact_factor"):
+        parts.append(
+            f"Impact factor {journal['impact_factor']} is provided as a secondary "
+            "consideration (it does not affect ranking)."
+        )
+    return " ".join(parts)
+
+
 def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> List[dict]:
     try:
         vec = _embed(abstract, settings=settings)
@@ -623,7 +687,10 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
         else:
             j["score"] = random.random()
 
-    return sorted(journals, key=lambda x: x["score"], reverse=True)[:k]
+    top = sorted(journals, key=lambda x: x["score"], reverse=True)[:k]
+    for j in top:
+        j["reason"] = _explain_journal_match(abstract, j)
+    return top
 
 
 # --- Report / cover letter / polish ---
@@ -664,6 +731,12 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
 def build_journal_report(recommended: List[dict]) -> str:
     """Render the top journal recommendations as a downloadable Markdown report."""
     lines = ["# 📚 Top Journal Recommendations", ""]
+    lines.append(
+        "_How these are chosen: each journal is ranked by the semantic similarity "
+        "between your manuscript and the journal's scope (its title and focus topics), "
+        "computed with vector embeddings. A higher match percentage means a closer fit._"
+    )
+    lines.append("")
     if not recommended:
         lines.append("_No journal recommendations were generated for this manuscript._")
         return "\n".join(lines) + "\n"
@@ -678,6 +751,12 @@ def build_journal_report(recommended: List[dict]) -> str:
         topics = j.get("topics", [])
         if topics:
             lines.append(f"- **Focus Topics:** {', '.join(topics).title()}")
+        matched = j.get("matched_topics", [])
+        if matched:
+            lines.append(f"- **Matched Topics:** {', '.join(t.title() for t in matched)}")
+        reason = j.get("reason", "")
+        if reason:
+            lines.append(f"- **Why recommended:** {reason}")
         lines.append("")
     return "\n".join(lines) + "\n"
 
