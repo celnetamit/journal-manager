@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -68,6 +69,34 @@ def output_dir() -> Path:
     p = Path(os.environ.get("OUTPUT_DIR", str(data_dir() / "outbound"))).resolve()
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def output_retention_days() -> int:
+    """Days to keep generated output files (redline/report/JATS) before purging.
+    0 disables cleanup (keep forever)."""
+    return _env_int("OUTPUT_RETENTION_DAYS", 30, minimum=0)
+
+
+def purge_old_outputs(ttl_days: Optional[int] = None) -> int:
+    """Delete files in the output directory older than the retention window.
+    Returns the number of files removed. Never raises (best-effort cleanup)."""
+    if ttl_days is None:
+        ttl_days = output_retention_days()
+    if ttl_days <= 0:
+        return 0
+    cutoff = time.time() - ttl_days * 86400
+    removed = 0
+    try:
+        for entry in output_dir().iterdir():
+            try:
+                if entry.is_file() and entry.stat().st_mtime < cutoff:
+                    entry.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    except OSError as e:
+        print(f"[config.purge_old_outputs] error: {e}")
+    return removed
 
 
 def config_path() -> Path:
@@ -288,6 +317,21 @@ def login_max_attempts() -> int:
 def login_lockout_minutes() -> int:
     """Sliding window (minutes) over which failed logins are counted."""
     return _env_int("LOGIN_LOCKOUT_MINUTES", 15, minimum=1)
+
+
+def jats_copyright_holder() -> str:
+    """Publisher/copyright holder stamped into JATS <permissions>. Optional."""
+    return os.environ.get("JATS_COPYRIGHT_HOLDER", "").strip()
+
+
+def jats_license_url() -> str:
+    """License URL for JATS <license xlink:href=...>, e.g. a CC-BY link. Optional."""
+    return os.environ.get("JATS_LICENSE_URL", "").strip()
+
+
+def jats_license_text() -> str:
+    """Human-readable license statement for JATS <license-p>. Optional."""
+    return os.environ.get("JATS_LICENSE_TEXT", "").strip()
 
 
 # --- Gemini client (lazy import to keep import time low) ---

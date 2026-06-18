@@ -312,3 +312,60 @@ def test_validate_jats_rejects_malformed():
     ok, issues = validate_jats("<article><front></article>")
     assert not ok
     assert any("well-formed" in i.lower() for i in issues)
+
+
+# --- article metadata + structured authors ---
+
+def test_article_metadata_emitted():
+    meta = {
+        "article_doi": "10.1234/test.2026.1",
+        "pub_date": "2026-06-18",
+        "copyright_holder": "Acme Press",
+        "copyright_year": 2026,
+        "license_url": "https://creativecommons.org/licenses/by/4.0/",
+        "license_text": "CC BY 4.0",
+        "funding": [{"funder": "NSF", "award_id": "ABC-123"}],
+    }
+    xml = build_jats_xml(SAMPLE, metadata=meta)
+    root = _parse(xml)
+    am = root.find("./front/article-meta")
+    assert am.find("article-id[@pub-id-type='doi']").text == "10.1234/test.2026.1"
+    pd = am.find("pub-date")
+    assert pd.find("year").text == "2026" and pd.find("month").text == "06"
+    perm = am.find("permissions")
+    assert perm.find("copyright-holder").text == "Acme Press"
+    assert perm.find("copyright-year").text == "2026"
+    assert perm.find("license/license-p").text == "CC BY 4.0"
+    fg = am.find("funding-group/award-group")
+    assert fg.find("funding-source").text == "NSF"
+    assert fg.find("award-id").text == "ABC-123"
+    # license href is emitted with the xlink namespace declared
+    assert 'xlink:href="https://creativecommons.org/licenses/by/4.0/"' in xml
+
+
+def test_structured_authors_with_orcid_and_corresponding():
+    authors = [
+        {"surname": "Smith", "given_names": "Jane A.",
+         "orcid": "0000-0002-1825-0097", "corresponding": True,
+         "email": "jane@example.edu"},
+        {"name": "Wei Chen"},
+    ]
+    root = _parse(build_jats_xml(["Title Only Paper", "Introduction", "Body."],
+                                 authors=authors))
+    contribs = root.findall("./front/article-meta/contrib-group/contrib")
+    assert len(contribs) == 2
+    assert contribs[0].get("corresp") == "yes"
+    assert contribs[0].find("contrib-id[@contrib-id-type='orcid']").text.endswith("0000-0002-1825-0097")
+    assert contribs[0].find("./name/surname").text == "Smith"
+    assert contribs[0].find("email").text == "jane@example.edu"
+    # full-name fallback: surname = last word
+    assert contribs[1].find("./name/surname").text == "Chen"
+
+
+def test_metadata_is_optional():
+    # building without metadata still works and stays valid
+    ok, issues = validate_jats(build_jats_xml(SAMPLE))
+    assert ok and issues == []
+    root = _parse(build_jats_xml(SAMPLE))
+    assert root.find("./front/article-meta/permissions") is None
+    assert root.find("./front/article-meta/pub-date") is None

@@ -816,6 +816,7 @@ JATS_DOCTYPE = (
     '"JATS-journalpublishing1-3.dtd">'
 )
 JATS_MIME = "application/xml"
+_XLINK_NS = "http://www.w3.org/1999/xlink"
 
 # Figure / table caption patterns, e.g. "Figure 1. ...", "Fig. 2: ...", "Table 3 - ...".
 _FIG_RE = re.compile(r"^(Fig(?:ure)?\.?\s*([0-9]+|[IVXLC]+))\s*[.:)\-]\s*(.+)$", re.I)
@@ -1204,9 +1205,102 @@ def _emit_sections(body_el, sections, valid_refs) -> None:
         stack.append((depth, sec))
 
 
+def _add_structured_contrib(contrib_group, author: Dict[str, Any]) -> None:
+    """Build a <contrib> from a structured author dict supporting
+    surname/given_names (or full name), ORCID, corresponding flag, and email."""
+    attrs = {"contrib-type": "author"}
+    if author.get("corresponding"):
+        attrs["corresp"] = "yes"
+    contrib = ET.SubElement(contrib_group, "contrib", attrs)
+    orcid = author.get("orcid")
+    if orcid:
+        if not orcid.startswith("http"):
+            orcid = "https://orcid.org/" + orcid
+        ET.SubElement(contrib, "contrib-id", {"contrib-id-type": "orcid"}).text = orcid
+    name = ET.SubElement(contrib, "name")
+    if author.get("surname") or author.get("given_names"):
+        ET.SubElement(name, "surname").text = author.get("surname", "")
+        if author.get("given_names"):
+            ET.SubElement(name, "given-names").text = author["given_names"]
+    else:
+        words = (author.get("name", "") or "").split()
+        if len(words) >= 2:
+            ET.SubElement(name, "surname").text = words[-1]
+            ET.SubElement(name, "given-names").text = " ".join(words[:-1])
+        else:
+            ET.SubElement(name, "surname").text = " ".join(words)
+    if author.get("email"):
+        ET.SubElement(contrib, "email").text = author["email"]
+
+
+def _add_pub_date(article_meta, metadata: Dict[str, Any]) -> None:
+    date = metadata.get("pub_date")
+    year = month = day = None
+    if date:
+        parts = str(date).split("-")
+        year = parts[0] if len(parts) >= 1 else None
+        month = parts[1] if len(parts) >= 2 else None
+        day = parts[2] if len(parts) >= 3 else None
+    elif metadata.get("pub_year"):
+        year = str(metadata["pub_year"])
+    if not year:
+        return
+    pd = ET.SubElement(article_meta, "pub-date",
+                       {"publication-format": "electronic", "date-type": "pub"})
+    if day:
+        ET.SubElement(pd, "day").text = day
+    if month:
+        ET.SubElement(pd, "month").text = month
+    ET.SubElement(pd, "year").text = year
+
+
+def _add_permissions(article_meta, metadata: Dict[str, Any], article) -> None:
+    holder = metadata.get("copyright_holder")
+    cyear = metadata.get("copyright_year")
+    statement = metadata.get("copyright_statement")
+    lurl = metadata.get("license_url")
+    ltext = metadata.get("license_text")
+    if not any([holder, cyear, statement, lurl, ltext]):
+        return
+    perm = ET.SubElement(article_meta, "permissions")
+    if statement or holder or cyear:
+        if not statement:
+            statement = ("© " + (f"{cyear} " if cyear else "") + (holder or "")).strip()
+        ET.SubElement(perm, "copyright-statement").text = statement
+    if cyear:
+        ET.SubElement(perm, "copyright-year").text = str(cyear)
+    if holder:
+        ET.SubElement(perm, "copyright-holder").text = holder
+    if lurl or ltext:
+        lic_attrs = {}
+        if lurl:
+            lic_attrs["xlink:href"] = lurl
+            article.set("xmlns:xlink", _XLINK_NS)
+        lic = ET.SubElement(perm, "license", lic_attrs)
+        ET.SubElement(lic, "license-p").text = ltext or lurl
+
+
+def _add_funding(article_meta, metadata: Dict[str, Any]) -> None:
+    funding = metadata.get("funding")
+    if not funding:
+        return
+    fg = ET.SubElement(article_meta, "funding-group")
+    for item in funding:
+        ag = ET.SubElement(fg, "award-group")
+        if isinstance(item, dict):
+            if item.get("funder"):
+                ET.SubElement(ag, "funding-source").text = item["funder"]
+            if item.get("award_id"):
+                ET.SubElement(ag, "award-id").text = item["award_id"]
+        elif item:
+            ET.SubElement(ag, "funding-source").text = str(item)
+
+
 def build_jats_xml(
     paragraphs: List[str], title: Optional[str] = None,
     journal_title: Optional[str] = None,
+    authors: Optional[List[Dict[str, Any]]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Convert an edited manuscript (list of paragraph strings) into JATS
     Journal Publishing XML. Structure is inferred heuristically:
@@ -1218,7 +1312,11 @@ def build_jats_xml(
     - paragraphs after a 'References' heading become a structured reference
       list (<element-citation> for journal articles, else <mixed-citation>);
     - in-text [n] citations are linked to their <ref> via <xref>.
+    Optional `authors` (list of structured dicts: surname/given_names or name,
+    orcid, corresponding, email) override byline parsing. Optional `metadata`
+    adds article DOI, pub-date, copyright/license permissions, and funding.
     ElementTree escapes all special characters automatically."""
+    metadata = metadata or {}
     nonblank = [p.strip() for p in (paragraphs or []) if p and p.strip()]
 
     article_title = title
@@ -1281,16 +1379,31 @@ def build_jats_xml(
         jt_group = ET.SubElement(journal_meta, "journal-title-group")
         ET.SubElement(jt_group, "journal-title").text = journal_title
     article_meta = ET.SubElement(front, "article-meta")
+    # JATS article-meta child order: article-id, title-group, contrib-group, aff,
+    # pub-date, permissions, abstract, kwd-group, funding-group.
+    if metadata.get("article_doi"):
+        ET.SubElement(article_meta, "article-id",
+                      {"pub-id-type": "doi"}).text = metadata["article_doi"]
+
     title_group = ET.SubElement(article_meta, "title-group")
     ET.SubElement(title_group, "article-title").text = article_title or "Untitled Manuscript"
 
-    if authors_line:
+    if authors:
+        contrib_group = ET.SubElement(article_meta, "contrib-group")
+        for a in authors:
+            _add_structured_contrib(contrib_group, a)
+        if affiliation_line:
+            ET.SubElement(article_meta, "aff", {"id": "aff1"}).text = affiliation_line
+    elif authors_line:
         contrib_group = ET.SubElement(article_meta, "contrib-group")
         for tok in _author_tokens(authors_line):
             contrib = ET.SubElement(contrib_group, "contrib", {"contrib-type": "author"})
             _contrib_name_elem(contrib, tok)
         if affiliation_line:
             ET.SubElement(article_meta, "aff", {"id": "aff1"}).text = affiliation_line
+
+    _add_pub_date(article_meta, metadata)
+    _add_permissions(article_meta, metadata, article)
 
     # Lift an Abstract section into the front matter.
     abstract_section = next(
@@ -1307,6 +1420,8 @@ def build_jats_xml(
         kwd_group = ET.SubElement(article_meta, "kwd-group")
         for kw in keywords:
             ET.SubElement(kwd_group, "kwd").text = kw
+
+    _add_funding(article_meta, metadata)
 
     body = ET.SubElement(article, "body")
     _emit_sections(body, sections, valid_refs)

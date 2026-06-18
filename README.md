@@ -12,12 +12,28 @@ polished titles — driven by your selected LLM provider.
 - **Word-native redline output** — true `w:ins` / `w:del` track changes,
   not comments.
 - **Style-aware copyediting** — CMOS, APA, MLA, IEEE.
+- **Publisher / house rules** — built-in reference, heading, and in-text
+  citation rules that are shown in the UI, toggleable per user, and saved
+  across sessions; plus your own free-form rules. Includes a deterministic
+  6-author-limit enforcement pass.
 - **Live Crossref DOI validation** for bibliography entries.
 - **Auto-numbered citations** + bibliography re-sort.
-- **Semantic journal recommendations** via the selected embedding model.
+- **Semantic journal recommendations** (with a per-journal "why recommended"
+  rationale) via the selected embedding model.
+- **AI peer reviewer** — an expert referee report (strengths, concerns, and
+  an accept/revise/reject recommendation) generated in parallel with the
+  copyedit pass.
+- **JATS/XML production export** — publisher-ready JATS Journal Publishing XML
+  with structured authors, references, figures/tables, in-text citation
+  linking, optional article metadata (DOI, pub-date, license, funding), and a
+  structural validity check.
 - **Cover letter generation** for the top recommended journal.
 - **Title & abstract polish** suggestions.
-- **Per-user history** with re-downloadable redline files.
+- **Downloadable reports** — editorial review, AI peer review, and journal
+  recommendations as `.docx`, plus the JATS `.xml`.
+- **Per-user history** with re-downloadable redline, reports, and JATS files.
+- **Resilient LLM calls** — a shared concurrency cap and 429 exponential
+  backoff across the copyedit pool and the AI reviewer.
 - **Multi-user authentication** with bcrypt password hashing.
 
 ---
@@ -86,7 +102,14 @@ streamlit run app.py
 | `LLM_BASE_URL`          | *(empty)* | Base URL for OpenAI-compatible/custom endpoints. OpenRouter keeps its own default endpoint. |
 | `DATABASE_URL`          | `sqlite:///./data/analytics.db` | Set to your Postgres URL in production.                |
 | `DATA_DIR`              | `./data`                      | Where analytics DB and generated embeddings live.       |
-| `OUTPUT_DIR`            | `$DATA_DIR/outbound`          | Where generated redline `.docx` files are written.       |
+| `OUTPUT_DIR`            | `$DATA_DIR/outbound`          | Where generated redline/report/JATS files are written.   |
+| `OUTPUT_RETENTION_DAYS` | `30`                          | Age (days) after which generated output files are purged on startup. `0` keeps them forever. |
+| `LLM_MAX_CONCURRENCY`   | `3`                           | Max concurrent LLM calls shared across the copyedit pool and the AI reviewer. |
+| `LLM_RATE_LIMIT_RETRIES`| `4`                           | Retries on a `429 Too Many Requests` before giving up.   |
+| `LLM_RATE_LIMIT_BASE_DELAY` | `2.0`                     | Initial backoff (seconds) on a 429; doubles each retry, honoring `Retry-After`. |
+| `JATS_COPYRIGHT_HOLDER` | *(empty)*                     | Publisher/copyright holder stamped into JATS `<permissions>`. |
+| `JATS_LICENSE_URL`      | *(empty)*                     | License URL for JATS `<license>`, e.g. a CC-BY link.     |
+| `JATS_LICENSE_TEXT`     | *(empty)*                     | Human-readable license statement for JATS `<license-p>`. |
 | `JOURNALS_FILE`         | `./journals.json`             | Source journals catalogue.                               |
 | `JOURNALS_EMBEDDED_FILE`| `./journals_embedded.json`    | Pre-computed embeddings (build with `embed_journals.py`).|
 | `GEMINI_TEXT_MODEL`     | `gemini-2.5-pro`              | Override the chat model.                                 |
