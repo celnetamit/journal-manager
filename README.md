@@ -127,14 +127,84 @@ streamlit run app.py
 
 ## Coolify deployment
 
-Full step-by-step instructions — Postgres, env vars, persistent volume,
-HTTPS, hardening, and troubleshooting — live in
-**[DEPLOY_COOLIFY.md](DEPLOY_COOLIFY.md)**.
+Coolify is a self-hosted PaaS. This guide assumes a running Coolify
+instance and a connected git account.
 
-In short: build from the repo `Dockerfile` (port `8501`), attach a PostgreSQL
-service as `DATABASE_URL`, mount a persistent `/data` volume, set the
-environment variables above (keep `LLM_CONFIG_LOCKED=1`), and attach a domain
-so Coolify terminates HTTPS for you.
+### 1. Create a Postgres service
+
+In Coolify:
+
+1. **+ New Resource → Database → PostgreSQL 16**.
+2. Name it `manuscript-db`. Use default credentials (Coolify generates them).
+3. Wait for the healthcheck to go green.
+4. Copy the **Internal Connection URL** — looks like
+   `postgresql://user:pass@manuscript-db:5432/manuscript`.
+
+### 2. Create the application
+
+1. **+ New Resource → Application → Public/Private Repository**.
+2. Pick the GitHub account connected to Coolify, then
+   `celnetamit/journal-manager`. Branch: `main`.
+3. **Build Pack: Dockerfile** (Coolify auto-detects the `Dockerfile`
+   at repo root).
+4. **Port: `8501`** (the Dockerfile already `EXPOSE 8501`).
+
+### 3. Configure environment variables
+
+In the application's **Environment Variables** tab, add:
+
+| Key                       | Value                                                              |
+|---------------------------|--------------------------------------------------------------------|
+| `GEMINI_API_KEY`          | your Gemini API key from Google AI Studio                          |
+| `DATABASE_URL`            | the Postgres internal URL from step 1                              |
+| `DATA_DIR`                | `/data`                                                            |
+| `OUTPUT_DIR`              | `/data/outbound`                                                   |
+| `GEMINI_TEXT_MODEL`       | `gemini-2.5-pro` (optional)                                        |
+| `GEMINI_EMBED_MODEL`      | `text-embedding-004` (optional)                                    |
+
+> Mark `GEMINI_API_KEY` and `DATABASE_URL` as **Secret** so they're
+> stored encrypted and not shown in logs.
+
+### 4. Add a persistent volume
+
+Redlines and any future data must survive container restarts.
+
+1. Open the application → **Storages** tab.
+2. **+ Add Storage**:
+   - **Mount path:** `/data`
+   - **Source path:** any host path (Coolify will create a named
+     volume if you leave it blank, e.g. `manuscript_data`).
+3. Save and redeploy.
+
+### 5. Set the domain / port mapping
+
+1. **Domains** tab → add your domain (e.g. `manuscript.example.com`).
+2. Coolify will issue a Let's Encrypt certificate automatically.
+3. Streamlit is served on port `8501`; Coolify's reverse proxy will
+   forward `443 → 8501` for you.
+
+### 6. Deploy
+
+1. **Deployments** tab → **Deploy**.
+2. Watch the build logs. The image is built from the `Dockerfile`,
+   not pulled, so the first deploy will take a couple of minutes.
+3. Once `Running`, click the domain. You should see the login page.
+4. Create the first user account. (There's no admin bootstrap — the
+   first registration is just a normal user.)
+
+### 7. Post-deploy checks
+
+```bash
+# From Coolify's "Terminal" tab on the running container:
+python -c "import auth; auth.init_auth(); print('db ok')"
+curl -s http://localhost:8501/_stcore/health
+# Should return: {"status":"ok"}
+```
+
+### 8. Updating
+
+Push to `main`. Coolify auto-detects the new commit (if **Auto Deploy**
+is enabled) and rebuilds. The `/data` volume is preserved.
 
 ---
 
@@ -147,27 +217,14 @@ so Coolify terminates HTTPS for you.
 - **Passwords** are hashed with **bcrypt (rounds=12)**. Legacy
   unsalted-SHA-256 hashes from the original prototype are
   automatically upgraded on the user's next successful login.
-- **Login throttling**: failed logins are rate-limited per username
-  (`LOGIN_MAX_ATTEMPTS` within `LOGIN_LOCKOUT_MINUTES`), and persistent
-  "remember me" tokens expire after `LOGIN_TOKEN_TTL_DAYS` and are revoked
-  on logout.
-- **Locked config in production**: with `LLM_CONFIG_LOCKED=1` (the Docker
-  image default) the provider/API key come from env vars only and the in-app
-  sidebar is read-only, so users can't overwrite the shared key.
 - **Analytics tab** only shows daily aggregates — no per-user rows.
-- **File uploads** are limited to `.docx` and 50 MB. In the container this is
-  enforced via `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (the `.streamlit/` dir is
-  not shipped in the image); `.streamlit/config.toml` covers local dev.
-- **Error details** are hidden from the browser in production
-  (`STREAMLIT_CLIENT_SHOW_ERROR_DETAILS=none`).
+- **File uploads** are limited to 50 MB via `.streamlit/config.toml`.
 - The container runs as a **non-root** user (`uid 1000`).
 - XSRF protection is enabled (`enableXsrfProtection = true`).
 
 ### Public launch checklist
 
-Use [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) as the go/no-go gate before
-exposing the app publicly, and [DEPLOY_COOLIFY.md](DEPLOY_COOLIFY.md) for the
-hosting steps.
+Use [LAUNCH_CHECKLIST.md](/home/itb09/.openclaw/workspace/manuscript_platform/LAUNCH_CHECKLIST.md) as the go/no-go gate before exposing the app publicly.
 
 The current highest-priority items are:
 
