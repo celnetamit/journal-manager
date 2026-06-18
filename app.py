@@ -57,6 +57,10 @@ import auth
 import config as app_config
 from editor import (
     align_global_citations,
+    build_journal_report,
+    enforce_author_limit,
+    markdown_to_docx,
+    HOUSE_RULE_GROUPS,
     generate_cover_letter,
     generate_redline_docx,
     generate_report,
@@ -428,6 +432,43 @@ if is_authenticated:
             "Custom Dictionary / Acronyms",
             placeholder="e.g. mTOR, mRNA, do not change capitalization of ABC.",
         )
+
+        st.divider()
+        st.header("📋 Publisher / House Rules")
+        st.caption(
+            "These in-house rules are enforced on every manuscript. "
+            "Untick any you want to skip, or add your own below."
+        )
+        _saved_rules = auth.get_user_house_rules(st.session_state.user_id)
+        _disabled = set(_saved_rules["disabled_groups"])
+
+        enabled_rule_ids = []
+        for _group in HOUSE_RULE_GROUPS:
+            _on = st.checkbox(
+                _group["title"],
+                value=_group["id"] not in _disabled,
+                key=f"rule_{_group['id']}",
+                help=_group["summary"],
+            )
+            if _on:
+                enabled_rule_ids.append(_group["id"])
+            with st.expander("View rule details", expanded=False):
+                st.markdown(f"```\n{_group['body']}\n```")
+
+        custom_rules = st.text_area(
+            "Your additional publisher rules",
+            value=_saved_rules["custom_rules"],
+            key="custom_rules_input",
+            placeholder="e.g. Use British spelling for '-ise' verbs. Spell out numbers under 10.",
+            help="Free-form rules appended to the editor instructions. Applied on every run.",
+        )
+
+        if st.button("💾 Save my rules"):
+            _disabled_now = [g["id"] for g in HOUSE_RULE_GROUPS if g["id"] not in enabled_rule_ids]
+            auth.save_user_house_rules(
+                st.session_state.user_id, _disabled_now, custom_rules,
+            )
+            st.success("Your publisher rules were saved.")
 else:
     st.info("Log in to access LLM settings and manuscript tools.")
 
@@ -545,11 +586,17 @@ with tab_editor:
                     edited_paragraphs = process_document_async(
                         original_paragraphs, llm_settings, edit_style,
                         ref_style, lang_type, custom_dict, use_crossref, update_progress,
+                        enabled_rule_ids, custom_rules,
                     )
 
                     if reorder_citations:
                         status_text.info("Performing Global Citation Alignment & Bibliography Sorting...")
-                        edited_paragraphs = align_global_citations(edited_paragraphs, llm_settings, ref_style)
+                        edited_paragraphs = align_global_citations(
+                            edited_paragraphs, llm_settings, ref_style, enabled_rule_ids,
+                        )
+
+                    # Deterministic safety net: mechanically enforce the 6-author limit
+                    edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
 
                     status_text.info("Generating Redline tracking document...")
 
@@ -558,10 +605,20 @@ with tab_editor:
                     generate_redline_docx(tmp_in_path, edited_paragraphs, str(perm_out_path))
 
                     status_text.info("Generating Editorial Report and Publication Tools...")
-                    report = generate_report(edit_style, ref_style, lang_type, use_crossref, custom_dict)
+                    report = generate_report(
+                        edit_style, ref_style, lang_type, use_crossref, custom_dict,
+                        enabled_rule_ids, custom_rules,
+                    )
 
                     proxy_abstract = " ".join(original_paragraphs[:15])[:1500]
                     recommended = recommend_journals(proxy_abstract, llm_settings)
+                    journal_report_md = build_journal_report(recommended)
+
+                    ts = int(time.time())
+                    review_report_path = out_dir / f"user_{st.session_state.user_id}_{ts}_review.docx"
+                    journal_report_path = out_dir / f"user_{st.session_state.user_id}_{ts}_journals.docx"
+                    markdown_to_docx(report, str(review_report_path))
+                    markdown_to_docx(journal_report_md, str(journal_report_path))
 
                     status_text.info("Generating Cover Letter...")
                     best_journal = recommended[0]["name"] if recommended else "the journal"
@@ -579,6 +636,8 @@ with tab_editor:
                         st.session_state.user_id, uploaded_file.name, paras_count,
                         edit_style, ref_style, lang_type, duration, status_val,
                         str(perm_out_path), err_msg,
+                        journal_report_path=str(journal_report_path),
+                        review_report_path=str(review_report_path),
                     )
 
                     res_col1, res_col2 = st.columns([1.5, 1])
@@ -613,6 +672,21 @@ with tab_editor:
                                 file_name=f"manuscript_{edit_style[:4]}_redline.docx",
                                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                 type="primary",
+                            )
+                        _docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        with open(journal_report_path, "rb") as jf:
+                            st.download_button(
+                                label="📚 Download Journal Recommendations",
+                                data=jf,
+                                file_name="top_journal_recommendations.docx",
+                                mime=_docx_mime,
+                            )
+                        with open(review_report_path, "rb") as vf:
+                            st.download_button(
+                                label="📑 Download Review Report",
+                                data=vf,
+                                file_name="editorial_review_report.docx",
+                                mime=_docx_mime,
                             )
             except Exception as e:
                 status_val = "Error"
@@ -777,18 +851,40 @@ with tab_history:
         df_hist = pd.DataFrame(rows)
         for idx, row in df_hist.iterrows():
             with st.container():
-                cols = st.columns([2, 1, 1, 1])
+                cols = st.columns([2, 1, 1])
                 cols[0].write(f"**{row['filename']}** ({row['timestamp']})")
                 cols[1].write(row["edit_style"])
                 cols[2].write(row["status"])
-                rp = row.get("redline_path") or ""
-                if row["status"] == "Success" and rp and os.path.exists(rp):
-                    with open(rp, "rb") as rf:
-                        cols[3].download_button(
-                            "Download", data=rf,
-                            file_name=f"historical_redline_{idx}.docx",
-                            key=f"dl_{idx}",
-                        )
+
+                if row["status"] == "Success":
+                    dl_cols = st.columns(3)
+                    rp = row.get("redline_path") or ""
+                    if rp and os.path.exists(rp):
+                        with open(rp, "rb") as rf:
+                            dl_cols[0].download_button(
+                                "📝 Redline", data=rf,
+                                file_name=f"historical_redline_{idx}.docx",
+                                key=f"dl_redline_{idx}",
+                            )
+                    _docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    jp = row.get("journal_report_path") or ""
+                    if jp and os.path.exists(jp):
+                        with open(jp, "rb") as jf:
+                            dl_cols[1].download_button(
+                                "📚 Journals", data=jf,
+                                file_name=f"top_journal_recommendations_{idx}.docx",
+                                mime=_docx_mime,
+                                key=f"dl_journals_{idx}",
+                            )
+                    vp = row.get("review_report_path") or ""
+                    if vp and os.path.exists(vp):
+                        with open(vp, "rb") as vf:
+                            dl_cols[2].download_button(
+                                "📑 Review", data=vf,
+                                file_name=f"editorial_review_report_{idx}.docx",
+                                mime=_docx_mime,
+                                key=f"dl_review_{idx}",
+                            )
                 st.divider()
 
 

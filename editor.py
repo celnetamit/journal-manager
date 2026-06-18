@@ -143,10 +143,21 @@ def test_embedding(text: str, settings: Optional[Dict[str, Any]] = None) -> List
 
 # --- High-level operations ---
 
-def align_global_citations(paras: List[str], settings: Dict[str, Any], ref_style: str) -> List[str]:
+def align_global_citations(
+    paras: List[str], settings: Dict[str, Any], ref_style: str,
+    enabled_rule_ids: Optional[List[str]] = None,
+) -> List[str]:
     """Second pass: convert in-text citations to sequential [1], [2] and
     re-sort the bibliography to match."""
     indexed_paras = {str(i): p for i, p in enumerate(paras) if p.strip()}
+
+    citation_format_block = ""
+    if enabled_rule_ids is None or "citation" in enabled_rule_ids:
+        citation_format_block = (
+            "\nIN-TEXT CITATION FORMATTING (apply to every in-text bracketed citation you output):\n"
+            '- Put a single space after each comma when listing multiple citations, e.g. "[1, 2, 3]" (NOT "[1,2,3]").\n'
+            '- For a consecutive range, use an en dash (–) with no surrounding spaces, e.g. "[3–7]" (NOT "[3-7]" or "[3—7]").\n'
+        )
 
     prompt = f"""You are a strict reference alignment engine.
 The selected reference style is {ref_style}.
@@ -156,11 +167,7 @@ Task:
 2. Convert all in-text citations to sequential bracketed numbers (e.g., "[1]", "[1, 2, 3]") based on the EXACT order they first appear in the text.
 3. Locate the bibliography/reference list at the end of the text.
 4. Re-order and re-number the actual bibliography entries so that they match the new numerical sequence of the in-text citations.
-
-IN-TEXT CITATION FORMATTING (apply to every in-text bracketed citation you output):
-- Put a single space after each comma when listing multiple citations, e.g. "[1, 2, 3]" (NOT "[1,2,3]").
-- For a consecutive range, use an en dash (–) with no surrounding spaces, e.g. "[3–7]" (NOT "[3-7]" or "[3—7]").
-
+{citation_format_block}
 CRITICAL OUTPUT INSTRUCTIONS:
 - Return ONLY a valid JSON dictionary.
 - The keys MUST be the original paragraph index strings.
@@ -227,10 +234,132 @@ def fetch_crossref_doi(citation_text: str) -> Optional[str]:
     return None
 
 
+# --- In-house / publisher rules (displayed in UI; injected into the edit prompt) ---
+#
+# Each group can be toggled on/off per user and is surfaced in the frontend.
+# `body` is the exact text injected into the copyediting prompt when the group
+# is enabled. Add new built-in groups here and they default to ON for everyone.
+
+HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
+    {
+        "id": "reference",
+        "title": "In-House Reference Rules",
+        "summary": "Author limit (6 + et al.), strip honorific titles, ISO-4 journal abbreviation, source-type structure.",
+        "body": """IN-HOUSE REFERENCE RULES (these OVERRIDE the base reference style above for any reference/bibliography entry):
+1. AUTHOR LIMIT (6 + et al.): Count the authors in each reference. If a reference lists MORE THAN 6 authors, keep ONLY the first 6 authors in their original order, DELETE every author after the 6th, and append "et al." after the 6th author. The output must contain EXACTLY 6 names followed by "et al." — never 7 or more names before "et al.". Example with 8 authors: "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, Brown G, Davis H" -> "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, et al." (authors 7 and 8 are removed). If there are 6 or fewer authors, list them ALL and do NOT add "et al.". Never add "et al." to a list that already shows all authors.
+1a. STRIP TITLES: Remove any honorific or professional title prefixes attached to an author name (e.g. "Mr", "Mrs", "Ms", "Dr", "Dr.", "Prof", "Prof.", "Professor", "Er", "Er.", "Sir", "Sri", "Smt", "Md" when used as a courtesy title, "PhD"/"MD"/"FRCS" when used as a leading prefix). Keep only the actual name. Example: "Dr. Smith JA, Prof Jones BR" -> "Smith JA, Jones BR". Do this in BOTH the bibliography entries and any in-text author-date citations.
+2. JOURNAL ABBREVIATION: For JOURNAL references, abbreviate the journal name using standard ISO 4 / Index Medicus (NLM) abbreviations (e.g., "Journal of Science" -> "J Sci"; "New England Journal of Medicine" -> "N Engl J Med"; "Nature" stays "Nature"). Do NOT abbreviate book titles, publisher names, or chapter titles.
+3. SOURCE-TYPE STRUCTURE: Before formatting each reference, identify whether it is a JOURNAL ARTICLE or a BOOK/BOOK CHAPTER, then structure it accordingly:
+   - JOURNAL ARTICLE: Authors. Article title. Abbreviated Journal Name. Year;Volume(Issue):Pages. (include DOI if present)
+   - BOOK: Authors/Editors. Book Title. Edition. Place of publication: Publisher; Year. (do NOT abbreviate the title)
+   - BOOK CHAPTER: Authors. Chapter title. In: Editors, editors. Book Title. Place: Publisher; Year. p. Pages.
+   Only treat an item as a reference if it is clearly a citation/bibliography entry; do NOT restructure ordinary body text.""",
+    },
+    {
+        "id": "heading",
+        "title": "In-House Heading Rules",
+        "summary": "Title case, remove leading numbering, preserve hierarchy, no trailing period/colon.",
+        "body": """IN-HOUSE HEADING RULES (apply to any paragraph that is a section/subsection heading, e.g. "Introduction", "Materials and Methods"):
+1. TITLE CASE: Capitalize headings in title case (capitalize the first and last word and all major words; keep articles, coordinating conjunctions, and short prepositions such as "a", "an", "the", "of", "and", "in", "for", "to" lowercase unless they are the first/last word). Example: "fundamentals of functional genomics" -> "Fundamentals of Functional Genomics".
+2. NO NUMBERING: Remove any leading numbering or auto-number prefixes from headings (e.g. "1. Introduction", "1.2 Methods", "Chapter 3: Results", "IV. Discussion" -> "Introduction", "Methods", "Results", "Discussion"). Keep the heading text itself intact.
+3. STRUCTURE: Preserve the heading's hierarchy/level and order; only fix its capitalization and remove numbering. Do NOT merge a heading into body text or turn body text into a heading. Do NOT add a trailing period or colon to a heading.""",
+    },
+    {
+        "id": "citation",
+        "title": "In-House In-Text Citation Rules",
+        "summary": "Single space after commas; en dash for consecutive ranges.",
+        "body": """IN-HOUSE IN-TEXT CITATION RULES (apply to citation markers that appear inside body sentences, e.g. "[1]", "[1,2]", "[3-7]"):
+1. SPACE AFTER COMMA: When multiple citations are listed, put a single space after each comma, e.g. "[1,2,3]" -> "[1, 2, 3]".
+2. EN-DASH FOR RANGES: For a consecutive citation range, use an en dash (–) with no surrounding spaces between the first and last number, e.g. "[3-7]", "[3 to 7]", "[3—7]" -> "[3–7]".
+3. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these two rules; they apply only to in-text citation markers.""",
+    },
+]
+
+HOUSE_RULE_IDS = [g["id"] for g in HOUSE_RULE_GROUPS]
+
+
+def build_house_rules_section(
+    enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
+) -> str:
+    """Assemble the house-rules portion of the edit prompt from the enabled
+    built-in groups plus any user-supplied custom rules. enabled_rule_ids=None
+    means all built-in groups are active."""
+    blocks: List[str] = []
+    for group in HOUSE_RULE_GROUPS:
+        if enabled_rule_ids is None or group["id"] in enabled_rule_ids:
+            blocks.append(group["body"])
+    if custom_rules and custom_rules.strip():
+        blocks.append(
+            "ADDITIONAL PUBLISHER RULES (user-provided; follow these exactly, "
+            "they OVERRIDE the base style on any conflict):\n" + custom_rules.strip()
+        )
+    return "\n\n".join(blocks)
+
+
+# --- Deterministic enforcement of the 6-author limit (safety net for the LLM) ---
+
+# A single Vancouver / Index-Medicus author token, e.g. "Smith JA", "Lee C",
+# "van der Berg AB", "O'Brien M", "Smith-Jones AB". The token must END in
+# 1-4 capital initials so ordinary title/body words are not mistaken for authors.
+_REF_AUTHOR_RE = re.compile(
+    r"^[A-Z][A-Za-z'’.\-]*"               # first surname word (capitalized)
+    r"(?:[ '’\-][A-Za-z][A-Za-z'’.\-]*)*"  # optional extra surname words / particles
+    r" (?:[A-Z]\.?[ ]?){1,4}$"            # 1-4 initials (optional periods)
+)
+# An optional leading reference number such as "1.", "1)", "[1]", "(1)".
+_REF_NUM_PREFIX_RE = re.compile(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])\s*")
+
+
+def _trim_reference_authors(ref: str, max_authors: int = 6) -> str:
+    """If `ref` is a reference entry whose author list exceeds `max_authors`,
+    keep the first `max_authors` authors and append 'et al.'. Conservative: the
+    text is returned unchanged unless the leading segment (before the title's
+    terminating '. ') is unambiguously a comma-separated author list longer than
+    the limit, with every token shaped like 'Surname Initials'."""
+    prefix_m = _REF_NUM_PREFIX_RE.match(ref)
+    prefix = prefix_m.group(0) if prefix_m else ""
+    body = ref[len(prefix):]
+
+    dot = body.find(". ")  # period+space that ends the author list before the title
+    if dot == -1:
+        return ref
+    author_part = body[:dot]
+    rest = body[dot:]  # begins with ". " — supplies the period after "et al"
+
+    if re.search(r"\bet\s+al\b", author_part, re.IGNORECASE):
+        return ref  # already abbreviated
+
+    authors = [a.strip() for a in author_part.split(",")]
+    if len(authors) <= max_authors:
+        return ref
+    if not all(_REF_AUTHOR_RE.match(a) for a in authors):
+        return ref  # not confidently an author list -> leave untouched
+
+    return prefix + ", ".join(authors[:max_authors]) + ", et al" + rest
+
+
+def enforce_author_limit(
+    paras: List[str], enabled_rule_ids: Optional[List[str]] = None,
+    max_authors: int = 6,
+) -> List[str]:
+    """Deterministic safety net for the 6-author reference rule. Applied only
+    when the reference rule group is active (enabled_rule_ids=None means all
+    groups active). Runs after the LLM edit, so it operates on already
+    normalized 'Surname Initials' author formatting."""
+    if enabled_rule_ids is not None and "reference" not in enabled_rule_ids:
+        return paras
+    return [
+        _trim_reference_authors(p, max_authors) if p and p.strip() else p
+        for p in paras
+    ]
+
+
 def ai_edit_chunk(
     chunk_texts: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool,
+    enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
 ) -> List[str]:
+    house_rules = build_house_rules_section(enabled_rule_ids, custom_rules)
     prompt = f"""You are a professional academic copyeditor.
 Rules:
 - Editing Style: {edit_style}
@@ -241,25 +370,7 @@ I am providing a JSON array of text paragraphs from a manuscript.
 Proofread them strictly following the specified guidelines. Fix spelling, grammar, and typography.
 Properly format any references or bibliography items encountered.
 
-IN-HOUSE REFERENCE RULES (these OVERRIDE the base reference style above for any reference/bibliography entry):
-1. AUTHOR LIMIT: If a reference lists MORE THAN 6 authors, keep only the first 6 authors and append "et al." (e.g., "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, et al."). If there are 6 or fewer authors, list them ALL and do NOT add "et al.". Never add "et al." to a list that already shows all authors.
-1a. STRIP TITLES: Remove any honorific or professional title prefixes attached to an author name (e.g. "Mr", "Mrs", "Ms", "Dr", "Dr.", "Prof", "Prof.", "Professor", "Er", "Er.", "Sir", "Sri", "Smt", "Md" when used as a courtesy title, "PhD"/"MD"/"FRCS" when used as a leading prefix). Keep only the actual name. Example: "Dr. Smith JA, Prof Jones BR" -> "Smith JA, Jones BR". Do this in BOTH the bibliography entries and any in-text author-date citations.
-2. JOURNAL ABBREVIATION: For JOURNAL references, abbreviate the journal name using standard ISO 4 / Index Medicus (NLM) abbreviations (e.g., "Journal of Science" -> "J Sci"; "New England Journal of Medicine" -> "N Engl J Med"; "Nature" stays "Nature"). Do NOT abbreviate book titles, publisher names, or chapter titles.
-3. SOURCE-TYPE STRUCTURE: Before formatting each reference, identify whether it is a JOURNAL ARTICLE or a BOOK/BOOK CHAPTER, then structure it accordingly:
-   - JOURNAL ARTICLE: Authors. Article title. Abbreviated Journal Name. Year;Volume(Issue):Pages. (include DOI if present)
-   - BOOK: Authors/Editors. Book Title. Edition. Place of publication: Publisher; Year. (do NOT abbreviate the title)
-   - BOOK CHAPTER: Authors. Chapter title. In: Editors, editors. Book Title. Place: Publisher; Year. p. Pages.
-   Only treat an item as a reference if it is clearly a citation/bibliography entry; do NOT restructure ordinary body text.
-
-IN-HOUSE HEADING RULES (apply to any paragraph that is a section/subsection heading, e.g. "Introduction", "Materials and Methods"):
-1. TITLE CASE: Capitalize headings in title case (capitalize the first and last word and all major words; keep articles, coordinating conjunctions, and short prepositions such as "a", "an", "the", "of", "and", "in", "for", "to" lowercase unless they are the first/last word). Example: "fundamentals of functional genomics" -> "Fundamentals of Functional Genomics".
-2. NO NUMBERING: Remove any leading numbering or auto-number prefixes from headings (e.g. "1. Introduction", "1.2 Methods", "Chapter 3: Results", "IV. Discussion" -> "Introduction", "Methods", "Results", "Discussion"). Keep the heading text itself intact.
-3. STRUCTURE: Preserve the heading's hierarchy/level and order; only fix its capitalization and remove numbering. Do NOT merge a heading into body text or turn body text into a heading. Do NOT add a trailing period or colon to a heading.
-
-IN-HOUSE IN-TEXT CITATION RULES (apply to citation markers that appear inside body sentences, e.g. "[1]", "[1,2]", "[3-7]"):
-1. SPACE AFTER COMMA: When multiple citations are listed, put a single space after each comma, e.g. "[1,2,3]" -> "[1, 2, 3]".
-2. EN-DASH FOR RANGES: For a consecutive citation range, use an en dash (–) with no surrounding spaces between the first and last number, e.g. "[3-7]", "[3 to 7]", "[3—7]" -> "[3–7]".
-3. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these two rules; they apply only to in-text citation markers.
+{house_rules}
 """
     if custom_dict:
         prompt += f"\nCRITICAL CUSTOM DICTIONARY (DO NOT ALTER OR REFORMAT THESE TERMS):\n{custom_dict}\n"
@@ -460,7 +571,9 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
 # --- Report / cover letter / polish ---
 
 def generate_report(edit_style: str, ref_style: str, lang: str,
-                    used_crossref: bool, custom_dict: str) -> str:
+                    used_crossref: bool, custom_dict: str,
+                    enabled_rule_ids: Optional[List[str]] = None,
+                    custom_rules: str = "") -> str:
     report = "### 📑 Editorial Report\n\n"
     report += "**Configurations Applied:**\n"
     report += f"- **Copyediting:** {edit_style}\n"
@@ -474,7 +587,78 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
         report += "- **Live Crossref Validation:** Officially verified DOIs embedded into bibliography.\n"
     else:
         report += "- **References Formatted:** AI applied selected style structure.\n"
+
+    report += "\n**Publisher / House Rules Applied:**\n"
+    for group in HOUSE_RULE_GROUPS:
+        applied = enabled_rule_ids is None or group["id"] in enabled_rule_ids
+        mark = "✅ Applied" if applied else "⬜ Skipped"
+        report += f"- **{group['title']}:** {mark} — {group['summary']}\n"
+    if custom_rules and custom_rules.strip():
+        report += "\n**Additional Publisher Rules (custom):**\n"
+        for line in custom_rules.strip().splitlines():
+            line = line.strip()
+            if line:
+                report += f"- {line}\n"
+
     return report
+
+
+def build_journal_report(recommended: List[dict]) -> str:
+    """Render the top journal recommendations as a downloadable Markdown report."""
+    lines = ["# 📚 Top Journal Recommendations", ""]
+    if not recommended:
+        lines.append("_No journal recommendations were generated for this manuscript._")
+        return "\n".join(lines) + "\n"
+    for i, j in enumerate(recommended, 1):
+        score = j.get("score", 0)
+        match = f"{int(score * 100)}% match" if score > 0 else "Recommended"
+        lines.append(f"## {i}. {j.get('name', 'Unknown')}")
+        lines.append(f"- **Relevance:** {match}")
+        if j.get("impact_factor"):
+            lines.append(f"- **Impact Factor:** {j.get('impact_factor')}")
+        lines.append(f"- **Publisher:** {j.get('publisher', 'Unknown')}")
+        topics = j.get("topics", [])
+        if topics:
+            lines.append(f"- **Focus Topics:** {', '.join(topics).title()}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _add_markdown_runs(paragraph, text: str) -> None:
+    """Add runs to a paragraph, rendering **bold** spans in the limited markdown."""
+    for i, segment in enumerate(re.split(r"\*\*(.+?)\*\*", text)):
+        if not segment:
+            continue
+        run = paragraph.add_run(segment)
+        run.bold = i % 2 == 1  # odd segments were captured inside ** **
+
+
+def markdown_to_docx(md_text: str, out_path: str) -> str:
+    """Render the limited markdown the platform produces (# / ## headings,
+    - bullets, **bold**) into a Word .docx file. Returns out_path."""
+    document = docx.Document()
+    for raw_line in md_text.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        if line.startswith("# "):
+            document.add_heading(line[2:].strip(), level=1)
+        elif line.startswith("## "):
+            document.add_heading(line[3:].strip(), level=2)
+        elif line.startswith("### "):
+            document.add_heading(line[4:].strip(), level=3)
+        elif line.lstrip().startswith("- "):
+            para = document.add_paragraph(style="List Bullet")
+            _add_markdown_runs(para, line.lstrip()[2:].strip())
+        else:
+            para = document.add_paragraph()
+            # strip surrounding underscores used for italic placeholders
+            _add_markdown_runs(para, line.strip().strip("_"))
+    document.save(out_path)
+    return out_path
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def generate_cover_letter(abstract: str, journal_name: str, settings: Dict[str, Any]) -> str:
@@ -510,6 +694,7 @@ def generate_title_abstract_polish(abstract: str, settings: Dict[str, Any]) -> s
 def process_document_async(
     paras: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool, progress_callback,
+    enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
 ) -> List[str]:
     edited_paras = [""] * len(paras)
     task_indices = [i for i, p in enumerate(paras) if p.strip()]
@@ -533,7 +718,8 @@ def process_document_async(
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
         future_to_chunk = {
             ex.submit(ai_edit_chunk, chunk_texts, settings, edit_style, ref_style,
-                      lang, custom_dict, use_crossref): chunk_inds
+                      lang, custom_dict, use_crossref,
+                      enabled_rule_ids, custom_rules): chunk_inds
             for chunk_inds, chunk_texts in chunks
         }
         for future in concurrent.futures.as_completed(future_to_chunk):

@@ -12,6 +12,7 @@ Password hashing:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -79,11 +80,18 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             status TEXT,
             error_message TEXT,
             user_id INTEGER,
-            redline_path TEXT
+            redline_path TEXT,
+            journal_report_path TEXT,
+            review_report_path TEXT
         )"""
     )
     # Idempotent column adds (SQLite has no IF NOT EXISTS for columns)
-    for col, decl in (("user_id", "INTEGER"), ("redline_path", "TEXT")):
+    for col, decl in (
+        ("user_id", "INTEGER"),
+        ("redline_path", "TEXT"),
+        ("journal_report_path", "TEXT"),
+        ("review_report_path", "TEXT"),
+    ):
         try:
             c.execute(f"ALTER TABLE process_logs ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
@@ -100,6 +108,13 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
             attempted_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS user_house_rules (
+            user_id INTEGER PRIMARY KEY,
+            disabled_groups TEXT DEFAULT '[]',
+            custom_rules TEXT DEFAULT ''
         )"""
     )
 
@@ -125,11 +140,15 @@ def _ensure_schema_pg(cur: Any) -> None:
             status TEXT,
             error_message TEXT,
             user_id INTEGER,
-            redline_path TEXT
+            redline_path TEXT,
+            journal_report_path TEXT,
+            review_report_path TEXT
         )"""
     )
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS user_id INTEGER")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS redline_path TEXT")
+    cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS journal_report_path TEXT")
+    cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS review_report_path TEXT")
     cur.execute(
         """CREATE TABLE IF NOT EXISTS login_tokens (
             token_hash TEXT PRIMARY KEY,
@@ -142,6 +161,13 @@ def _ensure_schema_pg(cur: Any) -> None:
             id SERIAL PRIMARY KEY,
             username TEXT NOT NULL,
             attempted_at TIMESTAMPTZ DEFAULT now()
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS user_house_rules (
+            user_id INTEGER PRIMARY KEY,
+            disabled_groups TEXT DEFAULT '[]',
+            custom_rules TEXT DEFAULT ''
         )"""
     )
 
@@ -418,21 +444,26 @@ def log_job(
     status: str,
     redline_path: str = "",
     error_message: str = "",
+    journal_report_path: str = "",
+    review_report_path: str = "",
 ) -> None:
     sql = (
         """INSERT INTO process_logs
            (user_id, filename, paragraphs_count, edit_style, ref_style,
-            language, duration_seconds, status, error_message, redline_path)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+            language, duration_seconds, status, error_message, redline_path,
+            journal_report_path, review_report_path)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
         if _is_postgres() else
         """INSERT INTO process_logs
            (user_id, filename, paragraphs_count, edit_style, ref_style,
-            language, duration_seconds, status, error_message, redline_path)
-           VALUES (?,?,?,?,?,?,?,?,?,?)"""
+            language, duration_seconds, status, error_message, redline_path,
+            journal_report_path, review_report_path)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
     )
     params: Tuple[Any, ...] = (
         user_id, filename, paragraphs_count, edit_style, ref_style,
         language, duration_seconds, status, error_message, redline_path,
+        journal_report_path, review_report_path,
     )
     try:
         with _connect() as conn:
@@ -448,14 +479,76 @@ def fetch_user_history(user_id: int) -> List[dict]:
     with _connect() as conn:
         cur = conn.cursor()
         cur.execute(
-            """SELECT timestamp, filename, edit_style, status, redline_path
+            """SELECT timestamp, filename, edit_style, status, redline_path,
+                      journal_report_path, review_report_path
                FROM process_logs WHERE user_id=%s ORDER BY timestamp DESC"""
             if _is_postgres() else
-            """SELECT timestamp, filename, edit_style, status, redline_path
+            """SELECT timestamp, filename, edit_style, status, redline_path,
+                      journal_report_path, review_report_path
                FROM process_logs WHERE user_id=? ORDER BY timestamp DESC""",
             (user_id,),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+# --- Per-user publisher / house rules ---
+
+def get_user_house_rules(user_id: Optional[int]) -> dict:
+    """Return {'disabled_groups': [...], 'custom_rules': '...'} for the user.
+    Defaults to all built-in rules enabled and no custom rules."""
+    default = {"disabled_groups": [], "custom_rules": ""}
+    if user_id is None:
+        return default
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT disabled_groups, custom_rules FROM user_house_rules WHERE user_id=%s"
+                if _is_postgres() else
+                "SELECT disabled_groups, custom_rules FROM user_house_rules WHERE user_id=?",
+                (user_id,),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        print(f"[auth.get_user_house_rules] error: {e}")
+        return default
+    if not row:
+        return default
+    row = dict(row)
+    try:
+        disabled = json.loads(row.get("disabled_groups") or "[]")
+        if not isinstance(disabled, list):
+            disabled = []
+    except Exception:
+        disabled = []
+    return {"disabled_groups": disabled, "custom_rules": row.get("custom_rules") or ""}
+
+
+def save_user_house_rules(
+    user_id: int, disabled_groups: List[str], custom_rules: str,
+) -> None:
+    payload = json.dumps(list(disabled_groups or []))
+    custom_rules = custom_rules or ""
+    sql = (
+        """INSERT INTO user_house_rules (user_id, disabled_groups, custom_rules)
+           VALUES (%s,%s,%s)
+           ON CONFLICT (user_id) DO UPDATE
+           SET disabled_groups=EXCLUDED.disabled_groups,
+               custom_rules=EXCLUDED.custom_rules"""
+        if _is_postgres() else
+        """INSERT INTO user_house_rules (user_id, disabled_groups, custom_rules)
+           VALUES (?,?,?)
+           ON CONFLICT(user_id) DO UPDATE
+           SET disabled_groups=excluded.disabled_groups,
+               custom_rules=excluded.custom_rules"""
+    )
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, (user_id, payload, custom_rules))
+            conn.commit()
+    except Exception as e:
+        print(f"[auth.save_user_house_rules] error: {e}")
 
 
 def fetch_global_analytics() -> List[dict]:
