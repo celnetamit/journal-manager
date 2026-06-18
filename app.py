@@ -848,8 +848,7 @@ with tab_history:
     if not rows:
         st.info("No documents processed yet. Your history will appear here.")
     else:
-        df_hist = pd.DataFrame(rows)
-        for idx, row in df_hist.iterrows():
+        for idx, row in enumerate(rows):
             with st.container():
                 cols = st.columns([2, 1, 1])
                 cols[0].write(f"**{row['filename']}** ({row['timestamp']})")
