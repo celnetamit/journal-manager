@@ -62,6 +62,9 @@ from editor import (
     enforce_author_limit,
     generate_ai_review,
     markdown_to_docx,
+    build_jats_xml,
+    validate_jats,
+    JATS_MIME,
     HOUSE_RULE_GROUPS,
     generate_cover_letter,
     generate_redline_docx,
@@ -637,6 +640,16 @@ with tab_editor:
                     markdown_to_docx(report, str(review_report_path))
                     markdown_to_docx(journal_report_md, str(journal_report_path))
 
+                    # JATS/XML production export of the edited manuscript
+                    status_text.info("Generating JATS/XML production file...")
+                    jats_path = out_dir / f"user_{st.session_state.user_id}_{ts}_jats.xml"
+                    best_journal_name = recommended[0]["name"] if recommended else None
+                    jats_xml = build_jats_xml(
+                        edited_paragraphs, journal_title=best_journal_name,
+                    )
+                    jats_path.write_text(jats_xml, encoding="utf-8")
+                    jats_ok, jats_issues = validate_jats(jats_xml)
+
                     # Collect the parallel AI peer review and persist it as .docx
                     ai_review_md = ""
                     ai_review_path = ""
@@ -670,6 +683,7 @@ with tab_editor:
                         journal_report_path=str(journal_report_path),
                         review_report_path=str(review_report_path),
                         ai_review_path=str(ai_review_path) if ai_review_path else "",
+                        jats_path=str(jats_path),
                     )
 
                     res_col1, res_col2 = st.columns([1.5, 1])
@@ -744,6 +758,19 @@ with tab_editor:
                                     file_name="ai_peer_review.docx",
                                     mime=_docx_mime,
                                 )
+                        with open(jats_path, "rb") as xf:
+                            st.download_button(
+                                label="🏷️ Download JATS/XML (production)",
+                                data=xf,
+                                file_name="manuscript_jats.xml",
+                                mime=JATS_MIME,
+                                help="Publisher-ready JATS Journal Publishing XML — "
+                                     "feeds typesetting, HTML/PDF, and indexing pipelines.",
+                            )
+                        if jats_ok:
+                            st.caption("✓ Structurally valid JATS")
+                        else:
+                            st.warning("JATS structural issues:\n- " + "\n- ".join(jats_issues))
             except Exception as e:
                 status_val = "Error"
                 err_msg = str(e)
@@ -912,7 +939,7 @@ with tab_history:
                 cols[2].write(row["status"])
 
                 if row["status"] == "Success":
-                    dl_cols = st.columns(4)
+                    dl_cols = st.columns(5)
                     rp = row.get("redline_path") or ""
                     if rp and os.path.exists(rp):
                         with open(rp, "rb") as rf:
@@ -948,6 +975,15 @@ with tab_history:
                                 file_name=f"ai_peer_review_{idx}.docx",
                                 mime=_docx_mime,
                                 key=f"dl_aireview_{idx}",
+                            )
+                    xp = row.get("jats_path") or ""
+                    if xp and os.path.exists(xp):
+                        with open(xp, "rb") as xf:
+                            dl_cols[4].download_button(
+                                "🏷️ JATS XML", data=xf,
+                                file_name=f"manuscript_jats_{idx}.xml",
+                                mime=JATS_MIME,
+                                key=f"dl_jats_{idx}",
                             )
                 st.divider()
 

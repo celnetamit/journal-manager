@@ -15,6 +15,7 @@ import re
 import threading
 import time
 import concurrent.futures
+import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional
 
 import docx
@@ -796,6 +797,567 @@ def markdown_to_docx(md_text: str, out_path: str) -> str:
 
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+# --- JATS / XML export (publisher production format) ---
+
+# Section names recognized as structural headings when building JATS.
+_SECTION_KEYWORDS = {
+    "abstract", "keywords", "introduction", "background", "related work",
+    "literature review", "materials and methods", "methods", "methodology",
+    "experimental", "results", "results and discussion", "discussion",
+    "conclusion", "conclusions", "summary", "acknowledgements",
+    "acknowledgments", "references", "bibliography", "reference list",
+}
+_REFERENCE_HEADINGS = {"references", "bibliography", "reference list"}
+JATS_DOCTYPE = (
+    '<!DOCTYPE article PUBLIC '
+    '"-//NLM//DTD JATS (Z39.96) Journal Publishing DTD v1.3 20210610//EN" '
+    '"JATS-journalpublishing1-3.dtd">'
+)
+JATS_MIME = "application/xml"
+
+# Figure / table caption patterns, e.g. "Figure 1. ...", "Fig. 2: ...", "Table 3 - ...".
+_FIG_RE = re.compile(r"^(Fig(?:ure)?\.?\s*([0-9]+|[IVXLC]+))\s*[.:)\-]\s*(.+)$", re.I)
+_TAB_RE = re.compile(r"^(Tab(?:le)?\.?\s*([0-9]+|[IVXLC]+))\s*[.:)\-]\s*(.+)$", re.I)
+
+
+def _normalize_heading(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower()).rstrip(":.")
+
+
+def _is_jats_heading(text: str) -> bool:
+    """Heuristically decide whether a paragraph is a section heading. Conservative:
+    known section names, numbered headings (e.g. '2.1 Methods'), or a short
+    capitalized line with no terminal sentence punctuation."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _FIG_RE.match(t) or _TAB_RE.match(t):
+        return False  # figure/table captions are blocks, not headings
+    if _normalize_heading(t) in _SECTION_KEYWORDS:
+        return True
+    if re.match(r"^\d+(\.\d+)*\.?\s+\S", t) and len(t) <= 80 and not t.endswith("."):
+        return True
+    if len(t) <= 70 and len(t.split()) <= 8 and not re.search(r"[.!?]$", t):
+        if t.isupper() or t[:1].isupper():
+            return True
+    return False
+
+
+_DOI_RE = re.compile(r"(10\.\d{4,9}/[^\s,;]+)", re.I)
+_YEAR_VOL_RE = re.compile(
+    r"(\d{4})\s*;\s*(\d+)\s*(?:\(\s*([^)]+?)\s*\))?\s*:\s*"
+    r"([A-Za-z]?\d+(?:\s*[-–]\s*[A-Za-z]?\d+)?)"
+)
+# In-text numeric citation group, e.g. "[1]", "[1, 2, 3]", "[3-7]", "[3–7]".
+_CITE_GROUP_RE = re.compile(r"\[(\d+(?:\s*[-–,]\s*\d+)*)\]")
+_NUM_PREFIX_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+(.*)$")
+_AFFIL_HINTS = (
+    "university", "department", "institute", "college", "laborator",
+    "hospital", "school of", "faculty", "centre", "center", "dept", "academy",
+)
+
+
+def _split_authors(authors_str: str) -> List[str]:
+    return [a.strip() for a in (authors_str or "").split(",") if a.strip()]
+
+
+def _ref_name_elem(parent, token: str) -> None:
+    """Vancouver-style 'Surname Initials' -> <name><surname>/<given-names>."""
+    token = token.strip()
+    if re.fullmatch(r"et\s+al\.?", token, re.I):
+        ET.SubElement(parent, "etal")
+        return
+    m = re.match(r"^(.+?)\s+([A-Z][A-Za-z.\-]{0,5})$", token)
+    name = ET.SubElement(parent, "name")
+    if m:
+        ET.SubElement(name, "surname").text = m.group(1)
+        ET.SubElement(name, "given-names").text = m.group(2)
+    else:
+        ET.SubElement(name, "surname").text = token
+
+
+def _contrib_name_elem(parent, token: str) -> None:
+    """Byline-style 'First M. Last' -> surname = last word, given-names = rest."""
+    words = token.split()
+    name = ET.SubElement(parent, "name")
+    if len(words) >= 2:
+        ET.SubElement(name, "surname").text = words[-1]
+        ET.SubElement(name, "given-names").text = " ".join(words[:-1])
+    else:
+        ET.SubElement(name, "surname").text = token
+
+
+def _author_tokens(line: str) -> List[str]:
+    cleaned = re.sub(r"\S+@\S+", "", line)                      # emails
+    cleaned = re.sub(r"[0-9\*†‡§¶#]+", "", cleaned)  # affil markers
+    cleaned = re.sub(r"\s+and\s+", ",", cleaned, flags=re.I)
+    return [t.strip(" .") for t in cleaned.split(",") if t.strip(" .")]
+
+
+def _looks_like_author_line(line: str) -> bool:
+    """Conservative byline detection: a comma/and-separated list of at least two
+    capitalized name-like tokens (so a 2-word heading is never mistaken for an
+    author line). Single-author bylines are intentionally not auto-detected."""
+    t = (line or "").strip()
+    if not t or _normalize_heading(t) in _SECTION_KEYWORDS:
+        return False
+    if len(t) > 200 or re.search(r"[.!?]$", t):
+        return False
+    tokens = _author_tokens(t)
+    if not (2 <= len(tokens) <= 20):
+        return False
+    good = 0
+    for tok in tokens:
+        words = tok.split()
+        if 1 <= len(words) <= 5 and all(w[:1].isupper() for w in words if w):
+            good += 1
+    return good >= 2 and good >= len(tokens) - 1
+
+
+def _looks_like_affiliation(line: str) -> bool:
+    low = (line or "").lower()
+    return any(h in low for h in _AFFIL_HINTS)
+
+
+def _looks_like_single_author(line: str) -> bool:
+    """A single byline name (no comma). Only trusted when the following line is
+    an affiliation, to avoid mistaking a 2-3 word heading for an author."""
+    t = (line or "").strip()
+    if not t or "," in t or _normalize_heading(t) in _SECTION_KEYWORDS:
+        return False
+    if re.search(r"[.!?]$", t):
+        return False
+    words = t.split()
+    return 2 <= len(words) <= 5 and all(w[:1].isupper() for w in words)
+
+
+def _extract_keywords(items: List[str]):
+    """Pull an inline 'Keywords: a, b, c' line out of the body items."""
+    kept: List[str] = []
+    keywords: Optional[List[str]] = None
+    for it in items:
+        m = re.match(r"^\s*key\s*words?\s*[:\-–]\s*(.+)$", it, re.I)
+        if m and keywords is None:
+            keywords = [k.strip(" .") for k in re.split(r"[;,]", m.group(1)) if k.strip(" .")]
+        else:
+            kept.append(it)
+    return keywords, kept
+
+
+def _split_dot(text: str) -> List[str]:
+    return [p.strip().rstrip(".").strip() for p in re.split(r"\.\s+", text) if p.strip()]
+
+
+def _parse_journal_reference(raw: str, doi: Optional[str]):
+    yvp = _YEAR_VOL_RE.search(raw)
+    if not yvp:
+        return None
+    parts = _split_dot(raw[:yvp.start()].strip())
+    authors = title = source = None
+    if len(parts) >= 3:
+        authors, source = parts[0], parts[-1]
+        title = " ".join(parts[1:-1])
+    elif len(parts) == 2:
+        authors, title = parts
+    elif len(parts) == 1:
+        authors = parts[0]
+    return {
+        "kind": "journal", "raw": raw, "authors": authors, "title": title,
+        "source": source, "year": yvp.group(1), "volume": yvp.group(2),
+        "issue": yvp.group(3), "pages": yvp.group(4), "doi": doi,
+    }
+
+
+def _parse_book_chapter(raw: str, doi: Optional[str]):
+    if not re.search(r"\bIn:\s", raw, re.I):
+        return None
+    before, after = re.split(r"\bIn:\s*", raw, maxsplit=1, flags=re.I)
+    bparts = _split_dot(before)
+    authors = bparts[0] if bparts else None
+    chapter_title = " ".join(bparts[1:]) if len(bparts) > 1 else None
+
+    editors = None
+    rest_after = after
+    em = re.match(r"^(.*?),?\s*editors?\.\s*(.*)$", after, re.I)
+    if em:
+        editors, rest_after = em.group(1).strip(), em.group(2).strip()
+    aparts = _split_dot(rest_after)
+    source = aparts[0] if aparts else None
+    place = publisher = year = pages = None
+    for seg in aparts[1:]:
+        pm = re.search(r"(?:([^:;]+):\s*)?([^;]+);\s*(\d{4})", seg)
+        if pm:
+            place = pm.group(1).strip() if pm.group(1) else None
+            publisher = pm.group(2).strip()
+            year = pm.group(3)
+    # Extract pages from the whole tail (the "p. 33-58" token can be split by
+    # the sentence splitter, so search the raw string instead).
+    pg = re.search(r"\bp\.?\s*([0-9]+(?:\s*[-–]\s*[0-9]+)?)", rest_after)
+    if pg:
+        pages = pg.group(1)
+    if not year:
+        ym = re.search(r"(\d{4})", after)
+        year = ym.group(1) if ym else None
+    return {
+        "kind": "book-chapter", "raw": raw, "authors": authors,
+        "chapter_title": chapter_title, "editors": editors, "source": source,
+        "place": place, "publisher": publisher, "year": year, "pages": pages, "doi": doi,
+    }
+
+
+def _parse_book(raw: str, doi: Optional[str]):
+    ym = re.search(r";\s*(\d{4})", raw) or re.search(r"(\d{4})\.?\s*$", raw)
+    if not ym:
+        return None
+    year = ym.group(1)
+    parts = _split_dot(raw)
+    if len(parts) < 2:
+        return None
+    authors, title = parts[0], parts[1]
+    edition = publisher = place = None
+    for seg in parts[2:]:
+        if re.match(r"^\d+(?:st|nd|rd|th)\s+ed\.?$", seg, re.I):
+            edition = seg
+            continue
+        pm = re.search(r"(?:([^:;]+):\s*)?([^;]+);\s*\d{4}", seg)
+        if pm:
+            place = pm.group(1).strip() if pm.group(1) else None
+            publisher = pm.group(2).strip()
+    return {
+        "kind": "book", "raw": raw, "authors": authors, "source": title,
+        "edition": edition, "publisher": publisher, "place": place,
+        "year": year, "doi": doi,
+    }
+
+
+def _parse_reference(text: str) -> Dict[str, Any]:
+    """Parse a normalized Vancouver-style reference into structured fields,
+    detecting journal articles, book chapters, and books. Falls back to
+    {'kind': 'other'} when unrecognized, so the caller emits a <mixed-citation>."""
+    raw = text.strip()
+    doi_m = _DOI_RE.search(raw)
+    doi = doi_m.group(1).rstrip(".") if doi_m else None
+    return (
+        _parse_journal_reference(raw, doi)
+        or _parse_book_chapter(raw, doi)
+        or _parse_book(raw, doi)
+        or {"kind": "other", "raw": raw, "doi": doi}
+    )
+
+
+def _add_person_group(parent, group_type: str, authors_str: str) -> None:
+    pg = ET.SubElement(parent, "person-group", {"person-group-type": group_type})
+    for tok in _split_authors(authors_str):
+        _ref_name_elem(pg, tok)
+
+
+def _add_pages(ec, pages: str) -> None:
+    parts = re.split(r"\s*[-–]\s*", pages)
+    ET.SubElement(ec, "fpage").text = parts[0]
+    if len(parts) > 1:
+        ET.SubElement(ec, "lpage").text = parts[1]
+
+
+def _add_reference(ref_list_el, n: int, text: str) -> None:
+    info = _parse_reference(text)
+    kind = info["kind"]
+    ref = ET.SubElement(ref_list_el, "ref", {"id": f"ref{n}"})
+
+    if kind == "other":
+        mc = ET.SubElement(ref, "mixed-citation")
+        mc.text = info["raw"]
+        if info.get("doi"):
+            ET.SubElement(mc, "pub-id", {"pub-id-type": "doi"}).text = info["doi"]
+        return
+
+    ec = ET.SubElement(ref, "element-citation", {"publication-type": kind})
+    if info.get("authors"):
+        _add_person_group(ec, "author", info["authors"])
+
+    if kind == "journal":
+        if info.get("title"):
+            ET.SubElement(ec, "article-title").text = info["title"]
+        if info.get("source"):
+            ET.SubElement(ec, "source").text = info["source"]
+    elif kind == "book-chapter":
+        if info.get("chapter_title"):
+            ET.SubElement(ec, "chapter-title").text = info["chapter_title"]
+        if info.get("editors"):
+            _add_person_group(ec, "editor", info["editors"])
+        if info.get("source"):
+            ET.SubElement(ec, "source").text = info["source"]
+    elif kind == "book":
+        if info.get("source"):
+            ET.SubElement(ec, "source").text = info["source"]
+        if info.get("edition"):
+            ET.SubElement(ec, "edition").text = info["edition"]
+
+    if info.get("place"):
+        ET.SubElement(ec, "publisher-loc").text = info["place"]
+    if info.get("publisher"):
+        ET.SubElement(ec, "publisher-name").text = info["publisher"]
+    if info.get("year"):
+        ET.SubElement(ec, "year").text = info["year"]
+    if info.get("volume"):
+        ET.SubElement(ec, "volume").text = info["volume"]
+    if info.get("issue"):
+        ET.SubElement(ec, "issue").text = info["issue"]
+    if info.get("pages"):
+        _add_pages(ec, info["pages"])
+    if info.get("doi"):
+        ET.SubElement(ec, "pub-id", {"pub-id-type": "doi"}).text = info["doi"]
+
+
+class _MixedContent:
+    """Helper to append interleaved text and child elements to a parent,
+    using ElementTree's text/tail model."""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.last = None
+
+    def text(self, s: str) -> None:
+        if not s:
+            return
+        if self.last is None:
+            self.parent.text = (self.parent.text or "") + s
+        else:
+            self.last.tail = (self.last.tail or "") + s
+
+    def xref(self, n: int, label: str) -> None:
+        x = ET.SubElement(self.parent, "xref", {"ref-type": "bibr", "rid": f"ref{n}"})
+        x.text = label
+        self.last = x
+
+
+def _add_body_paragraph(parent, text: str, valid_refs) -> None:
+    """Add a <p>, linking numeric in-text citations [n] to <xref rid='refn'>."""
+    p = ET.SubElement(parent, "p")
+    if not valid_refs:
+        p.text = text
+        return
+    mc = _MixedContent(p)
+    pos = 0
+    for m in _CITE_GROUP_RE.finditer(text):
+        mc.text(text[pos:m.start()])
+        mc.text("[")
+        for tok in re.findall(r"\d+|[^\d]+", m.group(1)):
+            if tok.isdigit() and int(tok) in valid_refs:
+                mc.xref(int(tok), tok)
+            else:
+                mc.text(tok)
+        mc.text("]")
+        pos = m.end()
+    mc.text(text[pos:])
+
+
+def _add_block(parent, text: str, valid_refs) -> None:
+    """Emit a body block: a figure caption -> <fig>, a table caption ->
+    <table-wrap>, otherwise a <p> (with in-text citation linking)."""
+    fm = _FIG_RE.match(text)
+    if fm:
+        label = re.sub(r"\s+", " ", fm.group(1)).strip()
+        fig = ET.SubElement(parent, "fig", {"id": f"fig{fm.group(2)}"})
+        ET.SubElement(fig, "label").text = label
+        caption = ET.SubElement(fig, "caption")
+        _add_body_paragraph(caption, fm.group(3).strip(), valid_refs)
+        return
+    tm = _TAB_RE.match(text)
+    if tm:
+        label = re.sub(r"\s+", " ", tm.group(1)).strip()
+        tw = ET.SubElement(parent, "table-wrap", {"id": f"tab{tm.group(2)}"})
+        ET.SubElement(tw, "label").text = label
+        caption = ET.SubElement(tw, "caption")
+        _add_body_paragraph(caption, tm.group(3).strip(), valid_refs)
+        return
+    _add_body_paragraph(parent, text, valid_refs)
+
+
+def _emit_sections(body_el, sections, valid_refs) -> None:
+    """Emit sections, nesting numbered subsections (e.g. 2.1 under 2) and
+    splitting a leading number into <label>. Untitled leading paragraphs go
+    directly under <body>."""
+    stack = []  # list of (depth, element)
+    for s in sections:
+        title = s["title"]
+        if not title:
+            for p in s["paras"]:
+                _add_block(body_el, p, valid_refs)
+            continue
+        label = None
+        title_text = title
+        depth = 1
+        m = _NUM_PREFIX_RE.match(title)
+        if m:
+            label, title_text, depth = m.group(1), m.group(2), m.group(1).count(".") + 1
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        parent = stack[-1][1] if stack else body_el
+        sec = ET.SubElement(parent, "sec")
+        if label:
+            ET.SubElement(sec, "label").text = label
+        ET.SubElement(sec, "title").text = title_text
+        for p in s["paras"]:
+            _add_block(sec, p, valid_refs)
+        stack.append((depth, sec))
+
+
+def build_jats_xml(
+    paragraphs: List[str], title: Optional[str] = None,
+    journal_title: Optional[str] = None,
+) -> str:
+    """Convert an edited manuscript (list of paragraph strings) into JATS
+    Journal Publishing XML. Structure is inferred heuristically:
+    - first paragraph -> article title (unless provided);
+    - a following byline -> structured <contrib-group> authors (+ affiliation);
+    - an inline 'Keywords:' line -> <kwd-group>;
+    - section headings split the body (numbered subsections nest);
+    - an 'Abstract' section is lifted into front matter;
+    - paragraphs after a 'References' heading become a structured reference
+      list (<element-citation> for journal articles, else <mixed-citation>);
+    - in-text [n] citations are linked to their <ref> via <xref>.
+    ElementTree escapes all special characters automatically."""
+    nonblank = [p.strip() for p in (paragraphs or []) if p and p.strip()]
+
+    article_title = title
+    rest = nonblank
+    if not article_title and nonblank:
+        article_title = nonblank[0]
+        rest = nonblank[1:]
+
+    # Optional byline + affiliation immediately after the title. Multi-author
+    # bylines are detected directly; a single-author byline is trusted only when
+    # the next line is an affiliation.
+    authors_line = affiliation_line = None
+    if rest and _looks_like_author_line(rest[0]):
+        authors_line = rest[0]
+        rest = rest[1:]
+        if rest and _looks_like_affiliation(rest[0]):
+            affiliation_line = rest[0]
+            rest = rest[1:]
+    elif len(rest) >= 2 and _looks_like_affiliation(rest[1]) and _looks_like_single_author(rest[0]):
+        authors_line, affiliation_line = rest[0], rest[1]
+        rest = rest[2:]
+
+    # Split off the reference list at the first References-style heading.
+    ref_start = None
+    for idx, text in enumerate(rest):
+        if _normalize_heading(text) in _REFERENCE_HEADINGS:
+            ref_start = idx
+            break
+    if ref_start is not None:
+        body_items = rest[:ref_start]
+        ref_items = rest[ref_start + 1:]
+    else:
+        body_items = rest
+        ref_items = []
+
+    keywords, body_items = _extract_keywords(body_items)
+    valid_refs = set(range(1, len(ref_items) + 1))
+
+    # Group body paragraphs into sections by heading.
+    sections: List[Dict[str, Any]] = []
+    current: Dict[str, Any] = {"title": None, "paras": []}
+    for text in body_items:
+        if _is_jats_heading(text):
+            if current["title"] is not None or current["paras"]:
+                sections.append(current)
+            current = {"title": text, "paras": []}
+        else:
+            current["paras"].append(text)
+    if current["title"] is not None or current["paras"]:
+        sections.append(current)
+
+    # Build the JATS tree.
+    article = ET.Element("article", {
+        "article-type": "research-article",
+        "dtd-version": "1.3",
+    })
+    front = ET.SubElement(article, "front")
+    if journal_title:
+        journal_meta = ET.SubElement(front, "journal-meta")
+        jt_group = ET.SubElement(journal_meta, "journal-title-group")
+        ET.SubElement(jt_group, "journal-title").text = journal_title
+    article_meta = ET.SubElement(front, "article-meta")
+    title_group = ET.SubElement(article_meta, "title-group")
+    ET.SubElement(title_group, "article-title").text = article_title or "Untitled Manuscript"
+
+    if authors_line:
+        contrib_group = ET.SubElement(article_meta, "contrib-group")
+        for tok in _author_tokens(authors_line):
+            contrib = ET.SubElement(contrib_group, "contrib", {"contrib-type": "author"})
+            _contrib_name_elem(contrib, tok)
+        if affiliation_line:
+            ET.SubElement(article_meta, "aff", {"id": "aff1"}).text = affiliation_line
+
+    # Lift an Abstract section into the front matter.
+    abstract_section = next(
+        (s for s in sections if s["title"] and _normalize_heading(s["title"]) == "abstract"),
+        None,
+    )
+    if abstract_section:
+        sections.remove(abstract_section)
+        abstract_el = ET.SubElement(article_meta, "abstract")
+        for p in abstract_section["paras"]:
+            ET.SubElement(abstract_el, "p").text = p
+
+    if keywords:
+        kwd_group = ET.SubElement(article_meta, "kwd-group")
+        for kw in keywords:
+            ET.SubElement(kwd_group, "kwd").text = kw
+
+    body = ET.SubElement(article, "body")
+    _emit_sections(body, sections, valid_refs)
+
+    back = ET.SubElement(article, "back")
+    if ref_items:
+        ref_list = ET.SubElement(back, "ref-list")
+        ET.SubElement(ref_list, "title").text = "References"
+        for n, text in enumerate(ref_items, 1):
+            _add_reference(ref_list, n, text)
+
+    ET.indent(article)  # pretty-print (Python 3.9+)
+    xml_body = ET.tostring(article, encoding="unicode")
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n{JATS_DOCTYPE}\n{xml_body}\n'
+
+
+def write_jats_xml(paragraphs: List[str], out_path: str, **kwargs) -> str:
+    """Build JATS XML and write it to out_path. Returns out_path."""
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(build_jats_xml(paragraphs, **kwargs))
+    return out_path
+
+
+def validate_jats(xml_text: str):
+    """Structural validation of generated JATS XML. Checks well-formedness and
+    the presence of required elements; verifies every in-text <xref> points to a
+    real <ref>. Returns (ok, issues). This is a pragmatic structural check, not
+    full DTD validation (which would require the JATS DTD files)."""
+    issues: List[str] = []
+    body = "\n".join(
+        ln for ln in (xml_text or "").splitlines() if not ln.strip().startswith("<!DOCTYPE")
+    )
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as e:
+        return False, [f"Not well-formed XML: {e}"]
+
+    if root.tag != "article":
+        issues.append("Root element is not <article>.")
+    title = root.find("./front/article-meta/title-group/article-title")
+    if title is None or not (title.text and title.text.strip()):
+        issues.append("Missing or empty <article-title>.")
+    if root.find("./body") is None:
+        issues.append("Missing <body>.")
+
+    ref_ids = {r.get("id") for r in root.findall(".//ref")}
+    for x in root.findall('.//xref[@ref-type="bibr"]'):
+        if x.get("rid") not in ref_ids:
+            issues.append(f"<xref> points to a missing reference: {x.get('rid')}")
+
+    return (len(issues) == 0), issues
 
 
 def generate_cover_letter(abstract: str, journal_name: str, settings: Dict[str, Any]) -> str:
