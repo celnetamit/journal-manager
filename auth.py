@@ -700,9 +700,31 @@ def create_job(user_id: int, filename: str, input_path: str, options_json: str) 
 
 
 def claim_next_job() -> Optional[dict]:
-    """Atomically move the oldest queued job to 'running' and return it."""
+    """Atomically move the oldest queued job to 'running' and return it.
+
+    Safe for multiple concurrent workers. On Postgres we use a single
+    UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) statement so two
+    workers never grab the same row and never block each other. On SQLite
+    (single writer) the select-then-conditional-update is sufficient."""
     with _connect() as conn:
         cur = conn.cursor()
+        if _is_postgres():
+            cur.execute(
+                f"""UPDATE jobs SET status='running', stage='Starting',
+                        started_at={_now_sql()}
+                    WHERE id = (
+                        SELECT id FROM jobs WHERE status='queued'
+                        ORDER BY created_at, id
+                        FOR UPDATE SKIP LOCKED LIMIT 1
+                    )
+                    RETURNING id"""
+            )
+            row = cur.fetchone()
+            conn.commit()
+            if not row:
+                return None
+            return get_job(dict(row)["id"])
+
         cur.execute(
             "SELECT id FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1"
         )
@@ -711,8 +733,8 @@ def claim_next_job() -> Optional[dict]:
             return None
         jid = dict(row)["id"]
         cur.execute(
-            f"""UPDATE jobs SET status='running', stage='Starting', started_at={_now_sql()}
-                WHERE id={'%s' if _is_postgres() else '?'} AND status='queued'""",
+            "UPDATE jobs SET status='running', stage='Starting', "
+            "started_at=datetime('now') WHERE id=? AND status='queued'",
             (jid,),
         )
         claimed = cur.rowcount

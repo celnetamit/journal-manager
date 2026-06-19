@@ -45,6 +45,19 @@ def _llm_max_concurrency() -> int:
         return 3
 
 
+def _chunk_pool_size() -> int:
+    """Per-job paragraph-chunk worker pool. Defaults to the global LLM
+    concurrency cap (no point spawning more threads than the semaphore allows),
+    overridable via LLM_CHUNK_WORKERS for finer control."""
+    raw = os.getenv("LLM_CHUNK_WORKERS")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            pass
+    return _llm_max_concurrency()
+
+
 _LLM_SEMAPHORE = threading.Semaphore(_llm_max_concurrency())
 
 # Max retries for a 429 (Too Many Requests) before giving up, and the initial
@@ -1989,7 +2002,7 @@ def process_document_async(
         return edited_paras
 
     completed = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_chunk_pool_size()) as ex:
         future_to_chunk = {
             ex.submit(ai_edit_chunk, chunk_texts, settings, edit_style, ref_style,
                       lang, custom_dict, use_crossref,

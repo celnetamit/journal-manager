@@ -260,9 +260,19 @@ def _worker_loop() -> None:
             time.sleep(2)
 
 
+def _worker_count() -> int:
+    """How many job-worker threads to run per process. Defaults to 1 (serial);
+    set JOB_WORKERS>1 to process several users' jobs in parallel. Safe with
+    Postgres because claim_next_job claims each job atomically."""
+    try:
+        return max(1, int(os.getenv("JOB_WORKERS", "1")))
+    except (TypeError, ValueError):
+        return 1
+
+
 def start_worker_once() -> None:
-    """Start exactly one worker thread per process. Re-queues jobs interrupted
-    by a previous crash/restart before the worker begins."""
+    """Start the job-worker thread pool once per process (JOB_WORKERS threads).
+    Re-queues jobs interrupted by a previous crash/restart before they begin."""
     global _worker_started
     with _worker_lock:
         if _worker_started:
@@ -274,4 +284,9 @@ def start_worker_once() -> None:
                 print(f"[worker] re-queued {n} interrupted job(s)")
         except Exception as exc:
             print(f"[worker] requeue failed: {exc}")
-        threading.Thread(target=_worker_loop, name="job-worker", daemon=True).start()
+        workers = _worker_count()
+        for i in range(workers):
+            threading.Thread(
+                target=_worker_loop, name=f"job-worker-{i}", daemon=True
+            ).start()
+        print(f"[worker] started {workers} job worker(s)")
