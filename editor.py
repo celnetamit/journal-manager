@@ -332,6 +332,28 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
 2. EN-DASH FOR RANGES: For a consecutive citation range, use an en dash (–) with no surrounding spaces between the first and last number, e.g. "[3-7]", "[3 to 7]", "[3—7]" -> "[3–7]".
 3. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these two rules; they apply only to in-text citation markers.""",
     },
+    {
+        "id": "abbreviation",
+        "title": "In-House Abbreviation Expansion Rules",
+        "summary": "Expand element labels (Fig.→Figure, Tab.→Table, Eq.→Equation, etc.) to their full word when they refer to a numbered element.",
+        "body": """IN-HOUSE ABBREVIATION EXPANSION RULES (apply to body text AND figure/table captions; spell out abbreviated labels that refer to a numbered manuscript element so they read unambiguously):
+1. EXPAND TO THE FULL WORD when the abbreviation refers to a specific element (i.e. it is followed by a number, a letter, or a number range, with or without a period). Use these exact, capitalized full forms and KEEP the identifier that follows:
+   - "Fig", "Fig.", "fig", "fig." -> "Figure"   (e.g. "Fig. 3", "fig 3", "Fig.3" -> "Figure 3")
+   - "Figs", "Figs.", "figs." -> "Figures"      (e.g. "Figs. 2–4" -> "Figures 2–4")
+   - "Tab", "Tab.", "tab.", "Tbl", "Tbl." -> "Table"   (e.g. "Tab. 2" -> "Table 2")
+   - "Tabs", "Tabs.", "Tbls." -> "Tables"
+   - "Img", "img", "img." -> "Image"            (e.g. "img 5" -> "Image 5")
+   - "Eq", "Eq.", "Eqn", "Eqn.", "eq." -> "Equation"  (e.g. "Eq. (4)" -> "Equation (4)")
+   - "Eqs", "Eqs.", "Eqns." -> "Equations"
+   - "Sec", "Sec.", "Sect", "Sect." -> "Section"
+   - "Ch", "Ch.", "Chap", "Chap." -> "Chapter"
+   - "App.", "Appx", "Appx." -> "Appendix"
+   - "Suppl.", "Supp." -> "Supplementary"
+   - "Photo", "photo" referring to a numbered plate -> "Photo" (capitalized) and keep the number (e.g. "photo 2" -> "Photo 2")
+2. CAPITALIZATION: When the expanded label is immediately followed by its number/identifier, capitalize it ("Figure 3", "Table 2", "Equation 4"), even mid-sentence — this is the element's name. At the start of a sentence always capitalize. A general mention with no number (e.g. "as shown in the figure above") stays lowercase and is left as the ordinary word.
+3. SPACING: Ensure exactly one space between the full word and its identifier ("Fig.3" -> "Figure 3"); preserve ranges/lists and any surrounding parentheses ("(Fig. 1a)" -> "(Figure 1a)").
+4. SCOPE / DO NOT TOUCH: Do NOT expand these inside reference/bibliography entries, inside URLs/DOIs, or where the letters are part of another word (e.g. "fight", "tablet", "imgur", "section" already spelled out, "figure" already spelled out). Do NOT change established discipline abbreviations that are not element labels (units, gene names, chemical symbols, "et al.", "vs.", "etc.", "i.e.", "e.g."). Never alter the numbers/identifiers themselves.""",
+    },
 ]
 
 HOUSE_RULE_IDS = [g["id"] for g in HOUSE_RULE_GROUPS]
