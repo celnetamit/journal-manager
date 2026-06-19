@@ -308,19 +308,31 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
 1. AUTHOR LIMIT (6 + et al.): Count the authors in each reference. If a reference lists MORE THAN 6 authors, keep ONLY the first 6 authors in their original order, DELETE every author after the 6th, and append "et al." after the 6th author. The output must contain EXACTLY 6 names followed by "et al." — never 7 or more names before "et al.". Example with 8 authors: "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, Brown G, Davis H" -> "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, et al." (authors 7 and 8 are removed). If there are 6 or fewer authors, list them ALL and do NOT add "et al.". Never add "et al." to a list that already shows all authors.
 1a. STRIP TITLES: Remove any honorific or professional title prefixes attached to an author name (e.g. "Mr", "Mrs", "Ms", "Dr", "Dr.", "Prof", "Prof.", "Professor", "Er", "Er.", "Sir", "Sri", "Smt", "Md" when used as a courtesy title, "PhD"/"MD"/"FRCS" when used as a leading prefix). Keep only the actual name. Example: "Dr. Smith JA, Prof Jones BR" -> "Smith JA, Jones BR". Do this in BOTH the bibliography entries and any in-text author-date citations.
 2. JOURNAL ABBREVIATION: For JOURNAL references, abbreviate the journal name using standard ISO 4 / Index Medicus (NLM) abbreviations (e.g., "Journal of Science" -> "J Sci"; "New England Journal of Medicine" -> "N Engl J Med"; "Nature" stays "Nature"). Do NOT abbreviate book titles, publisher names, or chapter titles.
-3. SOURCE-TYPE STRUCTURE: Before formatting each reference, identify whether it is a JOURNAL ARTICLE or a BOOK/BOOK CHAPTER, then structure it accordingly:
-   - JOURNAL ARTICLE: Authors. Article title. Abbreviated Journal Name. Year;Volume(Issue):Pages. (include DOI if present)
-   - BOOK: Authors/Editors. Book Title. Edition. Place of publication: Publisher; Year. (do NOT abbreviate the title)
-   - BOOK CHAPTER: Authors. Chapter title. In: Editors, editors. Book Title. Place: Publisher; Year. p. Pages.
+3. SOURCE-TYPE STRUCTURE: Identify each reference's type and format it with EXACTLY this punctuation and order (journal house style):
+   - JOURNAL ARTICLE: Authors. Article title. Abbreviated Journal Title. Year; Volume (Issue): start–endp. doi: <doi>.
+     (page range uses an en dash and a trailing "p"; include the doi if present)
+     Example: Hsu SC, Wang SJ, Liu CY, Juang YY, Yang CH, Hung CI. The impact of anxiety and migraine on quality of sleep in patients with major depressive disorder. Compr Psychiatry. 2009; 50 (2): 151–157p. doi: 10.1016/j.comppsych.2008.07.002.
+   - BOOK: Authors. Book Title. Publisher Location: Publisher Name; Year. (do NOT abbreviate the title)
+     Example: Singh S. Textbook of Medical Surgical Nursing. New Delhi: Wolters Kluwer; 2005.
+   - EDITED BOOK / CHAPTER: Authors. Chapter title, In: Editors, editors. Book Title. Edition. Publisher Location: Publisher Name; Year. pp. start–end.
+     Example: Singh S, Sharma A. Surgery in nursing, In: Janice L. Hinkle, Kerry H. Cheever, editor. Brunner & Suddarth's Textbook of Medical-Surgical Nursing. 14th edition. New Delhi: Wolters Kluwer; 2005. pp. 2198–2201.
+   - CONFERENCE: Authors. Article title, Title of Conference, Location of Conference. Year, Month Date.
+     Example: Bowden FJ, Fairley CK. Endemic STDs in the Northern Territory: estimations of effective rates of partner exchange. The Scientific Meeting of the Royal Australian College of Physicians. Darwin, Australia. 1996, June 24–25.
+   - WEB PAGE (ONLINE): Authors. (Year). Title of article. [Online] Title of Webpage. Available at URL [Accessed on Month Year].
+     Example: World Health Organization. (2015). Drinking water. [Online] World Health Organization. Available at http://www.who.int/mediacentre/factsheets/fs391/en/ [Accessed on July 2015].
+   IMPORTANT: rules 1 and 2 ALWAYS apply on top of these formats — cap the author list at 6 + "et al." and abbreviate journal titles to ISO-4, even though this journal's own stylesheet otherwise lists all authors and full journal titles.
    Only treat an item as a reference if it is clearly a citation/bibliography entry; do NOT restructure ordinary body text.""",
     },
     {
         "id": "heading",
         "title": "In-House Heading Rules",
-        "summary": "Title case, remove leading numbering, preserve hierarchy, no trailing period/colon.",
-        "body": """IN-HOUSE HEADING RULES (apply to any paragraph that is a section/subsection heading, e.g. "Introduction", "Materials and Methods"):
-1. TITLE CASE: Capitalize headings in title case (capitalize the first and last word and all major words; keep articles, coordinating conjunctions, and short prepositions such as "a", "an", "the", "of", "and", "in", "for", "to" lowercase unless they are the first/last word). Example: "fundamentals of functional genomics" -> "Fundamentals of Functional Genomics".
-2. NO NUMBERING: Remove any leading numbering or auto-number prefixes from headings (e.g. "1. Introduction", "1.2 Methods", "Chapter 3: Results", "IV. Discussion" -> "Introduction", "Methods", "Results", "Discussion"). Keep the heading text itself intact.
+        "summary": "Level-based case (H1 ALL CAPS, sub-levels Title Case), remove leading numbering, preserve hierarchy, no trailing period/colon.",
+        "body": """IN-HOUSE HEADING RULES (apply to any paragraph that is a section/subsection heading):
+1. CASE BY LEVEL:
+   - Top-level / main section headings (Level 1, e.g. "INTRODUCTION", "MATERIALS AND METHODS", "RESULTS", "DISCUSSION", "CONCLUSION") -> ALL CAPS.
+   - Sub-level headings (Levels 2, 3, 4) -> Title Case (capitalize the first and last word and all major words; keep short articles/conjunctions/prepositions such as "a", "an", "the", "of", "and", "in", "for", "to" lowercase unless first/last). Example: "fundamentals of functional genomics" -> "Fundamentals of Functional Genomics".
+   (The journal styles these visually as H1 all-caps bold, H2 bold, H3 bold italic, H4 italic — apply the CASING here; the bold/italic is the journal's visual style applied at layout.)
+2. NO NUMBERING: Remove any leading numbering or auto-number prefixes from headings (e.g. "1. Introduction", "1.2 Methods", "Chapter 3: Results", "IV. Discussion" -> "INTRODUCTION", "Methods", "Results", "Discussion"). Keep the heading text itself intact.
 3. STRUCTURE: Preserve the heading's hierarchy/level and order; only fix its capitalization and remove numbering. Do NOT merge a heading into body text or turn body text into a heading. Do NOT add a trailing period or colon to a heading.""",
     },
     {
@@ -353,6 +365,61 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
 2. CAPITALIZATION: When the expanded label is immediately followed by its number/identifier, capitalize it ("Figure 3", "Table 2", "Equation 4"), even mid-sentence — this is the element's name. At the start of a sentence always capitalize. A general mention with no number (e.g. "as shown in the figure above") stays lowercase and is left as the ordinary word.
 3. SPACING: Ensure exactly one space between the full word and its identifier ("Fig.3" -> "Figure 3"); preserve ranges/lists and any surrounding parentheses ("(Fig. 1a)" -> "(Figure 1a)").
 4. SCOPE / DO NOT TOUCH: Do NOT expand these inside reference/bibliography entries, inside URLs/DOIs, or where the letters are part of another word (e.g. "fight", "tablet", "imgur", "section" already spelled out, "figure" already spelled out). Do NOT change established discipline abbreviations that are not element labels (units, gene names, chemical symbols, "et al.", "vs.", "etc.", "i.e.", "e.g."). Never alter the numbers/identifiers themselves.""",
+    },
+    {
+        "id": "title",
+        "title": "In-House Title Rules",
+        "summary": "Article title in title case (Upper and Lower); subtitle after a colon capitalized; no trailing period.",
+        "body": """IN-HOUSE TITLE RULES (apply ONLY to the article title):
+1. TITLE CASE (Upper and Lower): Capitalize the first and last word and all major words; keep short articles, coordinating conjunctions, and short prepositions ("a", "an", "the", "of", "and", "for", "to", "in", "with", "on") lowercase unless they are the first or last word. After a colon, capitalize the first word of the subtitle. Example: "assessment of knowledge: regarding migraine among patients with migraine" -> "Assessment of Knowledge: Regarding Migraine Among Patients with Migraine".
+2. Do NOT add a trailing period, and do NOT change the wording or meaning of the title.""",
+    },
+    {
+        "id": "keywords",
+        "title": "In-House Keywords Rules",
+        "summary": "Lower case except proper nouns; comma + space separated; five to ten keywords; no trailing period.",
+        "body": """IN-HOUSE KEYWORDS RULES (apply to the "Keywords:" line):
+1. CASE: Lower case for every keyword EXCEPT proper nouns, which keep their capitalization (e.g. "Parkinson disease", "WhatsApp"). Example: "Keywords: Knowledge, Migraine, Triggering Factors, Mobile App, WhatsApp" -> "Keywords: knowledge, migraine, triggering factors, mobile app, WhatsApp".
+2. SEPARATOR: Separate the keywords/phrases with a comma followed by a single space; no trailing period after the last keyword.
+3. COUNT: There should be five to ten keywords or phrases. If there are fewer than five or more than ten, flag it in the report — do NOT invent new keywords or delete meaningful ones to hit the count.""",
+    },
+    {
+        "id": "abstract",
+        "title": "In-House Abstract Rules",
+        "summary": "Abstract heading in title case; no abbreviations, citations or references inside the abstract; ~300 words.",
+        "body": """IN-HOUSE ABSTRACT RULES (apply to the abstract section):
+1. HEADING: The "Abstract" heading is in Title Case.
+2. CONTENT: The abstract text must NOT contain any abbreviations, in-text citations / reference numbers (e.g. "[1]"), or reference markers. Spell out any abbreviation in full and remove citation markers within the abstract only.
+3. LENGTH: Aim for about 300 words. Do NOT pad the abstract or aggressively cut meaningful content just to hit the count; flag it if it is far outside the range.
+(The journal sets the abstract body text in italic — that is its visual style, applied at layout.)""",
+    },
+    {
+        "id": "front_matter",
+        "title": "In-House Front-Matter Rules",
+        "summary": "Author names + affiliations with superscript markers, corresponding author (*) + email, short title (≤60 chars), running short-author form.",
+        "body": """IN-HOUSE FRONT-MATTER RULES (apply to the title block / author block):
+1. AUTHOR NAMES: Give each author's name as initial(s) + full surname, each tagged with a superscript number linking to its affiliation. Example: "Saniya Jose1,*, Susan Kumar2, Thomas Mathew3".
+2. AFFILIATION: Order each affiliation as Designation/Role, Department/School/Faculty, Institution/University/College, City, State/Province, Country — prefixed with its superscript number. Example: "2Professor, Department of Medical Surgical Nursing, St John's College of Nursing, Bangalore, Karnataka, India".
+3. CORRESPONDING AUTHOR: Mark the corresponding author with "*"; provide a block "*Author for Correspondence" followed by the author's name and "E-mail: <address>".
+4. SHORT TITLE: If the full title exceeds 70 characters, provide a short title of at most 60 characters (including spaces).
+5. SHORT AUTHOR (running author line, non-italic): more than two authors -> "Lastname et al."; exactly two authors -> "Lastname and Lastname"; a single author -> the author's name.""",
+    },
+    {
+        "id": "tables_figures",
+        "title": "In-House Table & Figure Rules",
+        "summary": "Arabic numbering; in-text \"Figure 2(b)\"/\"Table 1\"; captions sentence case with bold \"Figure 1.\"/\"Table 1.\" label; abbreviation lists alphabetical.",
+        "body": """IN-HOUSE TABLE & FIGURE RULES:
+1. IN-TEXT CITATION: Refer to tables/figures by the full word + an Arabic numeral, e.g. "Figure 2(b)", "(Figure 3a)", "Table 1" (never "Fig."/"Tab."). Numbering is Arabic and in sequential order.
+2. CAPTION / LEGEND: Sentence case, non-italic, beginning with the label and number followed by a period — "Table 1." / "Figure 1." (label in bold at layout) — then the caption text in sentence case. Example: "Figure 1. Distribution of migraine patients on overall knowledge with regard to migraine.".
+3. ABBREVIATIONS WITHIN A TABLE/FIGURE: List the abbreviation definitions in alphabetical order as "ABBR, expansion" separated by semicolons. Example: "CT, computed tomography; NMR, nuclear magnetic resonance; WHO, World Health Organization".""",
+    },
+    {
+        "id": "text_abbreviations",
+        "title": "In-House Text Abbreviation Rules",
+        "summary": "Spell out each abbreviation in full at first use with the short form in parentheses, then use the short form thereafter.",
+        "body": """IN-HOUSE TEXT ABBREVIATION RULES (general abbreviations in body text — distinct from figure/table element labels):
+1. FIRST-USE EXPANSION: Spell out an abbreviation in full at its FIRST occurrence in the body text with the abbreviation in parentheses, then use the abbreviation throughout the rest of the text. Example: "... should be managed by multidisciplinary team (MDT). ... review by the MDT at least every 24 h.".
+2. Do NOT re-expand the abbreviation on later occurrences, and do NOT apply this inside the abstract (the abstract carries no abbreviations). Units (e.g. "h", "min", "mg", "kg") and standard Latin abbreviations ("e.g.", "i.e.", "etc.", "et al.") are exempt and need no expansion.""",
     },
 ]
 
