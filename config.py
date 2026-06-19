@@ -388,6 +388,17 @@ def is_admin_email(email: str) -> bool:
     return bool(email) and email.strip().lower() in admin_emails()
 
 
+def superadmin_emails() -> List[str]:
+    """Emails granted the top-level superadmin role on login. Comma-separated
+    SUPERADMIN_EMAILS env override. Superadmins are also implicitly admins."""
+    raw = os.environ.get("SUPERADMIN_EMAILS", "").strip()
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+
+def is_superadmin_email(email: str) -> bool:
+    return bool(email) and email.strip().lower() in superadmin_emails()
+
+
 def seed_admin_credentials() -> Optional[tuple]:
     """Optional break-glass admin from env (SEED_ADMIN_USERNAME +
     SEED_ADMIN_PASSWORD). Returns (username, password) or None."""

@@ -317,7 +317,11 @@ if is_authenticated:
     with st.sidebar:
         _role = st.session_state.get("role") or auth.get_user_role(st.session_state.user_id)
         st.session_state.role = _role
-        _badge = " · 🛡️ Admin" if _role == "admin" else ""
+        _badge = ""
+        if _role == "superadmin":
+            _badge = " · 👑 Superadmin"
+        elif _role == "admin":
+            _badge = " · 🛡️ Admin"
         st.success(f"Logged in as **{st.session_state.username}**{_badge}")
         if st.session_state.get(_SIDEBAR_NOTICE_KEY):
             st.info(st.session_state[_SIDEBAR_NOTICE_KEY])
@@ -746,9 +750,13 @@ def _render_job(job: dict) -> None:
 
 st.title("📝 Automated Manuscript Copyediting & Proofreading")
 
-tab_editor, tab_test, tab_history, tab_analytics = st.tabs(
-    ["📝 Editor", "🧪 Model Test", "📚 My History", "📈 Analytics"]
-)
+_is_superadmin = st.session_state.get("role") == "superadmin"
+_tab_labels = ["📝 Editor", "🧪 Model Test", "📚 My History", "📈 Analytics"]
+if _is_superadmin:
+    _tab_labels.append("👑 Superadmin")
+_tabs = st.tabs(_tab_labels)
+tab_editor, tab_test, tab_history, tab_analytics = _tabs[:4]
+tab_superadmin = _tabs[4] if _is_superadmin else None
 
 with tab_editor:
     st.markdown(
@@ -1047,3 +1055,225 @@ with tab_analytics:
             st.info("No analytics recorded yet.")
     except Exception as e:
         st.error(f"Could not load analytics: {e}")
+
+
+if tab_superadmin is not None:
+    with tab_superadmin:
+        # Defense in depth: never trust the session flag alone for a privileged
+        # surface — re-verify the role against the database on every render.
+        if not auth.is_superadmin(st.session_state.get("user_id")):
+            st.error("This area is restricted to superadmins.")
+            st.stop()
+
+        st.subheader("👑 Superadmin Control Center")
+        st.caption(
+            "Platform-wide tracing and management. Data here is non-anonymized — "
+            "handle responsibly. Superadmins are designated via the SUPERADMIN_EMAILS "
+            "environment allowlist."
+        )
+
+        sa_overview, sa_users, sa_jobs, sa_audit = st.tabs(
+            ["🩺 Overview & Health", "👥 Users & Roles", "⚙️ Jobs", "🔍 Audit & Security"]
+        )
+
+        # ---- Overview & system health -------------------------------------
+        with sa_overview:
+            try:
+                roles = auth.role_counts()
+                queue = auth.job_queue_stats()
+                tables = auth.db_table_counts()
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Users", auth.fetch_user_count())
+                m2.metric("Superadmins", roles.get("superadmin", 0))
+                m3.metric("Admins", roles.get("admin", 0))
+                m4.metric("Processed manuscripts", auth.fetch_total_jobs())
+
+                q1, q2, q3, q4 = st.columns(4)
+                q1.metric("Jobs queued", queue.get("queued", 0))
+                q2.metric("Jobs running", queue.get("running", 0))
+                q3.metric("Jobs done", queue.get("done", 0))
+                q4.metric("Jobs errored", queue.get("error", 0))
+
+                st.markdown("**Database tables**")
+                st.dataframe(
+                    pd.DataFrame([{"table": k, "rows": v} for k, v in tables.items()]),
+                    width="stretch", hide_index=True,
+                )
+
+                st.markdown("**Runtime configuration**")
+                cfg = {
+                    "LLM provider": llm_settings.get("provider", ""),
+                    "LLM config locked (env)": app_config.llm_config_locked(),
+                    "Output retention (days)": app_config.output_retention_days(),
+                    "Login max attempts": app_config.login_max_attempts(),
+                    "Lockout window (min)": app_config.login_lockout_minutes(),
+                    "Postgres backend": "DATABASE_URL" in os.environ and bool(app_config.database_url()),
+                    "Superadmin allowlist size": len(app_config.superadmin_emails()),
+                    "Admin allowlist size": len(app_config.admin_emails()),
+                }
+                st.dataframe(
+                    pd.DataFrame([{"setting": k, "value": str(v)} for k, v in cfg.items()]),
+                    width="stretch", hide_index=True,
+                )
+            except Exception as e:
+                st.error(f"Could not load overview: {e}")
+
+        # ---- Users & roles ------------------------------------------------
+        with sa_users:
+            try:
+                users = auth.fetch_all_users()
+                if not users:
+                    st.info("No users registered yet.")
+                else:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "id": u["id"], "username": u.get("username"),
+                                "email": u.get("email"), "role": u.get("role") or "member",
+                                "auth": u.get("auth_provider"), "jobs": u.get("job_count", 0),
+                                "last_active": u.get("last_active") or "—",
+                            }
+                            for u in users
+                        ]),
+                        width="stretch", hide_index=True,
+                    )
+
+                    st.markdown("**Change a user's role**")
+                    by_label = {
+                        f'{u["username"]} (id {u["id"]}, {u.get("role") or "member"})': u
+                        for u in users
+                    }
+                    with st.form("sa_role_form"):
+                        sel = st.selectbox("User", list(by_label.keys()))
+                        new_role = st.selectbox("New role", ["member", "admin", "superadmin"])
+                        submitted = st.form_submit_button("Apply role change")
+                    if submitted:
+                        target = by_label[sel]
+                        cur_role = target.get("role") or "member"
+                        # Guard: never demote the last remaining superadmin.
+                        if cur_role == "superadmin" and new_role != "superadmin" \
+                                and auth.count_superadmins() <= 1:
+                            st.error("Cannot demote the last remaining superadmin.")
+                        elif new_role == cur_role:
+                            st.info("Role unchanged.")
+                        else:
+                            auth.set_user_role(target["id"], new_role)
+                            if target["id"] == st.session_state.get("user_id"):
+                                st.session_state.role = new_role  # keep session in sync
+                            st.success(
+                                f"{target['username']} is now **{new_role}** (was {cur_role})."
+                            )
+                            st.rerun()
+            except Exception as e:
+                st.error(f"Could not load users: {e}")
+
+        # ---- Jobs (trace + control) ---------------------------------------
+        with sa_jobs:
+            try:
+                colf, coln = st.columns([2, 1])
+                status_filter = colf.selectbox(
+                    "Filter by status", ["(all)", "queued", "running", "done", "error"],
+                    key="sa_job_status",
+                )
+                limit = coln.number_input("Max rows", 10, 1000, 100, step=10, key="sa_job_limit")
+                jobs = auth.fetch_all_jobs(
+                    limit=int(limit),
+                    status=None if status_filter == "(all)" else status_filter,
+                )
+                if not jobs:
+                    st.info("No jobs match this filter.")
+                else:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "id": j["id"], "user": j.get("username") or j.get("user_id"),
+                                "file": j.get("filename"), "status": j.get("status"),
+                                "stage": j.get("stage"),
+                                "progress": f'{int((j.get("progress") or 0) * 100)}%',
+                                "created": j.get("created_at"), "finished": j.get("finished_at"),
+                                "error": (j.get("error_message") or "")[:80],
+                            }
+                            for j in jobs
+                        ]),
+                        width="stretch", hide_index=True,
+                    )
+
+                    st.markdown("**Control a job**")
+                    job_ids = [j["id"] for j in jobs]
+                    cj1, cj2, cj3 = st.columns([2, 1, 1])
+                    job_id = cj1.selectbox("Job id", job_ids, key="sa_job_pick")
+                    if cj2.button("♻️ Requeue", key="sa_job_requeue"):
+                        if auth.requeue_job(int(job_id)):
+                            st.success(f"Job {job_id} re-queued.")
+                            st.rerun()
+                        else:
+                            st.error("Requeue failed.")
+                    if cj3.button("🛑 Cancel", key="sa_job_cancel"):
+                        if auth.cancel_job(int(job_id)):
+                            st.success(f"Job {job_id} cancelled.")
+                            st.rerun()
+                        else:
+                            st.warning("Only queued/running jobs can be cancelled.")
+
+                    detail = auth.get_job(int(job_id))
+                    if detail and detail.get("error_message"):
+                        with st.expander(f"Error detail for job {job_id}"):
+                            st.code(detail["error_message"])
+            except Exception as e:
+                st.error(f"Could not load jobs: {e}")
+
+        # ---- Audit log & security -----------------------------------------
+        with sa_audit:
+            try:
+                st.markdown("**Processing audit log** (non-anonymized)")
+                fa, fb, fc = st.columns([1, 1, 2])
+                a_status = fa.selectbox(
+                    "Status", ["(all)", "Success", "Failed"], key="sa_audit_status"
+                )
+                a_limit = fb.number_input("Max rows", 10, 2000, 200, step=10, key="sa_audit_limit")
+                a_search = fc.text_input("Filename contains", key="sa_audit_search")
+                logs = auth.fetch_process_logs(
+                    limit=int(a_limit),
+                    status=None if a_status == "(all)" else a_status,
+                    search=a_search,
+                )
+                if logs:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "time": l.get("timestamp"),
+                                "user": l.get("username") or l.get("user_id"),
+                                "file": l.get("filename"), "status": l.get("status"),
+                                "paras": l.get("paragraphs_count"),
+                                "edit": l.get("edit_style"), "ref": l.get("ref_style"),
+                                "secs": round(l.get("duration_seconds") or 0, 1),
+                                "error": (l.get("error_message") or "")[:80],
+                            }
+                            for l in logs
+                        ]),
+                        width="stretch", hide_index=True,
+                    )
+                else:
+                    st.info("No audit records match this filter.")
+
+                st.divider()
+                st.markdown("**Security — failed logins & lockouts**")
+                locked = auth.locked_out_usernames()
+                if locked:
+                    st.warning("Currently locked out: " + ", ".join(locked))
+                    lc1, lc2 = st.columns([2, 1])
+                    who = lc1.selectbox("Clear lockout for", locked, key="sa_unlock_pick")
+                    if lc2.button("🔓 Clear lockout", key="sa_unlock_btn"):
+                        auth.clear_login_lockout(who)
+                        st.success(f"Lockout cleared for {who}.")
+                        st.rerun()
+                else:
+                    st.success("No accounts are currently locked out.")
+
+                attempts = auth.fetch_recent_login_attempts(100)
+                if attempts:
+                    with st.expander(f"Recent failed-login attempts ({len(attempts)})"):
+                        st.dataframe(pd.DataFrame(attempts), width="stretch", hide_index=True)
+            except Exception as e:
+                st.error(f"Could not load audit/security data: {e}")

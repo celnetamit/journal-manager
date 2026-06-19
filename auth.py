@@ -19,7 +19,7 @@ import sqlite3
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import bcrypt
 
@@ -399,13 +399,36 @@ def _upgrade_hash(cur: Any, user_id: int, pw: str) -> None:
 
 # --- Google SSO / roles ---
 
+# Role hierarchy: a higher rank includes every power of the ranks below it.
+ROLE_RANK = {"member": 0, "admin": 1, "superadmin": 2}
+
+
+def _max_role(*roles: Optional[str]) -> str:
+    """Return the highest-privilege role among the inputs (never downgrades)."""
+    best = "member"
+    for r in roles:
+        if r and ROLE_RANK.get(r, 0) > ROLE_RANK.get(best, 0):
+            best = r
+    return best
+
+
+def _config_role(email: str) -> Optional[str]:
+    """Role granted purely by the env allowlists (superadmin outranks admin)."""
+    if app_config.is_superadmin_email(email):
+        return "superadmin"
+    if app_config.is_admin_email(email):
+        return "admin"
+    return None
+
+
 def get_or_create_oauth_user(email: str, name: str = "") -> Optional[int]:
     """Map a verified SSO email to a users row (creating it on first login).
-    The username is the email; admins (per config) are promoted automatically."""
+    The username is the email; admins/superadmins (per config allowlists) are
+    promoted automatically, and an existing higher role is never downgraded."""
     email = (email or "").strip().lower()
     if not email:
         return None
-    role = "admin" if app_config.is_admin_email(email) else None
+    cfg_role = _config_role(email)
     ph = "%s" if _is_postgres() else "?"
     with _connect() as conn:
         cur = conn.cursor()
@@ -414,7 +437,7 @@ def get_or_create_oauth_user(email: str, name: str = "") -> Optional[int]:
         if row:
             r = dict(row)
             uid = r["id"]
-            new_role = role or (r.get("role") or "member")
+            new_role = _max_role(cfg_role, r.get("role"))
             cur.execute(
                 f"UPDATE users SET email={ph}, auth_provider='google', role={ph} WHERE id={ph}",
                 (email, new_role, uid),
@@ -424,7 +447,7 @@ def get_or_create_oauth_user(email: str, name: str = "") -> Optional[int]:
         cur.execute(
             f"""INSERT INTO users (username, password_hash, email, role, auth_provider)
                 VALUES ({ph},{ph},{ph},{ph},'google')""",
-            (email, "", email, role or "member"),
+            (email, "", email, cfg_role or "member"),
         )
         conn.commit()
         cur.execute(f"SELECT id FROM users WHERE username={ph}", (email,))
@@ -446,7 +469,12 @@ def get_user_role(user_id: Optional[int]) -> str:
 
 
 def is_admin(user_id: Optional[int]) -> bool:
-    return get_user_role(user_id) == "admin"
+    """True for both admins and superadmins (superadmin includes admin powers)."""
+    return get_user_role(user_id) in {"admin", "superadmin"}
+
+
+def is_superadmin(user_id: Optional[int]) -> bool:
+    return get_user_role(user_id) == "superadmin"
 
 
 def set_user_role(user_id: int, role: str) -> None:
@@ -873,3 +901,192 @@ def fetch_total_jobs() -> int:
         cur.execute("SELECT COUNT(*) AS n FROM process_logs")
         row = cur.fetchone()
         return int(row["n"]) if row else 0
+
+
+# --- Superadmin: platform-wide tracing & management ---------------------------
+#
+# These helpers expose non-anonymized, cross-user data and mutating controls.
+# They are only ever reached from the superadmin-gated dashboard in app.py.
+
+def fetch_all_users() -> List[dict]:
+    """Every user with role/provider plus derived activity (job count + last
+    seen), newest activity first. Used by the superadmin user-management view."""
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT u.id, u.username, u.email, u.role, u.auth_provider,
+                      COUNT(p.id) AS job_count, MAX(p.timestamp) AS last_active
+               FROM users u
+               LEFT JOIN process_logs p ON p.user_id = u.id
+               GROUP BY u.id, u.username, u.email, u.role, u.auth_provider
+               ORDER BY (MAX(p.timestamp) IS NULL), MAX(p.timestamp) DESC, u.id DESC"""
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def count_superadmins() -> int:
+    """Number of superadmin accounts (used to block demoting the last one)."""
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS n FROM users WHERE role='superadmin'")
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+
+def role_counts() -> Dict[str, int]:
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT role, COUNT(*) AS n FROM users GROUP BY role")
+        return {(dict(r)["role"] or "member"): int(dict(r)["n"]) for r in cur.fetchall()}
+
+
+def fetch_all_jobs(limit: int = 100, status: Optional[str] = None) -> List[dict]:
+    """Every queue job across all users (optionally filtered by status), with the
+    owning username joined in. Newest first."""
+    ph = "%s" if _is_postgres() else "?"
+    clause = f" WHERE j.status={ph}" if status else ""
+    params: Tuple[Any, ...] = (status, limit) if status else (limit,)
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT j.id, j.user_id, u.username, j.filename, j.status, j.progress,
+                       j.stage, j.created_at, j.started_at, j.finished_at, j.error_message
+                FROM jobs j LEFT JOIN users u ON u.id = j.user_id
+                {clause}
+                ORDER BY j.created_at DESC, j.id DESC LIMIT {ph}""",
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def job_queue_stats() -> Dict[str, int]:
+    """Counts of jobs grouped by status (queued / running / done / error / ...)."""
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status")
+        return {dict(r)["status"]: int(dict(r)["n"]) for r in cur.fetchall()}
+
+
+def requeue_job(job_id: int) -> bool:
+    """Send any job back to 'queued' so the worker re-runs it. Returns success."""
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""UPDATE jobs SET status='queued', stage='Re-queued', progress=0,
+                    started_at=NULL, finished_at=NULL, error_message=NULL WHERE id={ph}""",
+                (job_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[auth.requeue_job] error: {e}")
+        return False
+
+
+def cancel_job(job_id: int) -> bool:
+    """Mark a queued/running job as cancelled so it stops being processed."""
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""UPDATE jobs SET status='error', stage='Cancelled',
+                    error_message='Cancelled by superadmin', finished_at={_now_sql()}
+                    WHERE id={ph} AND status IN ('queued','running')""",
+                (job_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[auth.cancel_job] error: {e}")
+        return False
+
+
+def fetch_process_logs(limit: int = 200, user_id: Optional[int] = None,
+                       status: Optional[str] = None, search: str = "") -> List[dict]:
+    """Full (non-anonymized) audit trail across users, with owning username and
+    optional filters by user, status, or filename substring. Newest first."""
+    ph = "%s" if _is_postgres() else "?"
+    where: List[str] = []
+    params: List[Any] = []
+    if user_id is not None:
+        where.append(f"p.user_id={ph}")
+        params.append(user_id)
+    if status:
+        where.append(f"p.status={ph}")
+        params.append(status)
+    if search:
+        where.append(f"LOWER(p.filename) LIKE {ph}")
+        params.append(f"%{search.strip().lower()}%")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    params.append(limit)
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT p.id, p.timestamp, p.user_id, u.username, p.filename,
+                       p.paragraphs_count, p.edit_style, p.ref_style, p.language,
+                       p.duration_seconds, p.status, p.error_message
+                FROM process_logs p LEFT JOIN users u ON u.id = p.user_id
+                {clause}
+                ORDER BY p.timestamp DESC, p.id DESC LIMIT {ph}""",
+            tuple(params),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_recent_login_attempts(limit: int = 100) -> List[dict]:
+    """Recent failed-login records (used for the security view)."""
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT username, attempted_at FROM login_attempts
+                ORDER BY attempted_at DESC LIMIT {ph}""",
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def locked_out_usernames() -> List[str]:
+    """Usernames currently locked out under the failed-login policy."""
+    max_attempts = app_config.login_max_attempts()
+    if max_attempts <= 0:
+        return []
+    cutoff = _ts_param(_now_utc() - timedelta(minutes=app_config.login_lockout_minutes()))
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT username, COUNT(*) AS n FROM login_attempts
+                WHERE attempted_at > {ph}
+                GROUP BY username HAVING COUNT(*) >= {max_attempts}""",
+            (cutoff,),
+        )
+        return [dict(r)["username"] for r in cur.fetchall()]
+
+
+def clear_login_lockout(username: str) -> None:
+    """Superadmin override: clear the failed-login record for a username."""
+    if not username:
+        return
+    with _connect() as conn:
+        cur = conn.cursor()
+        _clear_login_attempts(cur, username)
+        conn.commit()
+
+
+def db_table_counts() -> Dict[str, int]:
+    """Row counts per table for the system-health view."""
+    out: Dict[str, int] = {}
+    with _connect() as conn:
+        cur = conn.cursor()
+        for table in ("users", "process_logs", "jobs", "login_tokens", "login_attempts"):
+            try:
+                cur.execute(f"SELECT COUNT(*) AS n FROM {table}")
+                row = cur.fetchone()
+                out[table] = int(row["n"]) if row else 0
+            except Exception:
+                out[table] = -1
+    return out
