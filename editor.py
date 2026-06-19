@@ -598,19 +598,30 @@ def _build_journal_embeddings(settings: Dict[str, Any]) -> str:
     return str(out_path)
 
 
-def _matched_topics(abstract: str, topics: List[str]) -> List[str]:
-    """Journal focus topics whose keywords actually appear in the manuscript
-    text — concrete, explainable evidence behind a recommendation."""
+def _topic_keyword_hits(abstract: str, topics: List[str]) -> Dict[str, List[str]]:
+    """Map each journal focus topic to the manuscript keywords that actually
+    appear in the text — concrete, explainable evidence behind a match."""
     text = (abstract or "").lower()
-    matched: List[str] = []
+    hits: Dict[str, List[str]] = {}
     for t in topics:
         phrase = (t or "").lower().strip()
         if not phrase:
             continue
-        words = re.findall(r"[a-z]{4,}", phrase)
-        if phrase in text or any(w in text for w in words):
-            matched.append(t)
-    return matched
+        found: List[str] = []
+        if phrase in text:
+            found.append(phrase)
+        for w in re.findall(r"[a-z]{4,}", phrase):
+            if w in text and w not in found:
+                found.append(w)
+        if found:
+            hits[t] = found
+    return hits
+
+
+def _matched_topics(abstract: str, topics: List[str]) -> List[str]:
+    """Journal focus topics whose keywords actually appear in the manuscript
+    text — concrete, explainable evidence behind a recommendation."""
+    return list(_topic_keyword_hits(abstract, topics).keys())
 
 
 def _score_tier(score: float) -> str:
@@ -618,47 +629,134 @@ def _score_tier(score: float) -> str:
         return "a strong topical match"
     if score >= 0.5:
         return "a good topical match"
-    if score > 0:
+    if score >= 0.35:
         return "a moderate topical match"
+    if score > 0:
+        return "a loose topical match"
     return "a fallback candidate"
 
 
-def _explain_journal_match(abstract: str, journal: Dict[str, Any]) -> str:
+def _fit_label(score: float) -> str:
+    """Short submission-guidance verdict derived from the similarity score."""
+    if score >= 0.75:
+        return "Primary target"
+    if score >= 0.55:
+        return "Strong fit"
+    if score >= 0.4:
+        return "Reasonable fit"
+    if score > 0:
+        return "Worth considering"
+    return "Fallback candidate"
+
+
+def _impact_context(impact_factor: Any) -> Optional[str]:
+    """Interpret a journal's impact factor relative to this catalog's range
+    (roughly 0.5–4.2), so the number carries meaning, not just a value."""
+    if not impact_factor:
+        return None
+    try:
+        v = float(impact_factor)
+    except (TypeError, ValueError):
+        return None
+    if v >= 3.5:
+        tier = "relatively high for this catalog, signalling strong visibility and selectivity"
+    elif v >= 2.0:
+        tier = "solid mid-range, a good balance of reach and acceptance odds"
+    elif v >= 1.0:
+        tier = "modest, which often means a faster, more accessible route to publication"
+    else:
+        tier = "on the lower end, typically the most accessible to submit to"
+    return (
+        f"Impact factor {impact_factor} is {tier}. It is shown for context only and "
+        "does not influence the ranking, which is driven purely by topical fit."
+    )
+
+
+def _gap_phrase(score: float, next_score: Optional[float]) -> Optional[str]:
+    """Describe how decisively this journal beats the next-ranked candidate."""
+    if next_score is None or score <= 0 or next_score <= 0:
+        return None
+    gap = score - next_score
+    if gap >= 0.1:
+        return "It is clearly ahead of the next candidate, making it a confident first choice."
+    if gap >= 0.03:
+        return "It edges out the next candidate, but the alternatives below are close runners-up."
+    return (
+        "It only narrowly beats the next candidate — the journals below are nearly as good a "
+        "fit, so weigh them on scope, speed, and impact factor too."
+    )
+
+
+def _explain_journal_match(abstract: str, journal: Dict[str, Any], rank: int = 1,
+                           total: int = 0, next_score: Optional[float] = None) -> str:
     """Build a grounded, human-readable reason for why this journal was ranked,
     reflecting the actual logic (semantic similarity + topic overlap). Also
-    records `matched_topics` on the journal dict."""
+    records `matched_topics`, `matched_keywords`, `fit_label`, and `rank` on the
+    journal dict so the UI and report can surface them directly."""
     score = journal.get("score", 0) or 0
     topics = journal.get("topics", [])
-    matched = _matched_topics(abstract, topics)
+    hits = _topic_keyword_hits(abstract, topics)
+    matched = list(hits.keys())
+    keywords = sorted({w for ws in hits.values() for w in ws})
     journal["matched_topics"] = matched
+    journal["matched_keywords"] = keywords
+    journal["fit_label"] = _fit_label(score)
+    journal["rank"] = rank
 
     parts: List[str] = []
+
+    # 1. Rank + verdict, with how many journals were considered.
+    screened = f" of {total} journals screened" if total else ""
     if score > 0:
         parts.append(
-            f"Semantic similarity of {int(score * 100)}% between your manuscript and "
-            f"this journal's scope (its title and focus topics) — {_score_tier(score)}."
+            f"Ranked #{rank}{screened} and classified as a “{_fit_label(score)}” for your "
+            "manuscript."
         )
     else:
         parts.append(
-            "Selected as a fallback candidate: semantic scoring was unavailable, so a "
-            "provisional ranking was used."
+            f"Listed as a fallback candidate (#{rank}{screened}): semantic scoring was "
+            "unavailable, so a provisional ranking was used."
         )
+
+    # 2. The core signal: semantic similarity and what it means.
+    if score > 0:
+        parts.append(
+            f"Vector embeddings put the semantic similarity between your manuscript and this "
+            f"journal's scope (its title and focus topics) at {int(score * 100)}% — "
+            f"{_score_tier(score)}."
+        )
+
+    # 3. Concrete evidence: which of the journal's topics/keywords actually appear.
     if matched:
+        if keywords:
+            kw = ", ".join(f"“{w}”" for w in keywords[:6])
+            parts.append(
+                "This is grounded in direct overlap with the journal's focus areas ("
+                + ", ".join(t.title() for t in matched)
+                + f"): your text explicitly uses the term(s) {kw}."
+            )
+        else:
+            parts.append(
+                "It overlaps directly with the journal's focus areas: "
+                + ", ".join(t.title() for t in matched) + "."
+            )
+    elif topics and score > 0:
         parts.append(
-            "Direct overlap with the journal's focus areas: "
-            + ", ".join(t.title() for t in matched) + "."
+            "There is no exact keyword overlap, so the match is semantic rather than literal: "
+            "the journal's focus areas (" + ", ".join(t.title() for t in topics)
+            + ") sit close to your manuscript's meaning in embedding space."
         )
-    elif topics:
-        parts.append(
-            "No exact keyword overlap, but the journal's focus areas ("
-            + ", ".join(t.title() for t in topics)
-            + ") are semantically close to your manuscript's content."
-        )
-    if journal.get("impact_factor"):
-        parts.append(
-            f"Impact factor {journal['impact_factor']} is provided as a secondary "
-            "consideration (it does not affect ranking)."
-        )
+
+    # 4. How decisive the ranking is versus the next option.
+    gap = _gap_phrase(score, next_score)
+    if gap:
+        parts.append(gap)
+
+    # 5. Impact factor, clearly labelled as context not ranking input.
+    impact = _impact_context(journal.get("impact_factor"))
+    if impact:
+        parts.append(impact)
+
     return " ".join(parts)
 
 
@@ -689,8 +787,12 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
             j["score"] = random.random()
 
     top = sorted(journals, key=lambda x: x["score"], reverse=True)[:k]
-    for j in top:
-        j["reason"] = _explain_journal_match(abstract, j)
+    total = len(journals)
+    for idx, j in enumerate(top):
+        next_score = top[idx + 1]["score"] if idx + 1 < len(top) else None
+        j["reason"] = _explain_journal_match(
+            abstract, j, rank=idx + 1, total=total, next_score=next_score
+        )
     return top
 
 
@@ -735,7 +837,8 @@ def build_journal_report(recommended: List[dict]) -> str:
     lines.append(
         "_How these are chosen: each journal is ranked by the semantic similarity "
         "between your manuscript and the journal's scope (its title and focus topics), "
-        "computed with vector embeddings. A higher match percentage means a closer fit._"
+        "computed with vector embeddings. A higher match percentage means a closer fit. "
+        "Impact factor is shown for context only and does not affect the ranking._"
     )
     lines.append("")
     if not recommended:
@@ -744,7 +847,11 @@ def build_journal_report(recommended: List[dict]) -> str:
     for i, j in enumerate(recommended, 1):
         score = j.get("score", 0)
         match = f"{int(score * 100)}% match" if score > 0 else "Recommended"
-        lines.append(f"## {i}. {j.get('name', 'Unknown')}")
+        fit = j.get("fit_label")
+        heading = f"## {i}. {j.get('name', 'Unknown')}"
+        if fit:
+            heading += f" — {fit}"
+        lines.append(heading)
         lines.append(f"- **Relevance:** {match}")
         if j.get("impact_factor"):
             lines.append(f"- **Impact Factor:** {j.get('impact_factor')}")
@@ -755,6 +862,9 @@ def build_journal_report(recommended: List[dict]) -> str:
         matched = j.get("matched_topics", [])
         if matched:
             lines.append(f"- **Matched Topics:** {', '.join(t.title() for t in matched)}")
+        keywords = j.get("matched_keywords", [])
+        if keywords:
+            lines.append(f"- **Matched Terms:** {', '.join(keywords)}")
         reason = j.get("reason", "")
         if reason:
             lines.append(f"- **Why recommended:** {reason}")

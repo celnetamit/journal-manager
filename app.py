@@ -663,14 +663,21 @@ def _render_result(result: dict, kp: str) -> None:
         for i, j in enumerate(result.get("recommended", []), 1):
             score = j.get("score", 0)
             match_pct = f"{int(score * 100)}% Match" if score > 0 else "Recommended"
+            fit = j.get("fit_label", "")
+            fit_str = f" · {fit}" if fit else ""
             impact_str = f" | Impact Factor: {j.get('impact_factor')}" if j.get("impact_factor") else ""
-            with st.expander(f"**{i}. {j['name']}** ({match_pct}{impact_str})", expanded=(i == 1)):
+            with st.expander(f"**{i}. {j['name']}** ({match_pct}{fit_str}{impact_str})", expanded=(i == 1)):
+                if fit:
+                    st.write(f"**Fit:** {fit}")
                 st.write(f"**Publisher:** {j.get('publisher', 'Unknown')}")
                 topics = j.get("topics", [])
                 st.write(f"**Focus Topics:** {', '.join(topics).title()}")
                 matched = j.get("matched_topics", [])
                 if matched:
                     st.write(f"**Matched Topics:** {', '.join(t.title() for t in matched)}")
+                keywords = j.get("matched_keywords", [])
+                if keywords:
+                    st.write(f"**Matched Terms:** {', '.join(keywords)}")
                 reason = j.get("reason", "")
                 if reason:
                     st.markdown(f"**Why recommended:** {reason}")

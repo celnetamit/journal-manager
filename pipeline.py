@@ -48,6 +48,9 @@ def _sanitize_recommended(recommended) -> list:
             "publisher": j.get("publisher", "Unknown"),
             "topics": list(j.get("topics", [])),
             "matched_topics": list(j.get("matched_topics", [])),
+            "matched_keywords": list(j.get("matched_keywords", [])),
+            "fit_label": j.get("fit_label", ""),
+            "rank": j.get("rank"),
             "reason": j.get("reason", ""),
         })
     return out
