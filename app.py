@@ -654,20 +654,31 @@ def _render_result(result: dict, kp: str) -> None:
             with st.expander("Read the AI reviewer's report", expanded=True):
                 st.markdown(ai_md)
 
-        st.subheader("📚 Semantic Journal Recommendations")
+        st.subheader("📚 Journal Recommendations")
         st.caption(
-            "Ranked by semantic similarity between your manuscript and each "
-            "journal's scope (title + focus topics), computed with vector "
-            "embeddings. A higher match % means a closer fit."
+            "A semantic score (vector-embedding similarity to each journal's scope) "
+            "shortlists candidates; an AI publishing advisor then ranks the best "
+            "fits from that shortlist, with every pick validated against our real "
+            "journal catalogue. A higher fit score means a closer match."
         )
         for i, j in enumerate(result.get("recommended", []), 1):
+            fit_score = j.get("fit_score")
             score = j.get("score", 0)
-            match_pct = f"{int(score * 100)}% Match" if score > 0 else "Recommended"
+            if fit_score is not None:
+                match_pct = f"{int(round(fit_score))}/100 Fit"
+            elif score > 0:
+                match_pct = f"{int(score * 100)}% Match"
+            else:
+                match_pct = "Recommended"
             fit = j.get("fit_label", "")
             fit_str = f" · {fit}" if fit else ""
             impact_str = f" | Impact Factor: {j.get('impact_factor')}" if j.get("impact_factor") else ""
             with st.expander(f"**{i}. {j['name']}** ({match_pct}{fit_str}{impact_str})", expanded=(i == 1)):
-                if fit:
+                verdict = j.get("fit_verdict", "")
+                if verdict:
+                    conf = j.get("confidence", "")
+                    st.write(f"**AI Advisor Verdict:** {verdict}" + (f" ({conf} confidence)" if conf else ""))
+                elif fit:
                     st.write(f"**Fit:** {fit}")
                 st.write(f"**Publisher:** {j.get('publisher', 'Unknown')}")
                 topics = j.get("topics", [])
@@ -681,6 +692,9 @@ def _render_result(result: dict, kp: str) -> None:
                 reason = j.get("reason", "")
                 if reason:
                     st.markdown(f"**Why recommended:** {reason}")
+                risks = j.get("risk_factors", [])
+                if risks:
+                    st.warning("**Cautions:** " + " ".join(risks))
 
         with st.expander("✉️ Auto-Generated Submission Cover Letter", expanded=False):
             st.info(f"Custom tailored for: **{result.get('best_journal', 'the journal')}**")

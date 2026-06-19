@@ -700,10 +700,21 @@ def _explain_journal_match(abstract: str, journal: Dict[str, Any], rank: int = 1
     keywords = sorted({w for ws in hits.values() for w in ws})
     journal["matched_topics"] = matched
     journal["matched_keywords"] = keywords
-    journal["fit_label"] = _fit_label(score)
+    # When the LLM ranking ran, the blended fit_score (0-100) is the headline
+    # signal, so derive the label from it; otherwise fall back to the cosine score.
+    fit_score = journal.get("fit_score")
+    journal["fit_label"] = _fit_label(fit_score / 100 if fit_score is not None else score)
     journal["rank"] = rank
 
     parts: List[str] = []
+
+    # 0. The AI advisor's holistic verdict, when the LLM ranking stage ran.
+    llm_reason = journal.get("llm_reason")
+    if llm_reason:
+        verdict = journal.get("fit_verdict") or "a fit"
+        confidence = journal.get("confidence")
+        conf = f" ({confidence.lower()} confidence)" if confidence else ""
+        parts.append(f"AI advisor verdict — {verdict}{conf}: {llm_reason}")
 
     # 1. Rank + verdict, with how many journals were considered.
     screened = f" of {total} journals screened" if total else ""
@@ -757,13 +768,193 @@ def _explain_journal_match(abstract: str, journal: Dict[str, Any], rank: int = 1
     if impact:
         parts.append(impact)
 
+    # 6. Any cautions raised by the AI advisor or the scope gate.
+    risks = journal.get("risk_factors") or []
+    if risks:
+        parts.append("Caution: " + " ".join(risks))
+
     return " ".join(parts)
+
+
+# --- Hybrid recommendation: heuristic pre-filter + LLM ranking + validation ---
+#
+# The deterministic semantic score (cosine similarity) decides *who is eligible*;
+# the LLM decides the *final ranking and reasoning* but only from that candidate
+# list; a validation + scope-gate layer guarantees every pick is a real journal
+# from our own catalogue. See JOURNAL_RECOMMENDATION_BLUEPRINT.md. The whole LLM
+# stage degrades gracefully: if it is unavailable or fails, we fall back to the
+# pure-semantic ranking, so nothing downstream breaks.
+
+CANDIDATE_POOL_SIZE = 40
+_NAME_STOP_WORDS = {
+    "the", "of", "and", "for", "in", "on", "a", "an", "to", "journal",
+    "journals", "international", "research",
+}
+
+
+def _normalize_journal_name(name: str) -> str:
+    """Lowercase, strip punctuation/stop-words, collapse whitespace (blueprint §7)."""
+    s = re.sub(r"[^a-z0-9\s]", " ", (name or "").lower())
+    return " ".join(t for t in s.split() if t and t not in _NAME_STOP_WORDS)
+
+
+def _names_match(a: str, b: str) -> bool:
+    """Conservative fuzzy match used for anti-hallucination validation.
+
+    Accept on: normalised equality, high-confidence containment (>0.92), or a
+    Dice token-overlap > 0.9 with >= 2 shared tokens. Anything weaker is treated
+    as a hallucinated / wrong name and discarded by the caller."""
+    na, nb = _normalize_journal_name(a), _normalize_journal_name(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if na in nb or nb in na:
+        shorter, longer = sorted((len(na), len(nb)))
+        if longer and shorter / longer > 0.92:
+            return True
+    ta, tb = set(na.split()), set(nb.split())
+    if len(ta) >= 2 and len(tb) >= 2:
+        inter = len(ta & tb)
+        dice = 2 * inter / (len(ta) + len(tb))
+        if dice > 0.9 and inter >= 2:
+            return True
+    return False
+
+
+def _prescreen_score(journal: Dict[str, Any], abstract: str) -> float:
+    """Cheap heuristic prior (0-100): semantic cosine (dominant) plus a bonus for
+    literal overlap between the manuscript and the journal's focus topics."""
+    cosine = max(0.0, journal.get("score", 0) or 0)
+    topics = journal.get("topics", [])
+    overlap = len(_topic_keyword_hits(abstract, topics)) / len(topics) if topics else 0
+    return round(min(100.0, cosine * 80 + overlap * 20), 1)
+
+
+def _llm_rank_journals(abstract: str, candidates: List[Dict[str, Any]],
+                       settings: Dict[str, Any], k: int = 3) -> List[dict]:
+    """Ask the LLM to pick the best k journals, constrained to the candidate
+    list. Returns the parsed ``recommended_journals`` array, or [] on any failure
+    (the caller then falls back to the heuristic ranking)."""
+    cand_lines = "\n".join(f'{c["_cid"]} | {c["name"]}' for c in candidates)
+    cand_details = json.dumps([
+        {
+            "id": c["_cid"],
+            "name": c["name"],
+            "topics": c.get("topics", []),
+            "publisher": c.get("publisher"),
+            "impact_factor": c.get("impact_factor"),
+            "preScreenScore": c.get("prescreen_score", 0),
+        }
+        for c in candidates
+    ])
+    prompt = f"""You are an expert scholarly publishing advisor and journal-fit recommendation engine.
+Recommend the {k} journals that best fit the manuscript, chosen ONLY from the supplied candidate list.
+
+=== HARD CONSTRAINTS ===
+1. ONLY recommend journals whose id and name appear EXACTLY in the Candidate Journals list. Copy the id (integer) and name verbatim. Any recommendation whose name is not found in that list will be discarded.
+2. Do NOT invent, abbreviate, merge, or modify journal names or ids.
+3. If fewer than {k} candidates are a reasonable fit, return fewer — never pad with poor matches.
+4. Judge fit HOLISTICALLY, not by keyword overlap alone. Terminology can differ (e.g. "COVID-19" vs "pandemic infectious disease") — reward true topical/domain alignment even when exact words differ. Treat closely related fields as compatible.
+=== END CONSTRAINTS ===
+
+overall_fit_score (0-100) rubric: scope alignment 35%, domain/field match 25%, audience 15%, methodology 15%, contribution/article type 10%. Use preScreenScore as a prior, not a final answer.
+
+MANUSCRIPT (title + abstract excerpt):
+{abstract[:30000]}
+
+CANDIDATE JOURNALS (id | name) — recommend only from these:
+{cand_lines}
+
+CANDIDATE DETAILS (evidence to judge fit; preScreenScore = heuristic prior 0-100):
+{cand_details}
+
+Return ONLY valid JSON (no markdown, no commentary) of this exact shape:
+{{"recommended_journals":[{{"rank":1,"journal_id":0,"journal_name":"","overall_fit_score":0,"confidence":"High|Medium|Low","fit_verdict":"Excellent Fit|Good Fit|Possible Fit","why_this_journal":"concrete, evidence-based reasons grounded in the journal's own topics — not generic praise","fit_risks_or_cautions":[]}}]}}"""
+    try:
+        text = _generate_text(prompt, settings=settings, response_mime_type="application/json")
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            print("Journal LLM ranking: no JSON found in response.")
+            return []
+        data = json.loads(match.group(0))
+        picks = data.get("recommended_journals", [])
+        return picks if isinstance(picks, list) else []
+    except Exception as e:
+        print(f"Journal LLM ranking failed, falling back to semantic ranking: {e}")
+        return []
+
+
+def _validate_and_gate(picks: List[dict], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Anti-hallucination validation (blueprint §7) + scope gate (§8).
+
+    Each LLM pick must map to a real candidate (exact id+name, else conservative
+    fuzzy name match), otherwise it is discarded. Survivors get a blended final
+    ``fit_score``; picks the heuristic disagrees with are penalised (not deleted)
+    and flagged."""
+    by_id = {c["_cid"]: c for c in candidates}
+    matched: List[Dict[str, Any]] = []
+    seen: set = set()
+    for p in picks:
+        try:
+            jid = int(p.get("journal_id"))
+        except (TypeError, ValueError):
+            jid = None
+        name = p.get("journal_name", "")
+
+        journal = None
+        if jid in by_id and _names_match(name, by_id[jid]["name"]):
+            journal = by_id[jid]
+        else:
+            for c in candidates:  # id was wrong/missing — trust a strong name match
+                if _names_match(name, c["name"]):
+                    journal = c
+                    break
+        if journal is None:
+            print(f"Discarded hallucinated journal pick: {name!r} (id={p.get('journal_id')})")
+            continue
+        if journal["_cid"] in seen:
+            continue
+        seen.add(journal["_cid"])
+
+        heuristic = journal.get("prescreen_score", 0)
+        cosine = journal.get("score", 0) or 0
+        llm_fit = float(p.get("overall_fit_score", 0) or 0)
+        risks = list(p.get("fit_risks_or_cautions", []) or [])
+
+        # Scope gate: a soft cross-check against our deterministic heuristic.
+        if cosine < 0.2 and heuristic < 40:
+            final = llm_fit * 0.8
+            risks.append(
+                "Heuristic scope check was weak — the AI advisor selected this on holistic "
+                "fit rather than strong term/scope overlap, so confirm the scope yourself."
+            )
+        else:
+            final = 0.45 * llm_fit + 0.55 * heuristic
+
+        journal["fit_score"] = round(final, 1)
+        journal["llm_fit_score"] = llm_fit
+        journal["fit_verdict"] = p.get("fit_verdict", "")
+        journal["confidence"] = p.get("confidence", "")
+        journal["llm_reason"] = (p.get("why_this_journal", "") or "").strip()
+        journal["risk_factors"] = risks
+        matched.append(journal)
+    return matched
+
+
+def _finalize(top: List[Dict[str, Any]], abstract: str, total: int) -> List[Dict[str, Any]]:
+    """Attach the deterministic, human-readable explanation to each pick."""
+    for idx, j in enumerate(top):
+        next_score = top[idx + 1].get("score") if idx + 1 < len(top) else None
+        j["reason"] = _explain_journal_match(
+            abstract, j, rank=idx + 1, total=total, next_score=next_score
+        )
+    return top
 
 
 def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> List[dict]:
     try:
-        vec = _embed(abstract, settings=settings)
-        abstract_emb = np.array(vec)
+        abstract_emb = np.array(_embed(abstract, settings=settings))
     except Exception as e:
         print(f"Embedding error: {e}")
         abstract_emb = None
@@ -780,20 +971,39 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
     with journals_path.open("r") as f:
         journals = json.load(f)
 
-    for j in journals:
+    # Stage 1-2: score every journal and build the heuristic candidate pool.
+    for idx, j in enumerate(journals):
+        j["_cid"] = idx
         if abstract_emb is not None and "embedding" in j:
             j["score"] = cosine_similarity(abstract_emb, np.array(j["embedding"]))
         else:
             j["score"] = random.random()
+        j["prescreen_score"] = _prescreen_score(j, abstract)
 
-    top = sorted(journals, key=lambda x: x["score"], reverse=True)[:k]
     total = len(journals)
-    for idx, j in enumerate(top):
-        next_score = top[idx + 1]["score"] if idx + 1 < len(top) else None
-        j["reason"] = _explain_journal_match(
-            abstract, j, rank=idx + 1, total=total, next_score=next_score
-        )
-    return top
+    ranked = sorted(
+        journals, key=lambda x: (x.get("prescreen_score", 0), x.get("score", 0)), reverse=True
+    )
+    candidates = ranked[:CANDIDATE_POOL_SIZE]
+
+    # Stage 3-5: LLM ranking constrained to candidates, then validate + scope-gate.
+    picks = _llm_rank_journals(abstract, candidates, settings, k=k) if candidates else []
+    gated = _validate_and_gate(picks, candidates)
+
+    # Stage 6: LLM picks first (sorted by blended fit), backfill from the
+    # heuristic pool, cap to k. If the LLM stage produced nothing, this is just
+    # the pure-semantic top-k — identical to the previous behaviour.
+    gated.sort(key=lambda j: j.get("fit_score", 0), reverse=True)
+    chosen = {j["_cid"] for j in gated}
+    for c in ranked:
+        if len(gated) >= k:
+            break
+        if c["_cid"] not in chosen:
+            gated.append(c)
+            chosen.add(c["_cid"])
+    top = gated[:k]
+
+    return _finalize(top, abstract, total)
 
 
 # --- Report / cover letter / polish ---
@@ -835,24 +1045,36 @@ def build_journal_report(recommended: List[dict]) -> str:
     """Render the top journal recommendations as a downloadable Markdown report."""
     lines = ["# 📚 Top Journal Recommendations", ""]
     lines.append(
-        "_How these are chosen: each journal is ranked by the semantic similarity "
-        "between your manuscript and the journal's scope (its title and focus topics), "
-        "computed with vector embeddings. A higher match percentage means a closer fit. "
-        "Impact factor is shown for context only and does not affect the ranking._"
+        "_How these are chosen: a deterministic semantic score (vector-embedding "
+        "similarity between your manuscript and each journal's scope) selects the "
+        "candidate journals; an AI publishing advisor then ranks the best fits from "
+        "that shortlist, and every pick is validated against our real journal "
+        "catalogue. A higher fit score means a closer match. Impact factor is shown "
+        "for context only and does not affect the ranking._"
     )
     lines.append("")
     if not recommended:
         lines.append("_No journal recommendations were generated for this manuscript._")
         return "\n".join(lines) + "\n"
     for i, j in enumerate(recommended, 1):
+        fit_score = j.get("fit_score")
         score = j.get("score", 0)
-        match = f"{int(score * 100)}% match" if score > 0 else "Recommended"
+        if fit_score is not None:
+            match = f"{int(round(fit_score))}/100 fit"
+        elif score > 0:
+            match = f"{int(score * 100)}% match"
+        else:
+            match = "Recommended"
         fit = j.get("fit_label")
+        verdict = j.get("fit_verdict")
         heading = f"## {i}. {j.get('name', 'Unknown')}"
         if fit:
             heading += f" — {fit}"
         lines.append(heading)
         lines.append(f"- **Relevance:** {match}")
+        if verdict:
+            conf = j.get("confidence")
+            lines.append(f"- **AI Advisor Verdict:** {verdict}" + (f" ({conf} confidence)" if conf else ""))
         if j.get("impact_factor"):
             lines.append(f"- **Impact Factor:** {j.get('impact_factor')}")
         lines.append(f"- **Publisher:** {j.get('publisher', 'Unknown')}")

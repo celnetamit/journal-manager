@@ -41,15 +41,20 @@ def _sanitize_recommended(recommended) -> list:
     casts numpy floats)."""
     out = []
     for j in recommended:
+        fit_score = j.get("fit_score")
         out.append({
             "name": j.get("name"),
             "score": float(j.get("score", 0) or 0),
+            "fit_score": float(fit_score) if fit_score is not None else None,
             "impact_factor": j.get("impact_factor"),
             "publisher": j.get("publisher", "Unknown"),
             "topics": list(j.get("topics", [])),
             "matched_topics": list(j.get("matched_topics", [])),
             "matched_keywords": list(j.get("matched_keywords", [])),
             "fit_label": j.get("fit_label", ""),
+            "fit_verdict": j.get("fit_verdict", ""),
+            "confidence": j.get("confidence", ""),
+            "risk_factors": list(j.get("risk_factors", [])),
             "rank": j.get("rank"),
             "reason": j.get("reason", ""),
         })
