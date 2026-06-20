@@ -49,6 +49,45 @@ def test_progress_complete_and_fail(auth_mod):
     assert j2["status"] == "error" and j2["error_message"] == "boom"
 
 
+def test_cancel_is_not_resurrected_by_complete_or_fail(auth_mod):
+    # A job cancelled mid-run must stay cancelled even if the worker finishes.
+    jid = auth_mod.create_job(1, "m.docx", "/tmp/in.docx", "{}")
+    auth_mod.claim_next_job()  # -> running
+    assert auth_mod.cancel_job(jid) is True
+    cancelled = auth_mod.get_job(jid)
+    assert cancelled["status"] == "error" and cancelled["stage"] == "Cancelled"
+
+    # Worker finishes after the cancel: complete_job must NOT flip it to done.
+    auth_mod.complete_job(jid, json.dumps({"duration": 1.0}))
+    j = auth_mod.get_job(jid)
+    assert j["status"] == "error" and j["stage"] == "Cancelled"
+    assert j["result_json"] is None
+
+    # fail_job after cancel must NOT overwrite the cancellation message either.
+    auth_mod.fail_job(jid, "boom")
+    j = auth_mod.get_job(jid)
+    assert j["error_message"] == "Cancelled by superadmin"
+
+
+def test_job_is_cancelled_signal(auth_mod):
+    jid = auth_mod.create_job(1, "m.docx", "/tmp/in.docx", "{}")
+    auth_mod.claim_next_job()  # -> running
+    assert auth_mod.job_is_cancelled(jid) is False
+    auth_mod.cancel_job(jid)
+    assert auth_mod.job_is_cancelled(jid) is True
+    # A vanished job reads as cancelled (worker should stop).
+    assert auth_mod.job_is_cancelled(999999) is True
+
+
+def test_progress_does_not_resurrect_cancelled(auth_mod):
+    jid = auth_mod.create_job(1, "m.docx", "/tmp/in.docx", "{}")
+    auth_mod.claim_next_job()
+    auth_mod.cancel_job(jid)
+    auth_mod.update_job_progress(jid, 0.9, "Copyediting")  # late tick after cancel
+    j = auth_mod.get_job(jid)
+    assert j["stage"] == "Cancelled"  # not overwritten
+
+
 def test_requeue_running_jobs(auth_mod):
     jid = auth_mod.create_job(1, "m.docx", "/tmp/in.docx", "{}")
     auth_mod.claim_next_job()  # -> running

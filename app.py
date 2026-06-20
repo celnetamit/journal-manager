@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 
 import pandas as pd
 import streamlit as st
@@ -782,8 +783,9 @@ with tab_editor:
             st.stop()
 
         out_dir = app_config.output_dir()
-        ts = int(time.time())
-        input_path = out_dir / f"user_{st.session_state.user_id}_{ts}_input.docx"
+        # Unique token (not int(time.time()), which only has 1s resolution) so a
+        # double-click or concurrent upload never overwrites another job's input.
+        input_path = out_dir / f"user_{st.session_state.user_id}_{uuid.uuid4().hex[:12]}_input.docx"
         input_path.write_bytes(uploaded_file.getvalue())
         options = {
             "user_id": st.session_state.user_id,

@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import traceback
+import uuid
 from typing import Any, Callable, Dict, Optional
 
 import config as app_config
@@ -63,7 +64,8 @@ def _sanitize_recommended(recommended) -> list:
 
 
 def run_pipeline(opts: Dict[str, Any], input_path: str,
-                 progress_cb: Optional[Callable[[float, str], None]] = None) -> Dict[str, Any]:
+                 progress_cb: Optional[Callable[[float, str], None]] = None,
+                 job_id: Optional[Any] = None) -> Dict[str, Any]:
     """Run the full manuscript pipeline. `opts` carries non-secret options;
     LLM settings (incl. the API key) are resolved server-side, never stored on
     the job. Returns a JSON-serializable result dict."""
@@ -120,7 +122,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
 
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()
-    ts = int(time.time())
+    # Unique per-job token so concurrent jobs never overwrite each other's
+    # output files (int(time.time()) only has 1-second resolution). Prefer the
+    # unique job_id; fall back to a random token when run outside the worker.
+    ts = job_id if job_id is not None else uuid.uuid4().hex[:8]
     redline_path = out_dir / f"user_{user_id}_{ts}_redline.docx"
     generate_redline_docx(
         input_path, edited_paragraphs, str(redline_path), queries=editor_queries,
@@ -216,6 +221,11 @@ _worker_started = False
 _worker_lock = threading.Lock()
 
 
+class JobCancelled(Exception):
+    """Raised cooperatively when a job is cancelled mid-run so the worker stops
+    spending on it. Carries no error semantics — the cancelled DB state stands."""
+
+
 def _process_job(job: Dict[str, Any]) -> None:
     job_id = job["id"]
     try:
@@ -224,11 +234,17 @@ def _process_job(job: Dict[str, Any]) -> None:
         opts = {}
 
     def cb(frac: float, stage: str) -> None:
+        # Cooperative cancellation: bail before doing more LLM work if the job
+        # was cancelled out from under us.
+        if auth.job_is_cancelled(job_id):
+            raise JobCancelled()
         auth.update_job_progress(job_id, frac, stage)
 
     try:
-        result = run_pipeline(opts, job["input_path"], cb)
+        result = run_pipeline(opts, job["input_path"], cb, job_id=job_id)
         auth.complete_job(job_id, json.dumps(result))
+    except JobCancelled:
+        print(f"[worker] job {job_id} cancelled; stopping work")
     except Exception as exc:
         traceback.print_exc()
         # Record a failed entry in history too, so the user sees the error there.

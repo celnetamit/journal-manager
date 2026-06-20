@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import sqlite3
 import secrets
@@ -745,12 +744,15 @@ def claim_next_job() -> Optional[dict]:
 
 
 def update_job_progress(job_id: int, progress: float, stage: str) -> None:
+    # Only a still-running job gets progress updates — never resurrect the stage
+    # of a job that was cancelled (status flipped away from 'running').
     ph = "%s" if _is_postgres() else "?"
     try:
         with _connect() as conn:
             cur = conn.cursor()
             cur.execute(
-                f"UPDATE jobs SET progress={ph}, stage={ph} WHERE id={ph}",
+                f"UPDATE jobs SET progress={ph}, stage={ph} "
+                f"WHERE id={ph} AND status='running'",
                 (float(progress), stage, job_id),
             )
             conn.commit()
@@ -758,25 +760,49 @@ def update_job_progress(job_id: int, progress: float, stage: str) -> None:
         print(f"[auth.update_job_progress] error: {e}")
 
 
+def job_is_cancelled(job_id: int) -> bool:
+    """True if the job is no longer in the 'running' state — i.e. it was
+    cancelled (or otherwise terminated) out from under the worker. Used by the
+    worker to stop cooperatively. On a DB error we return False so a transient
+    glitch never aborts a healthy job."""
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT status FROM jobs WHERE id={ph}", (job_id,))
+            row = cur.fetchone()
+            if not row:
+                return True  # row vanished -> nothing to keep working on
+            return dict(row)["status"] != "running"
+    except Exception as e:
+        print(f"[auth.job_is_cancelled] error: {e}")
+        return False
+
+
 def complete_job(job_id: int, result_json: str) -> None:
+    # Guard on status='running' so a job cancelled while the worker was finishing
+    # is NOT overwritten back to 'done'.
     ph = "%s" if _is_postgres() else "?"
     with _connect() as conn:
         cur = conn.cursor()
         cur.execute(
             f"""UPDATE jobs SET status='done', progress=1.0, stage='Complete',
-                result_json={ph}, finished_at={_now_sql()} WHERE id={ph}""",
+                result_json={ph}, finished_at={_now_sql()}
+                WHERE id={ph} AND status='running'""",
             (result_json, job_id),
         )
         conn.commit()
 
 
 def fail_job(job_id: int, error_message: str) -> None:
+    # Guard on status='running' so a cancelled job keeps its 'Cancelled' state
+    # rather than being overwritten with a generic error.
     ph = "%s" if _is_postgres() else "?"
     with _connect() as conn:
         cur = conn.cursor()
         cur.execute(
             f"""UPDATE jobs SET status='error', stage='Error', error_message={ph},
-                finished_at={_now_sql()} WHERE id={ph}""",
+                finished_at={_now_sql()} WHERE id={ph} AND status='running'""",
             (error_message, job_id),
         )
         conn.commit()

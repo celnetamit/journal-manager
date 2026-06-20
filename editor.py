@@ -10,7 +10,6 @@ import datetime
 import difflib
 import json
 import os
-import random
 import re
 import threading
 import time
@@ -540,9 +539,22 @@ def _format_keywords_line(line: str) -> str:
     if not m:
         return line
     label, rest = m.group(1), m.group(2)
+    # Guard against a body sentence that merely starts with "Keyword: ..." — we
+    # must not reorder/recapitalize prose. Real keyword items are short noun
+    # phrases with no sentence structure. If anything looks sentence-like, bail
+    # and defer to the LLM (under-applying is safe; corrupting a sentence is not).
+    if re.search(r"[.!?]\s+\S", rest):  # mid-text sentence break
+        return line
     items = [k.strip(" .") for k in re.split(r"[;,]", rest) if k.strip(" .")]
     if len(items) < 2:
         return line  # nothing to order; leave a single/empty keyword untouched
+    _CONJ = {"and", "or", "but", "nor", "so", "yet", "because", "which", "that"}
+    for it in items:
+        words = it.split()
+        if len(words) > 6:                 # keyword phrases are short
+            return line
+        if words and words[0].lower() in _CONJ:  # "..., and is robust" → prose
+            return line
     items.sort(key=str.lower)
     first = items[0]
     head = first.split(" ", 1)[0]  # first token of the first keyword
@@ -1190,7 +1202,14 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
         if abstract_emb is not None and "embedding" in j:
             j["score"] = cosine_similarity(abstract_emb, np.array(j["embedding"]))
         else:
-            j["score"] = random.random()
+            # No real embedding available — use 0.0 as the "semantic scoring
+            # unavailable" sentinel (handled by _explain_journal_match as a
+            # fallback candidate). NEVER use random.random() here: that value is
+            # later rendered as a real similarity percentage and sorted on,
+            # which would surface confidently-wrong recommendations. Ranking
+            # then falls back to the deterministic prescreen_score (keyword
+            # overlap), which is a legitimate signal.
+            j["score"] = 0.0
         j["prescreen_score"] = _prescreen_score(j, abstract)
 
     total = len(journals)
