@@ -100,6 +100,7 @@ streamlit run app.py
 | `LLM_TEXT_MODEL`        | `gemini-2.5-pro`              | Optional default text model.                             |
 | `LLM_EMBED_MODEL`       | `text-embedding-004`          | Optional default embedding model.                        |
 | `LLM_BASE_URL`          | *(empty)* | Base URL for OpenAI-compatible/custom endpoints. OpenRouter keeps its own default endpoint. |
+| `SERPER_API_KEY`        | *(empty)*                     | Optional. [Serper.dev](https://serper.dev) key enabling the Google Scholar DOI fallback when Crossref misses. Leave empty to disable — the pipeline runs exactly as before. |
 | `DATABASE_URL`          | `sqlite:///./data/analytics.db` | Set to your Postgres URL in production.                |
 | `DATA_DIR`              | `./data`                      | Where analytics DB and generated embeddings live.       |
 | `OUTPUT_DIR`            | `$DATA_DIR/outbound`          | Where generated redline/report/JATS files are written.   |
@@ -187,6 +188,7 @@ In the application's **Environment Variables** tab, add:
 | `OUTPUT_DIR`              | `/data/outbound`                                                   |
 | `GEMINI_TEXT_MODEL`       | `gemini-2.5-pro` (optional)                                        |
 | `GEMINI_EMBED_MODEL`      | `text-embedding-004` (optional)                                    |
+| `SERPER_API_KEY`          | Serper.dev key for the Google Scholar DOI fallback (optional)      |
 
 > Mark `GEMINI_API_KEY` and `DATABASE_URL` as **Secret** so they're
 > stored encrypted and not shown in logs.

@@ -490,6 +490,17 @@ if is_authenticated:
             "Live Crossref DOI Validation", value=True,
             help="Scans bibliography for verified DOIs.",
         )
+        _serper_configured = bool(app_config.get_serper_api_key())
+        use_serper = st.checkbox(
+            "Serper (Google Scholar) DOI Fallback", value=_serper_configured,
+            disabled=not _serper_configured,
+            help=(
+                "Optional. When Crossref can't find a DOI, search Google Scholar via "
+                "Serper.dev. Requires a SERPER_API_KEY (env or config.json). "
+                + ("Key detected." if _serper_configured
+                   else "No key configured — leave off; everything else works as usual.")
+            ),
+        )
         ai_review_enabled = st.checkbox(
             "AI Peer Reviewer", value=True,
             help="Runs an expert AI referee in parallel and produces a downloadable "
@@ -648,6 +659,8 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 def _render_result(result: dict, kp: str) -> None:
     """Render a completed job's reports and downloads. `kp` keys the widgets."""
+    for _w in result.get("warnings") or []:
+        st.warning(_w)
     res_col1, res_col2 = st.columns([1.5, 1])
     with res_col1:
         st.subheader("📊 Editorial Report")
@@ -795,6 +808,7 @@ with tab_editor:
             "lang_type": lang_type,
             "custom_dict": custom_dict,
             "use_crossref": use_crossref,
+            "use_serper": use_serper,
             "reorder_citations": reorder_citations,
             "enabled_rule_ids": enabled_rule_ids,
             "custom_rules": custom_rules,

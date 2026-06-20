@@ -21,6 +21,7 @@ services:
       DATABASE_URL: postgresql://manuscript:manuscript@db:5432/manuscript
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
       DATA_DIR: /data
       OUTPUT_DIR: /data/outbound
     volumes:

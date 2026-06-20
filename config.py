@@ -290,6 +290,17 @@ def save_gemini_api_key(key: str) -> None:
     save_llm_settings({"provider": "gemini", "api_key": key})
 
 
+def get_serper_api_key() -> str:
+    """Serper.dev (Google Scholar/Search) API key. OPTIONAL: returns an empty
+    string when not configured, in which case the Serper DOI fallback is simply
+    skipped and the pipeline behaves exactly as before. Read from the
+    SERPER_API_KEY env var first, then a "serper_api_key" entry in config.json."""
+    env = os.environ.get("SERPER_API_KEY", "").strip()
+    if env:
+        return env
+    return str(_load_raw_config().get("serper_api_key", "") or "").strip()
+
+
 # --- App ---
 
 def log_job_to_stdout() -> bool:

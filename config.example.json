@@ -5,5 +5,7 @@
   "base_url": "",
   "text_model": "gemini-2.5-pro",
   "embed_model": "text-embedding-004",
-  "gemini_api_key": ""
+  "gemini_api_key": "",
+  "_serper_comment": "OPTIONAL: Serper.dev key for Google Scholar DOI fallback when Crossref misses. Leave empty to disable (everything works as before). Can also be set via the SERPER_API_KEY env var.",
+  "serper_api_key": ""
 }

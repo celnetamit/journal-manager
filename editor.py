@@ -273,6 +273,77 @@ def read_docx(file_path: str) -> List[str]:
     return [p.text for p in doc.paragraphs]
 
 
+# --- Serper.dev (Google Scholar) DOI fallback — OPTIONAL ---
+# Used only when a Serper API key is configured. It is a fallback for Crossref:
+# when Crossref cannot find a reference's DOI, we search Google Scholar via
+# Serper. Returns the same "https://doi.org/<DOI>" format as fetch_crossref_doi.
+
+_SERPER_SCHOLAR_URL = "https://google.serper.dev/scholar"
+_DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+")
+
+
+def verify_serper_key(api_key: str) -> Tuple[bool, str]:
+    """Validate a Serper API key with one tiny query. Returns (ok, message).
+    Called once per run so a bad/expired token is reported to the user instead
+    of silently failing on every reference."""
+    if not api_key:
+        return False, "No Serper API key configured."
+    try:
+        r = requests.post(
+            _SERPER_SCHOLAR_URL,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": "test"}, timeout=15,
+        )
+        if r.status_code in (401, 403):
+            return False, (
+                f"Serper API key was rejected (HTTP {r.status_code}). "
+                "Check the SERPER_API_KEY token."
+            )
+        if r.status_code == 429:
+            return False, "Serper API quota exceeded (HTTP 429)."
+        if r.status_code != 200:
+            return False, f"Serper API returned HTTP {r.status_code}."
+        return True, "ok"
+    except requests.exceptions.RequestException as e:
+        return False, f"Serper API unreachable: {e}"
+
+
+def fetch_serper_scholar_doi(citation_text: str, api_key: str) -> Optional[str]:
+    """Search Google Scholar (via Serper) for a citation and return its DOI as
+    'https://doi.org/<DOI>', or None. Conservative: only returns a DOI from a
+    result whose title meaningfully overlaps the citation, to avoid attaching a
+    wrong DOI."""
+    if not api_key:
+        return None
+    try:
+        r = requests.post(
+            _SERPER_SCHOLAR_URL,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": citation_text[:300]}, timeout=20,
+        )
+        if r.status_code != 200:
+            return None
+        organic = (r.json() or {}).get("organic") or []
+        clean_cit = re.sub(r"[^a-z0-9]", "", citation_text.lower())
+        for item in organic[:3]:
+            title = item.get("title") or ""
+            clean_title = re.sub(r"[^a-z0-9]", "", title.lower())
+            if not clean_title:
+                continue
+            # Require title overlap in either direction before trusting a DOI.
+            if clean_title[:30] not in clean_cit and clean_cit[:30] not in clean_title:
+                continue
+            blob = " ".join(
+                str(item.get(k, "")) for k in ("doi", "link", "snippet", "title")
+            )
+            m = _DOI_RE.search(blob)
+            if m:
+                return "https://doi.org/" + m.group(0).rstrip(").,;")
+    except requests.exceptions.RequestException:
+        return None
+    return None
+
+
 def fetch_crossref_doi(citation_text: str) -> Optional[str]:
     try:
         url = "https://api.crossref.org/works"
@@ -584,6 +655,7 @@ def ai_edit_chunk(
     chunk_texts: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool,
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
+    use_serper: bool = False, serper_key: str = "",
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Returns (edited_texts, queries). `edited_texts` is the same length as
     `chunk_texts`. `queries` is a list of {"local_index", "snippet", "query"}
@@ -659,11 +731,14 @@ Input JSON:
             else:
                 result.append(chunk_texts[i])
 
-        if use_crossref:
+        if use_crossref or use_serper:
             for i in range(len(result)):
                 t = result[i]
                 if len(t) > 30 and re.search(r"\b(19|20)\d{2}\b", t) and "doi.org" not in t:
-                    doi = fetch_crossref_doi(t)
+                    doi = fetch_crossref_doi(t) if use_crossref else None
+                    if not doi and use_serper:
+                        # Crossref came up empty (or is off) — try Google Scholar.
+                        doi = fetch_serper_scholar_doi(t, serper_key)
                     if doi:
                         result[i] = t + f" {doi}"
         return result, queries
@@ -1244,8 +1319,14 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
                     used_crossref: bool, custom_dict: str,
                     enabled_rule_ids: Optional[List[str]] = None,
                     custom_rules: str = "",
-                    queries: Optional[List[Dict[str, Any]]] = None) -> str:
+                    queries: Optional[List[Dict[str, Any]]] = None,
+                    warnings: Optional[List[str]] = None) -> str:
     report = "### 📑 Editorial Report\n\n"
+    if warnings:
+        report += "**⚠️ Notices:**\n"
+        for w in warnings:
+            report += f"- {w}\n"
+        report += "\n"
     report += "**Configurations Applied:**\n"
     report += f"- **Copyediting:** {edit_style}\n"
     report += f"- **References:** {ref_style}\n"
@@ -2128,6 +2209,7 @@ def process_document_async(
     paras: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool, progress_callback,
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
+    use_serper: bool = False, serper_key: str = "",
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Returns (edited_paras, queries). Each query is
     {"index": <paragraph index in paras>, "snippet", "query"}."""
@@ -2155,7 +2237,8 @@ def process_document_async(
         future_to_chunk = {
             ex.submit(ai_edit_chunk, chunk_texts, settings, edit_style, ref_style,
                       lang, custom_dict, use_crossref,
-                      enabled_rule_ids, custom_rules): chunk_inds
+                      enabled_rule_ids, custom_rules,
+                      use_serper, serper_key): chunk_inds
             for chunk_inds, chunk_texts in chunks
         }
         for future in concurrent.futures.as_completed(future_to_chunk):

@@ -35,6 +35,7 @@ from editor import (
     read_docx,
     recommend_journals,
     validate_jats,
+    verify_serper_key,
 )
 
 
@@ -86,12 +87,27 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     user_id = opts["user_id"]
     filename = opts.get("filename", "manuscript.docx")
 
+    warnings: list = []
+
     start_time = time.time()
     progress(0.02, "Reading document...")
     original_paragraphs = read_docx(input_path)
     paras_count = len(original_paragraphs)
     if not original_paragraphs:
         raise ValueError("Document appears to be empty.")
+
+    # OPTIONAL Serper (Google Scholar) DOI fallback. Only active when a key is
+    # configured AND the toggle is on. Validated once up front: if the token is
+    # bad/expired we notify the user (via warnings) and proceed with Serper off,
+    # so the run still behaves exactly as it does without Serper.
+    use_serper = False
+    serper_key = app_config.get_serper_api_key()
+    if opts.get("use_serper", True) and serper_key:
+        ok, msg = verify_serper_key(serper_key)
+        if ok:
+            use_serper = True
+        else:
+            warnings.append(f"Serper DOI fallback was disabled: {msg}")
 
     # Kick off the AI peer reviewer in parallel with copyediting.
     review_pool = review_future = None
@@ -109,6 +125,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, editor_queries = process_document_async(
         original_paragraphs, llm_settings, edit_style, ref_style, lang_type,
         custom_dict, use_crossref, chunk_progress, enabled_rule_ids, custom_rules,
+        use_serper=use_serper, serper_key=serper_key,
     )
 
     if reorder_citations:
@@ -134,7 +151,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     progress(0.74, "Generating editorial report...")
     report = generate_report(
         edit_style, ref_style, lang_type, use_crossref, custom_dict,
-        enabled_rule_ids, custom_rules, queries=editor_queries,
+        enabled_rule_ids, custom_rules, queries=editor_queries, warnings=warnings,
     )
 
     progress(0.78, "Recommending journals...")
@@ -212,6 +229,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "edit_style": edit_style,
         "paras_count": paras_count,
         "duration": round(duration, 1),
+        "warnings": warnings,
     }
 
 
