@@ -16,7 +16,7 @@ import threading
 import time
 import concurrent.futures
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import docx
 from docx.oxml import OxmlElement
@@ -358,6 +358,14 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
 3. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these two rules; they apply only to in-text citation markers.""",
     },
     {
+        "id": "citation_tense",
+        "title": "In-House Citation Tense Rules",
+        "summary": "Reporting verbs that describe what a cited study did use the simple past tense, consistently across all citation sentences.",
+        "body": """IN-HOUSE CITATION TENSE RULES (apply to sentences that report what a cited/prior study did — typically the opening sentence of a paragraph in a literature-review / related-work section, of the form "Author et al. (Year) [n] <reporting verb> ..."):
+1. REPORTING VERB TENSE: Put the verb that reports what the cited authors did into the SIMPLE PAST tense, because it describes a completed action in a specific past study, and keep this tense CONSISTENT across every such citation sentence. Examples: "Khan et al. (2024) [8] point out key challenges" -> "Khan et al. (2024) [8] pointed out key challenges"; "Liu et al. (2022) [7] carry out a comprehensive review" -> "Liu et al. (2022) [7] carried out a comprehensive review"; "Huo et al. (2023) [6] introduces an intelligent system" -> "Huo et al. (2023) [6] introduced an intelligent system".
+2. SCOPE: Change ONLY the tense of the reporting verb. Do NOT alter the author names, year, citation number, or the meaning/wording of the rest of the sentence, and do NOT rewrite the sentence. Do NOT change tense in ordinary body text or in statements of general, established, or still-true fact (those stay in their natural present tense).""",
+    },
+    {
         "id": "abbreviation",
         "title": "In-House Abbreviation Expansion Rules",
         "summary": "Expand element labels (Fig.→Figure, Tab.→Table, Eq.→Equation, etc.) to their full word when they refer to a numbered element.",
@@ -390,11 +398,12 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
     {
         "id": "keywords",
         "title": "In-House Keywords Rules",
-        "summary": "Lower case except proper nouns; comma + space separated; five to ten keywords; no trailing period.",
+        "summary": "Alphabetical order; only the first keyword capitalized, rest lower case except proper nouns; comma + space separated; five to ten keywords; no trailing period.",
         "body": """IN-HOUSE KEYWORDS RULES (apply to the "Keywords:" line):
-1. CASE: Lower case for every keyword EXCEPT proper nouns, which keep their capitalization (e.g. "Parkinson disease", "WhatsApp"). Example: "Keywords: Knowledge, Migraine, Triggering Factors, Mobile App, WhatsApp" -> "Keywords: knowledge, migraine, triggering factors, mobile app, WhatsApp".
-2. SEPARATOR: Separate the keywords/phrases with a comma followed by a single space; no trailing period after the last keyword.
-3. COUNT: There should be five to ten keywords or phrases. If there are fewer than five or more than ten, flag it in the report — do NOT invent new keywords or delete meaningful ones to hit the count.""",
+1. ORDER: Sort the keywords/phrases in alphabetical order FIRST (case-insensitive, by the first word of each phrase). Apply the case rule below AFTER sorting.
+2. CASE: Only the FIRST keyword in the (now alphabetized) list has its first letter capitalized; every other keyword is lower case. The single EXCEPTION is proper nouns, which always keep their own capitalization wherever they appear (e.g. "Parkinson disease", "WhatsApp"). Example: "Keywords: Internet of Things, Artificial Intelligence, quality control" -> "Keywords: Artificial intelligence, internet of things, quality control".
+3. SEPARATOR: Separate the keywords/phrases with a comma followed by a single space; no trailing period after the last keyword.
+4. COUNT: There should be five to ten keywords or phrases. If there are fewer than five or more than ten, raise a query on the keywords paragraph — do NOT invent new keywords or delete meaningful ones to hit the count.""",
     },
     {
         "id": "abstract",
@@ -403,7 +412,7 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
         "body": """IN-HOUSE ABSTRACT RULES (apply to the abstract section):
 1. HEADING: The "Abstract" heading is in Title Case.
 2. CONTENT: The abstract text must NOT contain any abbreviations, in-text citations / reference numbers (e.g. "[1]"), or reference markers. Spell out any abbreviation in full and remove citation markers within the abstract only.
-3. LENGTH: Aim for about 300 words. Do NOT pad the abstract or aggressively cut meaningful content just to hit the count; flag it if it is far outside the range.
+3. LENGTH: Aim for about 300 words. Do NOT pad the abstract or aggressively cut meaningful content just to hit the count; raise a query on the abstract paragraph if it is far outside the range.
 (The journal sets the abstract body text in italic — that is its visual style, applied at layout.)""",
     },
     {
@@ -515,11 +524,58 @@ def enforce_author_limit(
     ]
 
 
+# --- Deterministic enforcement of the keywords line (safety net for the LLM) ---
+
+# Matches a leading "Keywords:" / "Key words -" label and captures (label, rest).
+_KEYWORDS_LINE_RE = re.compile(r"^(\s*key\s*words?\s*[:\-–]\s*)(.+?)\s*$", re.I)
+
+
+def _format_keywords_line(line: str) -> str:
+    """Alphabetize the keywords and capitalize only the first one. Conservative:
+    ordering, the first-keyword capital, comma+space separators and the no-
+    trailing-period rule are enforced deterministically; the proper-noun-aware
+    lower-casing of the remaining keywords is left to the LLM (code cannot tell
+    'Internet' the common noun from 'Parkinson' the proper noun)."""
+    m = _KEYWORDS_LINE_RE.match(line)
+    if not m:
+        return line
+    label, rest = m.group(1), m.group(2)
+    items = [k.strip(" .") for k in re.split(r"[;,]", rest) if k.strip(" .")]
+    if len(items) < 2:
+        return line  # nothing to order; leave a single/empty keyword untouched
+    items.sort(key=str.lower)
+    first = items[0]
+    head = first.split(" ", 1)[0]  # first token of the first keyword
+    # Capitalize only a plainly-lowercase first word. Leave intentionally-cased
+    # terms (mRNA, pH, iOS, eHealth, DNA, WHO) exactly as the LLM produced them —
+    # the deterministic net must never override a correct edit.
+    if head[:1].isalpha() and not any(c.isupper() for c in head):
+        items[0] = first[0].upper() + first[1:]
+    return label + ", ".join(items)
+
+
+def enforce_keywords_format(
+    paras: List[str], enabled_rule_ids: Optional[List[str]] = None,
+) -> List[str]:
+    """Deterministic safety net for the keywords rule. Applied only when the
+    keywords rule group is active (enabled_rule_ids=None means all groups
+    active). Runs after the LLM edit."""
+    if enabled_rule_ids is not None and "keywords" not in enabled_rule_ids:
+        return paras
+    return [
+        _format_keywords_line(p) if p and p.strip() else p
+        for p in paras
+    ]
+
+
 def ai_edit_chunk(
     chunk_texts: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool,
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
-) -> List[str]:
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Returns (edited_texts, queries). `edited_texts` is the same length as
+    `chunk_texts`. `queries` is a list of {"local_index", "snippet", "query"}
+    for paragraphs the model flagged rather than silently changing."""
     house_rules = build_house_rules_section(enabled_rule_ids, custom_rules)
     prompt = f"""You are a professional academic copyeditor.
 Rules:
@@ -531,16 +587,29 @@ I am providing a JSON array of text paragraphs from a manuscript.
 Proofread them strictly following the specified guidelines. Fix spelling, grammar, and typography.
 Properly format any references or bibliography items encountered.
 
+EDIT CONSERVATIVELY — this is the most important rule:
+- Make the MINIMUM changes necessary. Only alter text that is grammatically incorrect, misspelled, has a typographic error, or violates one of the rules below.
+- PRESERVE the author's original wording, phrasing, sentence structure, and voice wherever the text is already correct. Do NOT rewrite, rephrase, reorder, or "improve" sentences for style, flow, or conciseness.
+- If a sentence is awkward but grammatically correct and unambiguous, leave it unchanged.
+- When a fix is needed, change only the specific words that are wrong; keep the rest of the sentence intact.
+
 {house_rules}
 """
     if custom_dict:
         prompt += f"\nCRITICAL CUSTOM DICTIONARY (DO NOT ALTER OR REFORMAT THESE TERMS):\n{custom_dict}\n"
 
     prompt += f"""
-CRITICAL:
-1. You MUST return ONLY a valid JSON array of strings of the EXACT SAME LENGTH.
-2. Each element in the output array corresponds to the edited version of the element at the same index in the input array.
-3. Do not add markdown formatting or extra text. Return just the JSON array.
+RAISING A QUERY INSTEAD OF GUESSING:
+If something is genuinely ambiguous or you are NOT confident it is safe to change — e.g. a possible factual or numeric inconsistency, an unclear meaning, a missing/duplicated reference, or a house-rule issue you cannot resolve without the author's intent — do NOT silently rewrite it and do NOT guess. Leave the text as-is and raise a short QUERY for that paragraph (see the "query" field below). NEVER write the query inside the paragraph text itself.
+
+CRITICAL OUTPUT FORMAT:
+1. You MUST return ONLY a valid JSON array of the EXACT SAME LENGTH as the input array — no markdown, no extra text.
+2. Each element corresponds to the input element at the SAME index and MUST be a JSON object with:
+   - "edited": (string) the edited version of that paragraph. If nothing needs changing, return the original text unchanged.
+   - "query": (string, OPTIONAL) a short note to the author/editor, used ONLY when you chose to flag rather than change. Omit the field or set it to null when there is no query.
+3. Do not add markdown formatting or extra text. Return just the JSON array of objects.
+
+Example output: [{{"edited": "The result was significant.", "query": null}}, {{"edited": "Smith (2020) reported the effect.", "query": "Reference [4] year reads 2020 here but 2002 in the bibliography — please confirm."}}]
 
 Input JSON:
 {json.dumps(chunk_texts)}
@@ -551,12 +620,32 @@ Input JSON:
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             print("Warning: No JSON array found in response.")
-            return chunk_texts
-        result = json.loads(match.group(0))
+            return chunk_texts, []
+        parsed = json.loads(match.group(0))
 
-        if len(result) != len(chunk_texts):
+        if len(parsed) != len(chunk_texts):
             print("Warning: Array length mismatch.")
-            return chunk_texts
+            return chunk_texts, []
+
+        # Each element is normally an object {"edited", "query"}; tolerate a bare
+        # string (older format) by treating it as the edited text with no query.
+        result: List[str] = []
+        queries: List[Dict[str, Any]] = []
+        for i, elem in enumerate(parsed):
+            if isinstance(elem, str):
+                result.append(elem)
+            elif isinstance(elem, dict):
+                edited = elem.get("edited")
+                result.append(edited if isinstance(edited, str) else chunk_texts[i])
+                q = elem.get("query")
+                if isinstance(q, str) and q.strip():
+                    queries.append({
+                        "local_index": i,
+                        "snippet": chunk_texts[i],
+                        "query": q.strip(),
+                    })
+            else:
+                result.append(chunk_texts[i])
 
         if use_crossref:
             for i in range(len(result)):
@@ -565,15 +654,15 @@ Input JSON:
                     doi = fetch_crossref_doi(t)
                     if doi:
                         result[i] = t + f" {doi}"
-        return result
+        return result, queries
     except json.JSONDecodeError as e:
         print(f"JSON Parse Error: {e}")
         time.sleep(1)
-        return chunk_texts
+        return chunk_texts, []
     except Exception as e:
         print(f"Gemini API Error: {e}")
         time.sleep(1)
-        return chunk_texts
+        return chunk_texts, []
 
 
 # --- Redline (.docx with native Word track changes) ---
@@ -626,7 +715,10 @@ def add_track_change_run(paragraph, text: str, change_type: str, tc_id: int,
         paragraph._p.append(r)
 
 
-def generate_redline_docx(original_path: str, edited_paragraphs: List[str], output_path: str) -> None:
+def generate_redline_docx(
+    original_path: str, edited_paragraphs: List[str], output_path: str,
+    queries: Optional[List[Dict[str, Any]]] = None,
+) -> None:
     doc = docx.Document(original_path)
     tc_id = 1
 
@@ -661,6 +753,25 @@ def generate_redline_docx(original_path: str, edited_paragraphs: List[str], outp
                 tc_id += 1
                 add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
                 tc_id += 1
+
+    # Anchor editor queries as native Word comments on their paragraphs. Done
+    # after the edit loop so it covers both changed and unchanged paragraphs.
+    if queries:
+        query_map: Dict[int, List[str]] = {}
+        for q in queries:
+            idx = q.get("index")
+            note = (q.get("query") or "").strip()
+            if isinstance(idx, int) and note:
+                query_map.setdefault(idx, []).append(note)
+        paragraphs = doc.paragraphs
+        for idx, notes in query_map.items():
+            if 0 <= idx < len(paragraphs):
+                p = paragraphs[idx]
+                anchor = p.add_run("")  # invisible anchor at paragraph end
+                doc.add_comment(
+                    anchor, text="\n".join(notes),
+                    author="AI Editor", initials="AE",
+                )
 
     doc.save(output_path)
 
@@ -1113,7 +1224,8 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
 def generate_report(edit_style: str, ref_style: str, lang: str,
                     used_crossref: bool, custom_dict: str,
                     enabled_rule_ids: Optional[List[str]] = None,
-                    custom_rules: str = "") -> str:
+                    custom_rules: str = "",
+                    queries: Optional[List[Dict[str, Any]]] = None) -> str:
     report = "### 📑 Editorial Report\n\n"
     report += "**Configurations Applied:**\n"
     report += f"- **Copyediting:** {edit_style}\n"
@@ -1139,6 +1251,21 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
             line = line.strip()
             if line:
                 report += f"- {line}\n"
+
+    if queries:
+        report += "\n**Editor Queries (please review):**\n"
+        report += (
+            f"_The editor flagged {len(queries)} item(s) rather than changing them "
+            "silently. Each also appears as a comment in the redline document._\n"
+        )
+        for q in queries:
+            snippet = (q.get("snippet") or "").strip()
+            snippet = re.sub(r"\s+", " ", snippet)
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "…"
+            loc = f"¶{q['index'] + 1}" if isinstance(q.get("index"), int) else "—"
+            prefix = f"**{snippet}** ({loc})" if snippet else f"({loc})"
+            report += f"- {prefix}: {q['query']}\n"
 
     return report
 
@@ -1982,8 +2109,11 @@ def process_document_async(
     paras: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool, progress_callback,
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
-) -> List[str]:
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Returns (edited_paras, queries). Each query is
+    {"index": <paragraph index in paras>, "snippet", "query"}."""
     edited_paras = [""] * len(paras)
+    all_queries: List[Dict[str, Any]] = []
     task_indices = [i for i, p in enumerate(paras) if p.strip()]
 
     for i in range(len(paras)):
@@ -1999,7 +2129,7 @@ def process_document_async(
 
     total_chunks = len(chunks)
     if total_chunks == 0:
-        return edited_paras
+        return edited_paras, all_queries
 
     completed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=_chunk_pool_size()) as ex:
@@ -2012,9 +2142,15 @@ def process_document_async(
         for future in concurrent.futures.as_completed(future_to_chunk):
             chunk_inds = future_to_chunk[future]
             try:
-                result = future.result()
+                result, chunk_queries = future.result()
                 for idx, edited_text in zip(chunk_inds, result):
                     edited_paras[idx] = edited_text
+                for q in chunk_queries:
+                    all_queries.append({
+                        "index": chunk_inds[q["local_index"]],
+                        "snippet": q["snippet"],
+                        "query": q["query"],
+                    })
             except Exception as exc:
                 print(f"Chunk generated an exception: {exc}")
                 for idx in chunk_inds:
@@ -2022,4 +2158,5 @@ def process_document_async(
             completed += 1
             if progress_callback:
                 progress_callback(completed / total_chunks)
-    return edited_paras
+    all_queries.sort(key=lambda q: q["index"])
+    return edited_paras, all_queries

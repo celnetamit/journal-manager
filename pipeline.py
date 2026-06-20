@@ -23,6 +23,7 @@ from editor import (
     build_jats_xml,
     build_journal_report,
     enforce_author_limit,
+    enforce_keywords_format,
     generate_ai_review,
     generate_cover_letter,
     generate_report,
@@ -103,7 +104,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     def chunk_progress(frac: float) -> None:
         progress(0.05 + frac * 0.55, "Copyediting manuscript...")
 
-    edited_paragraphs = process_document_async(
+    edited_paragraphs, editor_queries = process_document_async(
         original_paragraphs, llm_settings, edit_style, ref_style, lang_type,
         custom_dict, use_crossref, chunk_progress, enabled_rule_ids, custom_rules,
     )
@@ -115,17 +116,20 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         )
 
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
+    edited_paragraphs = enforce_keywords_format(edited_paragraphs, enabled_rule_ids)
 
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()
     ts = int(time.time())
     redline_path = out_dir / f"user_{user_id}_{ts}_redline.docx"
-    generate_redline_docx(input_path, edited_paragraphs, str(redline_path))
+    generate_redline_docx(
+        input_path, edited_paragraphs, str(redline_path), queries=editor_queries,
+    )
 
     progress(0.74, "Generating editorial report...")
     report = generate_report(
         edit_style, ref_style, lang_type, use_crossref, custom_dict,
-        enabled_rule_ids, custom_rules,
+        enabled_rule_ids, custom_rules, queries=editor_queries,
     )
 
     progress(0.78, "Recommending journals...")
