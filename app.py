@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 
@@ -501,6 +502,16 @@ if is_authenticated:
                    else "No key configured — leave off; everything else works as usual.")
             ),
         )
+        plagiarism_scan_enabled = st.checkbox(
+            "Preliminary Originality Scan (web matches)", value=False,
+            disabled=not _serper_configured,
+            help=(
+                "Optional. Exact-phrase web search (via Serper) on a sample of "
+                "sentences to flag verbatim matches on the public web. NOT a real "
+                "plagiarism check — it cannot see paywalled journals or paraphrasing "
+                "and is not a substitute for iThenticate/Turnitin. Uses Serper quota."
+            ),
+        )
         ai_review_enabled = st.checkbox(
             "AI Peer Reviewer", value=True,
             help="Runs an expert AI referee in parallel and produces a downloadable "
@@ -657,6 +668,15 @@ if not st.session_state.user_id:
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+def _safe_stem(filename: str) -> str:
+    """Manuscript base name (no extension), sanitized for use in download
+    filenames so every downloaded file is identifiable by name. Falls back to
+    'manuscript'."""
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].strip()
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("_")
+    return stem or "manuscript"
+
+
 def _render_result(result: dict, kp: str) -> None:
     """Render a completed job's reports and downloads. `kp` keys the widgets."""
     for _w in result.get("warnings") or []:
@@ -724,12 +744,14 @@ def _render_result(result: dict, kp: str) -> None:
     with res_col2:
         st.subheader("📥 Download Results")
         st.info("Your redline document features native Word Track Changes.")
+        stem = _safe_stem(result.get("filename", ""))
         downloads = [
-            ("redline_path", "Download Redline Manuscript", "manuscript_redline.docx", _DOCX_MIME, "primary"),
-            ("journal_report_path", "📚 Download Journal Recommendations", "top_journal_recommendations.docx", _DOCX_MIME, "secondary"),
-            ("review_report_path", "📑 Download Review Report", "editorial_review_report.docx", _DOCX_MIME, "secondary"),
-            ("ai_review_path", "🧑‍⚖️ Download AI Peer Review", "ai_peer_review.docx", _DOCX_MIME, "secondary"),
-            ("jats_path", "🏷️ Download JATS/XML (production)", "manuscript_jats.xml", JATS_MIME, "secondary"),
+            ("redline_path", "Download Redline Manuscript", f"{stem}_redline.docx", _DOCX_MIME, "primary"),
+            ("journal_report_path", "📚 Download Journal Recommendations", f"{stem}_journal_recommendations.docx", _DOCX_MIME, "secondary"),
+            ("review_report_path", "📑 Download Review Report", f"{stem}_editorial_report.docx", _DOCX_MIME, "secondary"),
+            ("ai_review_path", "🧑‍⚖️ Download AI Peer Review", f"{stem}_ai_peer_review.docx", _DOCX_MIME, "secondary"),
+            ("plagiarism_report_path", "🔎 Download Originality Report (preliminary)", f"{stem}_originality_report.docx", _DOCX_MIME, "secondary"),
+            ("jats_path", "🏷️ Download JATS/XML (production)", f"{stem}_jats.xml", JATS_MIME, "secondary"),
         ]
         for key, label, fname, mime, btype in downloads:
             path = result.get(key) or ""
@@ -809,6 +831,7 @@ with tab_editor:
             "custom_dict": custom_dict,
             "use_crossref": use_crossref,
             "use_serper": use_serper,
+            "plagiarism_scan_enabled": plagiarism_scan_enabled,
             "reorder_citations": reorder_citations,
             "enabled_rule_ids": enabled_rule_ids,
             "custom_rules": custom_rules,
@@ -1002,13 +1025,14 @@ with tab_history:
                 cols[2].write(row["status"])
 
                 if row["status"] == "Success":
-                    dl_cols = st.columns(5)
+                    stem = _safe_stem(row.get("filename", ""))
+                    dl_cols = st.columns(6)
                     rp = row.get("redline_path") or ""
                     if rp and os.path.exists(rp):
                         with open(rp, "rb") as rf:
                             dl_cols[0].download_button(
                                 "📝 Redline", data=rf,
-                                file_name=f"historical_redline_{idx}.docx",
+                                file_name=f"{stem}_redline.docx",
                                 key=f"dl_redline_{idx}",
                             )
                     _docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -1017,7 +1041,7 @@ with tab_history:
                         with open(jp, "rb") as jf:
                             dl_cols[1].download_button(
                                 "📚 Journals", data=jf,
-                                file_name=f"top_journal_recommendations_{idx}.docx",
+                                file_name=f"{stem}_journal_recommendations.docx",
                                 mime=_docx_mime,
                                 key=f"dl_journals_{idx}",
                             )
@@ -1026,7 +1050,7 @@ with tab_history:
                         with open(vp, "rb") as vf:
                             dl_cols[2].download_button(
                                 "📑 Review", data=vf,
-                                file_name=f"editorial_review_report_{idx}.docx",
+                                file_name=f"{stem}_editorial_report.docx",
                                 mime=_docx_mime,
                                 key=f"dl_review_{idx}",
                             )
@@ -1035,7 +1059,7 @@ with tab_history:
                         with open(ap, "rb") as af:
                             dl_cols[3].download_button(
                                 "🧑‍⚖️ AI Review", data=af,
-                                file_name=f"ai_peer_review_{idx}.docx",
+                                file_name=f"{stem}_ai_peer_review.docx",
                                 mime=_docx_mime,
                                 key=f"dl_aireview_{idx}",
                             )
@@ -1044,9 +1068,18 @@ with tab_history:
                         with open(xp, "rb") as xf:
                             dl_cols[4].download_button(
                                 "🏷️ JATS XML", data=xf,
-                                file_name=f"manuscript_jats_{idx}.xml",
+                                file_name=f"{stem}_jats.xml",
                                 mime=JATS_MIME,
                                 key=f"dl_jats_{idx}",
+                            )
+                    pp = row.get("plagiarism_report_path") or ""
+                    if pp and os.path.exists(pp):
+                        with open(pp, "rb") as pf:
+                            dl_cols[5].download_button(
+                                "🔎 Originality", data=pf,
+                                file_name=f"{stem}_originality_report.docx",
+                                mime=_docx_mime,
+                                key=f"dl_plag_{idx}",
                             )
                 st.divider()
 

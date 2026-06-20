@@ -23,6 +23,7 @@ from editor import (
     align_global_citations,
     build_jats_xml,
     build_journal_report,
+    build_plagiarism_report,
     enforce_author_limit,
     enforce_keywords_format,
     generate_ai_review,
@@ -31,6 +32,7 @@ from editor import (
     generate_redline_docx,
     generate_title_abstract_polish,
     markdown_to_docx,
+    plagiarism_scan,
     process_document_async,
     read_docx,
     recommend_journals,
@@ -137,6 +139,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_keywords_format(edited_paragraphs, enabled_rule_ids)
 
+    # OPTIONAL preliminary originality scan (web verbatim matches via Serper).
+    # Only runs when Serper is active AND the user enabled it. Scans the author's
+    # ORIGINAL text, not our edited version. Never blocks the run on failure.
+    plagiarism = None
+    if use_serper and opts.get("plagiarism_scan_enabled", False):
+        progress(0.64, "Preliminary originality scan...")
+        try:
+            plagiarism = plagiarism_scan(original_paragraphs, serper_key)
+        except Exception as scan_exc:
+            warnings.append(f"Originality scan failed: {scan_exc}")
+
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()
     # Unique per-job token so concurrent jobs never overwrite each other's
@@ -152,6 +165,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     report = generate_report(
         edit_style, ref_style, lang_type, use_crossref, custom_dict,
         enabled_rule_ids, custom_rules, queries=editor_queries, warnings=warnings,
+        plagiarism=plagiarism,
     )
 
     progress(0.78, "Recommending journals...")
@@ -163,6 +177,14 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     journal_report_path = out_dir / f"user_{user_id}_{ts}_journals.docx"
     markdown_to_docx(report, str(review_report_path))
     markdown_to_docx(journal_report_md, str(journal_report_path))
+
+    # Standalone, detailed originality report — only written when the scan ran.
+    plagiarism_report_path = ""
+    plagiarism_md = build_plagiarism_report(plagiarism)
+    if plagiarism_md:
+        _pp = out_dir / f"user_{user_id}_{ts}_originality.docx"
+        markdown_to_docx(plagiarism_md, str(_pp))
+        plagiarism_report_path = str(_pp)
 
     progress(0.84, "Generating JATS/XML production file...")
     jats_path = out_dir / f"user_{user_id}_{ts}_jats.xml"
@@ -209,6 +231,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         review_report_path=str(review_report_path),
         ai_review_path=str(ai_review_path) if ai_review_path else "",
         jats_path=str(jats_path),
+        plagiarism_report_path=plagiarism_report_path,
     )
 
     progress(1.0, "Complete")
@@ -227,9 +250,12 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "jats_ok": bool(jats_ok),
         "jats_issues": list(jats_issues),
         "edit_style": edit_style,
+        "filename": filename,
         "paras_count": paras_count,
         "duration": round(duration, 1),
         "warnings": warnings,
+        "plagiarism": plagiarism,
+        "plagiarism_report_path": plagiarism_report_path,
     }
 
 

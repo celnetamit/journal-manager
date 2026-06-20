@@ -95,7 +95,8 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             journal_report_path TEXT,
             review_report_path TEXT,
             ai_review_path TEXT,
-            jats_path TEXT
+            jats_path TEXT,
+            plagiarism_report_path TEXT
         )"""
     )
     # Idempotent column adds (SQLite has no IF NOT EXISTS for columns)
@@ -106,6 +107,7 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         ("review_report_path", "TEXT"),
         ("ai_review_path", "TEXT"),
         ("jats_path", "TEXT"),
+        ("plagiarism_report_path", "TEXT"),
     ):
         try:
             c.execute(f"ALTER TABLE process_logs ADD COLUMN {col} {decl}")
@@ -182,7 +184,8 @@ def _ensure_schema_pg(cur: Any) -> None:
             journal_report_path TEXT,
             review_report_path TEXT,
             ai_review_path TEXT,
-            jats_path TEXT
+            jats_path TEXT,
+            plagiarism_report_path TEXT
         )"""
     )
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS user_id INTEGER")
@@ -191,6 +194,7 @@ def _ensure_schema_pg(cur: Any) -> None:
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS review_report_path TEXT")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS ai_review_path TEXT")
     cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS jats_path TEXT")
+    cur.execute("ALTER TABLE process_logs ADD COLUMN IF NOT EXISTS plagiarism_report_path TEXT")
     cur.execute(
         """CREATE TABLE IF NOT EXISTS login_tokens (
             token_hash TEXT PRIMARY KEY,
@@ -625,24 +629,28 @@ def log_job(
     review_report_path: str = "",
     ai_review_path: str = "",
     jats_path: str = "",
+    plagiarism_report_path: str = "",
 ) -> None:
     sql = (
         """INSERT INTO process_logs
            (user_id, filename, paragraphs_count, edit_style, ref_style,
             language, duration_seconds, status, error_message, redline_path,
-            journal_report_path, review_report_path, ai_review_path, jats_path)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+            journal_report_path, review_report_path, ai_review_path, jats_path,
+            plagiarism_report_path)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
         if _is_postgres() else
         """INSERT INTO process_logs
            (user_id, filename, paragraphs_count, edit_style, ref_style,
             language, duration_seconds, status, error_message, redline_path,
-            journal_report_path, review_report_path, ai_review_path, jats_path)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+            journal_report_path, review_report_path, ai_review_path, jats_path,
+            plagiarism_report_path)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
     )
     params: Tuple[Any, ...] = (
         user_id, filename, paragraphs_count, edit_style, ref_style,
         language, duration_seconds, status, error_message, redline_path,
         journal_report_path, review_report_path, ai_review_path, jats_path,
+        plagiarism_report_path,
     )
     try:
         with _connect() as conn:
@@ -659,11 +667,13 @@ def fetch_user_history(user_id: int) -> List[dict]:
         cur = conn.cursor()
         cur.execute(
             """SELECT timestamp, filename, edit_style, status, redline_path,
-                      journal_report_path, review_report_path, ai_review_path, jats_path
+                      journal_report_path, review_report_path, ai_review_path, jats_path,
+                      plagiarism_report_path
                FROM process_logs WHERE user_id=%s ORDER BY timestamp DESC"""
             if _is_postgres() else
             """SELECT timestamp, filename, edit_style, status, redline_path,
-                      journal_report_path, review_report_path, ai_review_path, jats_path
+                      journal_report_path, review_report_path, ai_review_path, jats_path,
+                      plagiarism_report_path
                FROM process_logs WHERE user_id=? ORDER BY timestamp DESC""",
             (user_id,),
         )

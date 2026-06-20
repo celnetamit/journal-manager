@@ -376,6 +376,121 @@ def fetch_crossref_doi(citation_text: str) -> Optional[str]:
     return None
 
 
+# --- Preliminary originality (web-match) scan via Serper — OPTIONAL ---
+# IMPORTANT: this is NOT a real plagiarism check. It only finds VERBATIM matches
+# on the public web (via exact-phrase Google search). It cannot see paywalled
+# journals or paraphrased text and produces no formal similarity score. It is a
+# cheap, preliminary signal — not a substitute for iThenticate/Turnitin.
+
+_SERPER_SEARCH_URL = "https://google.serper.dev/search"
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+PLAGIARISM_DISCLAIMER = (
+    "Preliminary web-match scan only — finds verbatim text on the public web. "
+    "It does NOT cover paywalled/journal content or paraphrasing and is NOT a "
+    "substitute for iThenticate/Turnitin."
+)
+
+
+def _looks_like_reference(sentence: str) -> bool:
+    """A bibliography/citation line legitimately matches published sources, so we
+    skip it — counting it as 'plagiarism' would be wrong."""
+    has_year = re.search(r"\b(19|20)\d{2}\b", sentence)
+    if has_year and re.search(r"\bet\s+al\b", sentence, re.I):
+        return True
+    if has_year and sentence.count(",") >= 4:
+        return True
+    if "doi.org" in sentence.lower() or "https://" in sentence.lower():
+        return True
+    return False
+
+
+def _candidate_sentences(paragraphs: List[str], min_words: int = 10,
+                         max_words: int = 45, max_checks: int = 25) -> List[str]:
+    """Pick substantive body sentences worth checking. Skips headings, the
+    keywords line, and reference/citation lines, then samples evenly across the
+    document so coverage is spread out and the query budget is bounded."""
+    sents: List[str] = []
+    for p in paragraphs:
+        t = (p or "").strip()
+        if not t or t.lower().startswith(("keyword", "key word")):
+            continue
+        # Skip reference/bibliography paragraphs wholesale — sentence-splitting a
+        # reference (e.g. on the period after "et al.") would otherwise leak a
+        # citation fragment past the per-sentence guard.
+        if _looks_like_reference(t):
+            continue
+        for s in _SENT_SPLIT_RE.split(t):
+            s = s.strip()
+            if min_words <= len(s.split()) <= max_words and not _looks_like_reference(s):
+                sents.append(s)
+    if len(sents) > max_checks:
+        step = len(sents) / max_checks
+        sents = [sents[int(i * step)] for i in range(max_checks)]
+    return sents
+
+
+def _serper_search_phrase(phrase: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """Exact-phrase Google search via Serper. Returns the organic results list
+    (possibly empty) or None on a network/API error."""
+    try:
+        r = requests.post(
+            _SERPER_SEARCH_URL,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": f'"{phrase}"', "num": 5}, timeout=20,
+        )
+        if r.status_code != 200:
+            return None
+        return (r.json() or {}).get("organic") or []
+    except requests.exceptions.RequestException:
+        return None
+
+
+def plagiarism_scan(paragraphs: List[str], api_key: str,
+                    max_checks: int = 25, max_workers: int = 5) -> Dict[str, Any]:
+    """Preliminary web-match originality scan. For a bounded sample of body
+    sentences, exact-phrase search the web; a sentence with any verbatim hit is
+    flagged with its top source links. Returns a dict with an originality score
+    (% of checked sentences with NO web match) and the flagged sentences.
+
+    Optional: with no api_key this no-ops and reports it. See PLAGIARISM_DISCLAIMER
+    — this is a preliminary signal, not a formal plagiarism report."""
+    result: Dict[str, Any] = {
+        "available": False, "checked": 0, "flagged": [], "score": None,
+        "disclaimer": PLAGIARISM_DISCLAIMER, "note": "",
+    }
+    if not api_key:
+        result["note"] = "No Serper API key — originality scan skipped."
+        return result
+
+    sentences = _candidate_sentences(paragraphs, max_checks=max_checks)
+    if not sentences:
+        result["note"] = "No substantive body sentences found to scan."
+        return result
+
+    def check(s: str) -> Optional[Dict[str, Any]]:
+        organic = _serper_search_phrase(s, api_key)
+        if organic:  # exact-phrase query returned hits => verbatim match on web
+            sources = [
+                {"title": o.get("title", ""), "link": o.get("link", "")}
+                for o in organic[:3] if o.get("link")
+            ]
+            return {"sentence": s, "sources": sources}
+        return None
+
+    flagged: List[Dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for res in ex.map(check, sentences):
+            if res:
+                flagged.append(res)
+
+    checked = len(sentences)
+    result.update(
+        available=True, checked=checked, flagged=flagged,
+        score=round(100 * (1 - len(flagged) / checked)) if checked else None,
+    )
+    return result
+
+
 # --- In-house / publisher rules (displayed in UI; injected into the edit prompt) ---
 #
 # Each group can be toggled on/off per user and is surfaced in the frontend.
@@ -1320,7 +1435,8 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
                     enabled_rule_ids: Optional[List[str]] = None,
                     custom_rules: str = "",
                     queries: Optional[List[Dict[str, Any]]] = None,
-                    warnings: Optional[List[str]] = None) -> str:
+                    warnings: Optional[List[str]] = None,
+                    plagiarism: Optional[Dict[str, Any]] = None) -> str:
     report = "### 📑 Editorial Report\n\n"
     if warnings:
         report += "**⚠️ Notices:**\n"
@@ -1367,7 +1483,81 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
             prefix = f"**{snippet}** ({loc})" if snippet else f"({loc})"
             report += f"- {prefix}: {q['query']}\n"
 
+    if plagiarism and plagiarism.get("available"):
+        flagged = plagiarism.get("flagged") or []
+        checked = plagiarism.get("checked", 0)
+        score = plagiarism.get("score")
+        report += "\n**🔎 Preliminary Originality Scan:**\n"
+        report += f"_{plagiarism.get('disclaimer', '')}_\n"
+        if score is not None:
+            report += (
+                f"- Originality (preliminary): **{score}%** — {len(flagged)} of "
+                f"{checked} checked sentence(s) had a verbatim web match.\n"
+            )
+        for item in flagged:
+            s = re.sub(r"\s+", " ", item.get("sentence", "")).strip()
+            if len(s) > 100:
+                s = s[:97] + "…"
+            report += f"- Possible match: “{s}”\n"
+            for src in item.get("sources", [])[:3]:
+                title = (src.get("title") or src.get("link") or "source").strip()
+                report += f"    - [{title}]({src.get('link', '')})\n"
+        if not flagged:
+            report += "- No verbatim web matches found in the checked sample.\n"
+    elif plagiarism and plagiarism.get("note"):
+        report += f"\n**🔎 Preliminary Originality Scan:** _{plagiarism['note']}_\n"
+
     return report
+
+
+def build_plagiarism_report(plagiarism: Optional[Dict[str, Any]]) -> str:
+    """Render the preliminary originality scan as a standalone, downloadable
+    Markdown report (full detail: every flagged sentence and all its sources).
+    Returns '' when there is nothing to report so the caller can skip writing a
+    file."""
+    if not plagiarism or not plagiarism.get("available"):
+        return ""
+    flagged = plagiarism.get("flagged") or []
+    checked = plagiarism.get("checked", 0)
+    score = plagiarism.get("score")
+
+    lines = ["# 🔎 Preliminary Originality Report", ""]
+    lines.append(f"> **{plagiarism.get('disclaimer', '')}**")
+    lines.append("")
+    lines.append("## Summary")
+    if score is not None:
+        lines.append(f"- **Preliminary originality score:** {score}%")
+    lines.append(f"- **Sentences checked:** {checked}")
+    lines.append(f"- **Sentences with a verbatim web match:** {len(flagged)}")
+    lines.append("")
+    lines.append(
+        "_The score is the share of checked sentences with NO verbatim match on "
+        "the public web. A high score is not a guarantee of originality, and a "
+        "flagged sentence is not proof of plagiarism — common phrasing, correct "
+        "quotation, and an author's own prior posts all match too. Review each "
+        "item in context._"
+    )
+    lines.append("")
+    lines.append("## Flagged sentences")
+    if not flagged:
+        lines.append("")
+        lines.append("_No verbatim web matches were found in the checked sample._")
+        return "\n".join(lines) + "\n"
+
+    for i, item in enumerate(flagged, 1):
+        sentence = re.sub(r"\s+", " ", item.get("sentence", "")).strip()
+        lines.append("")
+        lines.append(f"### {i}. “{sentence}”")
+        sources = item.get("sources") or []
+        if sources:
+            lines.append("Matching web sources:")
+            for src in sources:
+                title = (src.get("title") or src.get("link") or "source").strip()
+                link = src.get("link", "")
+                lines.append(f"- [{title}]({link})")
+        else:
+            lines.append("- _(match detected; no source link available)_")
+    return "\n".join(lines) + "\n"
 
 
 def build_journal_report(recommended: List[dict]) -> str:
