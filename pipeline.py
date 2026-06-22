@@ -26,6 +26,7 @@ from editor import (
     build_plagiarism_report,
     enforce_author_limit,
     enforce_keywords_format,
+    enforce_reference_year_only,
     generate_ai_review,
     generate_cover_letter,
     generate_report,
@@ -137,6 +138,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         )
 
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
+    edited_paragraphs = enforce_reference_year_only(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_keywords_format(edited_paragraphs, enabled_rule_ids)
 
     # OPTIONAL preliminary originality scan (web verbatim matches via Serper).

@@ -501,8 +501,9 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
     {
         "id": "reference",
         "title": "In-House Reference Rules",
-        "summary": "Author limit (6 + et al.), strip honorific titles, ISO-4 journal abbreviation, source-type structure.",
+        "summary": "Author limit (6 + et al.), strip honorific titles, ISO-4 journal abbreviation, year-only publication date, source-type structure.",
         "body": """IN-HOUSE REFERENCE RULES (these OVERRIDE the base reference style above for any reference/bibliography entry):
+0. PUBLICATION DATE — YEAR ONLY: The publication date of a reference must show the YEAR ONLY (a 4-digit year), never a month, season, or day. Remove any month name or abbreviation, season, or day that is attached to the publication year, and keep only the year. Examples: "Vol. 175, July.2025" -> "Vol. 175, 2025"; "June 2025" -> "2025"; "Jan 2024" -> "2024"; "Apr.2021" -> "2021"; "Spring 2019" -> "2019"; "15 March 2020" -> "2020". Also drop any now-stray punctuation left behind (e.g. the "." in "July.2025"). TWO EXCEPTIONS where a month is REQUIRED and must be kept: (a) the event date of a CONFERENCE reference ("Year, Month Date.") and (b) the "[Accessed on Month Year]" date of a WEB PAGE reference — only these two retain the month. Do NOT touch months that appear inside the article/book/chapter TITLE itself (e.g. a paper titled "Trends in March 2020 Lockdowns").
 1. AUTHOR LIMIT (6 + et al.): Count the authors in each reference. If a reference lists MORE THAN 6 authors, keep ONLY the first 6 authors in their original order, DELETE every author after the 6th, and append "et al." after the 6th author. The output must contain EXACTLY 6 names followed by "et al." — never 7 or more names before "et al.". Example with 8 authors: "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, Brown G, Davis H" -> "Smith A, Jones B, Lee C, Patel D, Garcia E, Kim F, et al." (authors 7 and 8 are removed). If there are 6 or fewer authors, list them ALL and do NOT add "et al.". Never add "et al." to a list that already shows all authors.
 1a. STRIP TITLES: Remove any honorific or professional title prefixes attached to an author name (e.g. "Mr", "Mrs", "Ms", "Dr", "Dr.", "Prof", "Prof.", "Professor", "Er", "Er.", "Sir", "Sri", "Smt", "Md" when used as a courtesy title, "PhD"/"MD"/"FRCS" when used as a leading prefix). Keep only the actual name. Example: "Dr. Smith JA, Prof Jones BR" -> "Smith JA, Jones BR". Do this in BOTH the bibliography entries and any in-text author-date citations.
 2. JOURNAL ABBREVIATION: For JOURNAL references, abbreviate the journal name using standard ISO 4 / Index Medicus (NLM) abbreviations (e.g., "Journal of Science" -> "J Sci"; "New England Journal of Medicine" -> "N Engl J Med"; "Nature" stays "Nature"). Do NOT abbreviate book titles, publisher names, or chapter titles.
@@ -709,6 +710,85 @@ def enforce_author_limit(
     ]
 
 
+# --- Deterministic enforcement of year-only reference dates (LLM safety net) ---
+
+_MONTHS_RE = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t)?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|"
+    r"Dec(?:ember)?|Spring|Summer|Autumn|Fall|Winter)"
+)
+# A month (optionally preceded by a day) sitting immediately before a 4-digit
+# year — i.e. a publication date like "July.2025", "June 2025", "15 Mar 2020".
+# The year is captured so the whole run collapses to just the year.
+_REF_MONTH_BEFORE_YEAR_RE = re.compile(
+    r"(?:\b\d{1,2}(?:st|nd|rd|th)?\s+)?"
+    r"\b" + _MONTHS_RE + r"\b\.?\s*((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+# Quoted spans (straight or curly quotes) — protect a title's exact wording.
+_QUOTED_SPAN_RE = re.compile("[\"“”][^\"“”]*[\"“”]")
+# Entries whose month is intentional (event date / access date) and kept as-is.
+_REF_KEEP_MONTH_RE = re.compile(
+    r"accessed|conference|symposium|proceedings|congress|workshop|\bmeeting\b",
+    re.IGNORECASE,
+)
+
+
+def _is_reference_entry(text: str) -> bool:
+    """Heuristic: does this paragraph look like a bibliography entry (rather than
+    body prose that merely mentions a year)? Conservative — we only strip months
+    from text carrying a strong citation signal, so prose like 'in July 2025 we
+    ran the trial' is never touched."""
+    if not re.search(r"\b(19|20)\d{2}\b", text):
+        return False
+    if _REF_NUM_PREFIX_RE.match(text):
+        return True
+    t = text.lower()
+    if '"' in text or "“" in text or "”" in text:   # quoted title
+        return True
+    if re.search(r"\bvol\.?\s*\d", t) or "doi" in t or re.search(r"\bet\s+al\b", t):
+        return True
+    if re.search(r"\bpp?\.\s*\d", t):   # page range, e.g. "pp. 2198–2201"
+        return True
+    return False
+
+
+def _strip_reference_months(ref: str) -> str:
+    """Collapse a publication 'Month Year' (or 'Day Month Year') to the year
+    alone, but only OUTSIDE quoted titles so the title's wording is untouched."""
+    def _drop(seg: str) -> str:
+        return _REF_MONTH_BEFORE_YEAR_RE.sub(lambda mm: mm.group(1), seg)
+
+    out: List[str] = []
+    last = 0
+    for m in _QUOTED_SPAN_RE.finditer(ref):
+        out.append(_drop(ref[last:m.start()]))
+        out.append(m.group(0))  # quoted title kept verbatim
+        last = m.end()
+    out.append(_drop(ref[last:]))
+    return "".join(out)
+
+
+def enforce_reference_year_only(
+    paras: List[str], enabled_rule_ids: Optional[List[str]] = None,
+) -> List[str]:
+    """Deterministic safety net for the year-only reference-date rule. Applied
+    only when the reference rule group is active (enabled_rule_ids=None means all
+    groups active). Runs after the LLM edit. Skips conference and web
+    'accessed on' entries — whose month is required — and never edits inside a
+    quoted title."""
+    if enabled_rule_ids is not None and "reference" not in enabled_rule_ids:
+        return paras
+    result: List[str] = []
+    for p in paras:
+        if (p and p.strip() and _is_reference_entry(p)
+                and not _REF_KEEP_MONTH_RE.search(p)):
+            result.append(_strip_reference_months(p))
+        else:
+            result.append(p)
+    return result
+
+
 # --- Deterministic enforcement of the keywords line (safety net for the LLM) ---
 
 # Matches a leading "Keywords:" / "Key words -" label and captures (label, rest).
@@ -773,8 +853,9 @@ def ai_edit_chunk(
     use_serper: bool = False, serper_key: str = "",
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Returns (edited_texts, queries). `edited_texts` is the same length as
-    `chunk_texts`. `queries` is a list of {"local_index", "snippet", "query"}
-    for paragraphs the model flagged rather than silently changing."""
+    `chunk_texts`. `queries` is a list of
+    {"local_index", "snippet", "query", "suggestion"} for paragraphs the model
+    flagged rather than silently changing ("suggestion" may be None)."""
     house_rules = build_house_rules_section(enabled_rule_ids, custom_rules)
     prompt = f"""You are a professional academic copyeditor.
 Rules:
@@ -806,9 +887,10 @@ CRITICAL OUTPUT FORMAT:
 2. Each element corresponds to the input element at the SAME index and MUST be a JSON object with:
    - "edited": (string) the edited version of that paragraph. If nothing needs changing, return the original text unchanged.
    - "query": (string, OPTIONAL) a short note to the author/editor, used ONLY when you chose to flag rather than change. Omit the field or set it to null when there is no query.
+   - "suggestion": (string, OPTIONAL) a concrete proposed correction the author can accept to resolve the query — wherever you can reasonably propose one. This is the SUGGESTED FIX, not a restatement of the problem: give the exact replacement wording, value, or reference the author would use (e.g. the corrected sentence, the right year, the missing citation). Only include it alongside a "query". Omit it (or set null) when the issue genuinely needs the author's own input and no fix can be proposed (e.g. "please confirm which value is intended"). Never apply the suggestion to the "edited" text yourself — it is a proposal for the author to accept.
 3. Do not add markdown formatting or extra text. Return just the JSON array of objects.
 
-Example output: [{{"edited": "The result was significant.", "query": null}}, {{"edited": "Smith (2020) reported the effect.", "query": "Reference [4] year reads 2020 here but 2002 in the bibliography — please confirm."}}]
+Example output: [{{"edited": "The result was significant.", "query": null}}, {{"edited": "Smith (2020) reported the effect.", "query": "Reference [4] year reads 2020 here but 2002 in the bibliography — please confirm.", "suggestion": "Change the in-text year to 2002 to match the bibliography: \\"Smith (2002) reported the effect.\\""}}]
 
 Input JSON:
 {json.dumps(chunk_texts)}
@@ -838,10 +920,12 @@ Input JSON:
                 result.append(edited if isinstance(edited, str) else chunk_texts[i])
                 q = elem.get("query")
                 if isinstance(q, str) and q.strip():
+                    s = elem.get("suggestion")
                     queries.append({
                         "local_index": i,
                         "snippet": chunk_texts[i],
                         "query": q.strip(),
+                        "suggestion": s.strip() if isinstance(s, str) and s.strip() else None,
                     })
             else:
                 result.append(chunk_texts[i])
@@ -964,6 +1048,9 @@ def generate_redline_docx(
             idx = q.get("index")
             note = (q.get("query") or "").strip()
             if isinstance(idx, int) and note:
+                suggestion = (q.get("suggestion") or "").strip()
+                if suggestion:
+                    note = f"{note}\nSuggested fix: {suggestion}"
                 query_map.setdefault(idx, []).append(note)
         paragraphs = doc.paragraphs
         for idx, notes in query_map.items():
@@ -1472,7 +1559,9 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
         report += "\n**Editor Queries (please review):**\n"
         report += (
             f"_The editor flagged {len(queries)} item(s) rather than changing them "
-            "silently. Each also appears as a comment in the redline document._\n"
+            "silently. Where a fix could be proposed, a **Suggested fix** is given "
+            "for you to accept. Each query also appears as a comment in the redline "
+            "document._\n"
         )
         for q in queries:
             snippet = (q.get("snippet") or "").strip()
@@ -1482,6 +1571,9 @@ def generate_report(edit_style: str, ref_style: str, lang: str,
             loc = f"¶{q['index'] + 1}" if isinstance(q.get("index"), int) else "—"
             prefix = f"**{snippet}** ({loc})" if snippet else f"({loc})"
             report += f"- {prefix}: {q['query']}\n"
+            suggestion = (q.get("suggestion") or "").strip()
+            if suggestion:
+                report += f"    - 💡 **Suggested fix:** {suggestion}\n"
 
     if plagiarism and plagiarism.get("available"):
         flagged = plagiarism.get("flagged") or []
@@ -2402,7 +2494,8 @@ def process_document_async(
     use_serper: bool = False, serper_key: str = "",
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Returns (edited_paras, queries). Each query is
-    {"index": <paragraph index in paras>, "snippet", "query"}."""
+    {"index": <paragraph index in paras>, "snippet", "query", "suggestion"}
+    ("suggestion" may be None)."""
     edited_paras = [""] * len(paras)
     all_queries: List[Dict[str, Any]] = []
     task_indices = [i for i, p in enumerate(paras) if p.strip()]
@@ -2442,6 +2535,7 @@ def process_document_async(
                         "index": chunk_inds[q["local_index"]],
                         "snippet": q["snippet"],
                         "query": q["query"],
+                        "suggestion": q.get("suggestion"),
                     })
             except Exception as exc:
                 print(f"Chunk generated an exception: {exc}")
