@@ -57,3 +57,7 @@ test_input.docx
 test_output.docx
 test_color.docx
 output_log*.txt
+
+# Generated manuscript outputs
+*_redline.docx
+*_originality.docx

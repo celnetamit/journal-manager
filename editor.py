@@ -532,24 +532,31 @@ HOUSE_RULE_GROUPS: List[Dict[str, str]] = [
    - Sub-level headings (Levels 2, 3, 4) -> Title Case (capitalize the first and last word and all major words; keep short articles/conjunctions/prepositions such as "a", "an", "the", "of", "and", "in", "for", "to" lowercase unless first/last). Example: "fundamentals of functional genomics" -> "Fundamentals of Functional Genomics".
    (The journal styles these visually as H1 all-caps bold, H2 bold, H3 bold italic, H4 italic — apply the CASING here; the bold/italic is the journal's visual style applied at layout.)
 2. NO NUMBERING: Remove any leading numbering or auto-number prefixes from headings (e.g. "1. Introduction", "1.2 Methods", "Chapter 3: Results", "IV. Discussion" -> "INTRODUCTION", "Methods", "Results", "Discussion"). Keep the heading text itself intact.
-3. STRUCTURE: Preserve the heading's hierarchy/level and order; only fix its capitalization and remove numbering. Do NOT merge a heading into body text or turn body text into a heading. Do NOT add a trailing period or colon to a heading.""",
+3. STRUCTURE: Preserve the heading's hierarchy/level and order; only fix its capitalization and remove numbering. Do NOT merge a heading into body text or turn body text into a heading. Do NOT add a trailing period or colon to a heading.
+4. RUN-IN LABELS: A run-in heading or label that opens a paragraph (e.g. "OBJECTIVE:", "Background:", "Aim:" followed by body text on the same line) must be KEPT, not deleted. Reformat its case per the level rules and you MAY keep its colon (a run-in label is not a standalone heading), but never remove the label word itself.""",
     },
     {
         "id": "citation",
         "title": "In-House In-Text Citation Rules",
-        "summary": "Single space after commas; en dash for consecutive ranges.",
+        "summary": "Single space after commas; en dash for consecutive ranges; drop the redundant parenthetical author-date when a numbered marker is present (narrative citations untouched).",
         "body": """IN-HOUSE IN-TEXT CITATION RULES (apply to citation markers that appear inside body sentences, e.g. "[1]", "[1,2]", "[3-7]"):
 1. SPACE AFTER COMMA: When multiple citations are listed, put a single space after each comma, e.g. "[1,2,3]" -> "[1, 2, 3]".
 2. EN-DASH FOR RANGES: For a consecutive citation range, use an en dash (–) with no surrounding spaces between the first and last number, e.g. "[3-7]", "[3 to 7]", "[3—7]" -> "[3–7]".
-3. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these two rules; they apply only to in-text citation markers.""",
+3. REDUNDANT PARENTHETICAL AUTHOR-DATE: This journal uses a NUMBERED citation system (the "[n]" marker carries the citation). When an author-date appears INSIDE PARENTHESES right next to a numbered marker — e.g. "...older approaches (Hasan et al., 2025) [1]." or "...as shown [1] (Hasan et al., 2025)." — the parenthetical "(Author, Year)" is redundant with the number, so DELETE the parenthetical author-date and KEEP the "[n]" marker: "...older approaches [1].". Remove the now-empty parentheses and fix spacing/punctuation so exactly one space sits before "[n]" and the sentence still ends cleanly.
+   CRITICAL — NARRATIVE CITATIONS ARE EXEMPT: Only remove an author-date that is genuinely PARENTHETICAL (enclosed in "(...)") and is NOT the grammatical subject/object of the sentence. If the author name is woven into the running text as the subject — e.g. "Hasan et al. (2025) [1] offered a detailed examination." — KEEP the author name; that is a narrative citation and removing it would break the sentence (here you may still keep the "(2025)" and the "[1]"). When unsure whether removing the parenthetical leaves a grammatical, meaning-preserving sentence, do NOT remove it — leave both and, if needed, raise a query.
+4. Do NOT change the citation numbers themselves or alter reference-list (bibliography) entries with these rules; they apply only to in-text citation markers.""",
     },
     {
         "id": "citation_tense",
         "title": "In-House Citation Tense Rules",
-        "summary": "Reporting verbs that describe what a cited study did use the simple past tense, consistently across all citation sentences.",
-        "body": """IN-HOUSE CITATION TENSE RULES (apply to sentences that report what a cited/prior study did — typically the opening sentence of a paragraph in a literature-review / related-work section, of the form "Author et al. (Year) [n] <reporting verb> ..."):
-1. REPORTING VERB TENSE: Put the verb that reports what the cited authors did into the SIMPLE PAST tense, because it describes a completed action in a specific past study, and keep this tense CONSISTENT across every such citation sentence. Examples: "Khan et al. (2024) [8] point out key challenges" -> "Khan et al. (2024) [8] pointed out key challenges"; "Liu et al. (2022) [7] carry out a comprehensive review" -> "Liu et al. (2022) [7] carried out a comprehensive review"; "Huo et al. (2023) [6] introduces an intelligent system" -> "Huo et al. (2023) [6] introduced an intelligent system".
-2. SCOPE: Change ONLY the tense of the reporting verb. Do NOT alter the author names, year, citation number, or the meaning/wording of the rest of the sentence, and do NOT rewrite the sentence. Do NOT change tense in ordinary body text or in statements of general, established, or still-true fact (those stay in their natural present tense).""",
+        "summary": "ONLY the single reporting verb directly attached to a citation opener (\"Author et al. (Year) [n] <verb>\") is put into simple past; the rest of the paragraph is never touched.",
+        "body": """IN-HOUSE CITATION TENSE RULES (VERY NARROW SCOPE — read carefully):
+This rule applies to EXACTLY ONE verb: the reporting verb that directly follows a citation subject at the START of a sentence, where the sentence opens with the literal pattern "Author et al. (Year) [n] <verb> ..." (an author name + year + bracketed number, then the verb). Nothing else.
+1. REPORTING VERB TENSE: In such an opener, put that ONE reporting verb into the SIMPLE PAST tense, because it describes a completed action in a specific past study. Examples (note only the opener verb changes): "Khan et al. (2024) [8] point out key challenges" -> "Khan et al. (2024) [8] pointed out key challenges"; "Huo et al. (2023) [6] introduces an intelligent system" -> "Huo et al. (2023) [6] introduced an intelligent system"; "Kielhauser et al. (2020) [5] offering a hands-on example" -> "Kielhauser et al. (2020) [5] offered a hands-on example".
+2. DO NOT CASCADE: This is the single most important limit. Do NOT change the tense of ANY other verb in the paragraph. Every later sentence — even though it describes the same cited study (e.g. "The study involves...", "These images get processed...", "The researchers stack...", "All this helps...", "The team notes...") — MUST keep the author's original tense exactly. A literature-review paragraph is about one study throughout, but that does NOT make the whole paragraph reportable: change only the one opener verb and leave the remaining sentences completely untouched.
+3. "CONSISTENT" MEANS ACROSS OPENERS, NOT WITHIN A PARAGRAPH: Apply the simple-past opener fix the same way to each DIFFERENT citation opener (typically one per related-work paragraph). It does NOT mean making all verbs within a paragraph share one tense.
+4. NEVER touch general, established, or still-true statements, methodology descriptions, or any sentence whose subject is not an explicit "Author et al. (Year) [n]" citation. When in doubt, leave the verb unchanged.
+5. Do NOT alter, MOVE, or DELETE the author names, the year, or the citation number — the "Author et al. (Year)" phrase and any "[n]" marker MUST remain exactly in place. Do NOT rewrite the sentence or remove its subject.""",
     },
     {
         "id": "abbreviation",
@@ -789,6 +796,53 @@ def enforce_reference_year_only(
     return result
 
 
+# --- Deterministic removal of redundant parenthetical author-date citations ---
+# Option 1: when the journal uses numbered markers "[n]", an "(Author, Year)"
+# sitting in parentheses right next to the number duplicates it. A true
+# parenthetical is by definition grammatically removable, and we only match
+# parentheses that BEGIN with a capitalised author name and contain a 4-digit
+# year — so NARRATIVE citations (author name in the running text, with only
+# "(Year)" or nothing in the parentheses) never match and are preserved.
+
+# An author-date enclosed in parentheses: opens with a capital-letter surname and
+# ends at a 4-digit year (optional a/b disambiguation suffix). Bounded length and
+# no nested parentheses keep it from over-reaching.
+_PAREN_AUTHOR_DATE = r"\([A-Z][^()]{0,120}?(?:19|20)\d{2}[a-z]?\s*\)"
+# A numeric in-text citation marker like [1], [1, 2], [3–7].
+_NUM_CITE_MARKER = r"\[\s*\d+(?:\s*[–,\-]\s*\d+)*\s*\]"
+# Parenthetical author-date immediately BEFORE the number — keep the number.
+# Requires a preceding word char so we never strip a clause-opening subject.
+_REDUNDANT_PAREN_BEFORE_RE = re.compile(
+    r"(\w)\s+" + _PAREN_AUTHOR_DATE + r"\s*(" + _NUM_CITE_MARKER + r")"
+)
+# Parenthetical author-date immediately AFTER the number — keep the number.
+_REDUNDANT_PAREN_AFTER_RE = re.compile(
+    r"(" + _NUM_CITE_MARKER + r")\s*" + _PAREN_AUTHOR_DATE
+)
+
+
+def _drop_redundant_paren_citations(text: str) -> str:
+    text = _REDUNDANT_PAREN_BEFORE_RE.sub(r"\1 \2", text)
+    text = _REDUNDANT_PAREN_AFTER_RE.sub(r"\1", text)
+    return text
+
+
+def enforce_drop_redundant_paren_citation(
+    paras: List[str], enabled_rule_ids: Optional[List[str]] = None,
+) -> List[str]:
+    """Deterministic safety net for Option 1: when a numbered marker "[n]" is
+    present, drop an adjacent PARENTHETICAL "(Author, Year)" that duplicates it,
+    keeping the number. Narrative citations (author name outside the parentheses)
+    never match, so they are preserved. Applied only when the in-text citation
+    rule group is active (enabled_rule_ids=None means all groups active)."""
+    if enabled_rule_ids is not None and "citation" not in enabled_rule_ids:
+        return paras
+    return [
+        _drop_redundant_paren_citations(p) if p and p.strip() else p
+        for p in paras
+    ]
+
+
 # --- Deterministic enforcement of the keywords line (safety net for the LLM) ---
 
 # Matches a leading "Keywords:" / "Key words -" label and captures (label, rest).
@@ -872,6 +926,7 @@ EDIT CONSERVATIVELY — this is the most important rule:
 - PRESERVE the author's original wording, phrasing, sentence structure, and voice wherever the text is already correct. Do NOT rewrite, rephrase, reorder, or "improve" sentences for style, flow, or conciseness.
 - If a sentence is awkward but grammatically correct and unambiguous, leave it unchanged.
 - When a fix is needed, change only the specific words that are wrong; keep the rest of the sentence intact.
+- NEVER delete a citation, an author name, or a sentence's grammatical subject. If a sentence begins with an author-date citation followed by a numeric marker (e.g. "Hasan et al. (2025) [1] ..."), KEEP BOTH the author-date AND the [n] marker exactly — they are not duplicates. Never remove the "Author et al. (Year)" part and never leave a sentence starting with a bare "[1] ..." that has no subject. To make a fragment like "Smith et al. (2020) [3] Offering an example." grammatical, change only the verb ("Offering" -> "offered"), keeping the author-date subject: "Smith et al. (2020) [3] offered an example."
 
 {house_rules}
 """
