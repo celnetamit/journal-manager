@@ -30,6 +30,17 @@ def _normalize_settings(settings: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return app_config.normalize_llm_settings(settings or app_config.get_llm_settings())
 
 
+def _llm_temperature() -> float:
+    """Sampling temperature for copyediting/review generation. Defaults to a low
+    value so the SAME input produces consistent corrections across runs and
+    across parallel chunks (copyediting is a deterministic task, not creative
+    writing). Override with LLM_TEMPERATURE if needed."""
+    try:
+        return max(0.0, float(os.getenv("LLM_TEMPERATURE", "0.1")))
+    except (TypeError, ValueError):
+        return 0.1
+
+
 # --- Concurrency / rate-limit control ---
 #
 # A single process-wide semaphore caps how many LLM text/embedding calls are
@@ -122,11 +133,12 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
         if provider == "gemini":
             from google.genai import types
 
-            kwargs = {}
+            # Always pin a low temperature so corrections are consistent run to
+            # run and across parallel chunks; carry the JSON mime type when asked.
+            config_kwargs: Dict[str, Any] = {"temperature": _llm_temperature()}
             if response_mime_type:
-                kwargs["config"] = types.GenerateContentConfig(
-                    response_mime_type=response_mime_type,
-                )
+                config_kwargs["response_mime_type"] = response_mime_type
+            kwargs = {"config": types.GenerateContentConfig(**config_kwargs)}
             # Hold the client in a local so it stays alive for the SDK's internal
             # retry loop; a temporary would be GC'd mid-call and close its httpx
             # transport ("Cannot send a request, as the client has been closed.").
@@ -144,6 +156,7 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
             payload: Dict[str, Any] = {
                 "model": cfg["text_model"],
                 "messages": [{"role": "user", "content": prompt}],
+                "temperature": _llm_temperature(),
             }
             if response_mime_type == "application/json":
                 payload["response_format"] = {"type": "json_object"}
