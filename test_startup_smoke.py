@@ -8,6 +8,65 @@ def test_app_imports_without_optional_cookie_dependency() -> None:
     assert app.COOKIE_MANAGER_AVAILABLE in {True, False}
 
 
+def test_cookie_manager_falls_back_when_dependency_is_broken(monkeypatch) -> None:
+    """A broken (not merely missing) cookie dependency must not abort startup.
+
+    The cookie stack imports `cryptography`, whose native backend can fail to
+    load and raise a low-level pyo3 ``PanicException`` that subclasses
+    ``BaseException`` (not ``Exception``). ``_load_cookie_manager`` must swallow
+    it and hand back the in-memory manager instead of propagating.
+    """
+    import importlib
+
+    import app
+
+    class _Panic(BaseException):
+        pass
+
+    def _boom(_name: str):
+        raise _Panic("simulated native backend panic")
+
+    monkeypatch.setattr(app.importlib, "import_module", _boom)
+
+    manager_cls, available = app._load_cookie_manager()
+
+    assert available is False
+    assert manager_cls is app._InMemoryCookieManager
+
+    # The fallback must satisfy the interface the app relies on.
+    cookies = manager_cls(prefix="test/")
+    assert cookies.ready() is True
+    cookies["auth_token"] = "abc"
+    assert cookies.get("auth_token") == "abc"
+    cookies.save()
+    del cookies["auth_token"]
+    assert cookies.get("auth_token", "<empty>") == "<empty>"
+
+    importlib.reload(app)
+
+
+def test_cookie_manager_uses_real_dependency_when_import_succeeds(monkeypatch) -> None:
+    """When a cookie module imports cleanly, use its CookieManager, not the
+    in-memory fallback."""
+    import types
+
+    import app
+
+    sentinel = type("SentinelCookieManager", (), {})
+    fake_module = types.SimpleNamespace(CookieManager=sentinel)
+
+    def _fake_import(name: str):
+        assert name == "streamlit_cookies_manager"
+        return fake_module
+
+    monkeypatch.setattr(app.importlib, "import_module", _fake_import)
+
+    manager_cls, available = app._load_cookie_manager()
+
+    assert available is True
+    assert manager_cls is sentinel
+
+
 def test_login_throttle_locks_after_max_attempts(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.delenv("DATABASE_URL", raising=False)
