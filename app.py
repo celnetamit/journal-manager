@@ -7,6 +7,7 @@ This module wires together:
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -16,44 +17,60 @@ import uuid
 import pandas as pd
 import streamlit as st
 
-try:
-    from streamlit_cookies_manager import CookieManager  # type: ignore
-    COOKIE_MANAGER_AVAILABLE = True
-except ModuleNotFoundError:
-    try:
-        from streamlit_cookies_manager_v2 import CookieManager  # type: ignore
-        COOKIE_MANAGER_AVAILABLE = True
-    except ModuleNotFoundError:
-        COOKIE_MANAGER_AVAILABLE = False
 
-        class CookieManager:  # type: ignore[no-redef]
-            """Minimal in-memory fallback when cookie support is unavailable.
+class _InMemoryCookieManager:
+    """Minimal in-memory fallback when cookie support is unavailable.
 
-            The app can still launch and authenticate, but the "Remember me"
-            option becomes session-only in this runtime.
-            """
+    The app can still launch and authenticate, but the "Remember me"
+    option becomes session-only in this runtime.
+    """
 
-            def __init__(self, prefix: str = "") -> None:
-                self._cookies: dict[str, str] = {}
-                self.prefix = prefix
+    def __init__(self, prefix: str = "") -> None:
+        self._cookies: dict[str, str] = {}
+        self.prefix = prefix
 
-            def ready(self) -> bool:
-                return True
+    def ready(self) -> bool:
+        return True
 
-            def get(self, key: str, default: str = "") -> str:
-                return self._cookies.get(key, default)
+    def get(self, key: str, default: str = "") -> str:
+        return self._cookies.get(key, default)
 
-            def __getitem__(self, key: str) -> str:
-                return self._cookies[key]
+    def __getitem__(self, key: str) -> str:
+        return self._cookies[key]
 
-            def __setitem__(self, key: str, value: str) -> None:
-                self._cookies[key] = value
+    def __setitem__(self, key: str, value: str) -> None:
+        self._cookies[key] = value
 
-            def __delitem__(self, key: str) -> None:
-                self._cookies.pop(key, None)
+    def __delitem__(self, key: str) -> None:
+        self._cookies.pop(key, None)
 
-            def save(self) -> None:
-                pass
+    def save(self) -> None:
+        pass
+
+
+def _load_cookie_manager():
+    """Import a real CookieManager, tolerating a missing OR broken dependency.
+
+    The cookie stack pulls in `cryptography`, whose native backend may be
+    absent or fail to load in the target runtime. Importing it can then raise
+    anything from ``ModuleNotFoundError`` to a low-level pyo3
+    ``PanicException`` — which subclasses ``BaseException``, not
+    ``Exception``. We must not let that abort startup: the app is fully usable
+    without persistent cookies (only "Remember me" degrades to session-only),
+    so on any import failure we fall back to the in-memory manager.
+    """
+    for module_name in ("streamlit_cookies_manager", "streamlit_cookies_manager_v2"):
+        try:
+            module = importlib.import_module(module_name)
+            return module.CookieManager, True
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException:  # noqa: BLE001 - broken native dep can panic
+            continue
+    return _InMemoryCookieManager, False
+
+
+CookieManager, COOKIE_MANAGER_AVAILABLE = _load_cookie_manager()
 
 import auth
 import config as app_config
