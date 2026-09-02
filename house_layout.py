@@ -480,8 +480,17 @@ def _check_table_notes(t, label: str, body: Dict[int, Para]) -> List[Finding]:
 #: Rules where the same deviation repeating across tables is one decision, not many.
 #: Twelve tables with the same wrong cell margin produced 34 findings on the Guanidine
 #: paper — enough to bury the four that were about something else.
+#: The heading rules repeat per heading, and across 1,597 real manuscripts they are by
+#: far the larger number: `heading.size` averages 11.2 findings a manuscript and reaches
+#: 97 in one, `heading.body-text-as-heading` 118. Each line is true and each is word for
+#: word the one above it — a manuscript whose H3s are all in Cambria says so ninety-odd
+#: times. `heading.skipped-level` is deliberately absent: it is about one specific place
+#: in the hierarchy, and there are never many.
 _COLLAPSIBLE = ("table.cell-margin", "table.border", "table.font", "table.size",
-                "page.geometry")
+                "page.geometry",
+                "heading.size", "heading.font", "heading.case", "heading.weight",
+                "heading.italic", "heading.alignment", "heading.run-on",
+                "heading.body-text-as-heading")
 
 
 def collapse_repeats(findings: List[Finding]) -> List[Finding]:
@@ -503,6 +512,13 @@ def collapse_repeats(findings: List[Finding]) -> List[Finding]:
         # five sections reported the same four wrong margins twenty times.
         generic_key = re.sub(r"\btable \d+\b", "table N", f.message)
         generic_key = re.sub(r"\bsection \d+\b", "section N", generic_key)
+        # The one heading message that carries a varying number: "reads as body text
+        # (143 characters)". Without normalising it every over-long heading is its own
+        # group and nothing folds at all.
+        generic_key = re.sub(r"\(\d+ characters\)", "(N characters)", generic_key)
+        # The heading level is NOT normalised, on purpose. "H1 is Cambria" and "H3 is
+        # Cambria" are two different findings, and folding them would name a level the
+        # editor would then not find anything wrong with.
         key = f.rule + "|" + generic_key
         if key not in groups:
             groups[key] = []
@@ -520,6 +536,12 @@ def collapse_repeats(findings: List[Finding]) -> List[Finding]:
             continue
         generic = re.sub(r"\btable \d+\b", f"{len(group)} tables", first.message, count=1)
         generic = re.sub(r"\bsection \d+\b", f"{len(group)} sections", generic, count=1)
+        if generic == first.message:
+            # Nothing in the message named what repeated — a heading finding reads
+            # "H3 is Cambria, house font is Times New Roman" and carries no count at
+            # all. Left alone, the collapsed finding would be indistinguishable from a
+            # single one and the other sixty-three would simply be gone.
+            generic = f"{len(group)} headings: {first.message}"
         out.append(Finding(first.rule, first.severity, first.paragraph, generic,
                            f"first: {first.message}"))
     return out

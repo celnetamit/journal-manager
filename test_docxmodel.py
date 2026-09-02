@@ -344,6 +344,70 @@ def test_the_same_deviation_across_many_tables_is_collapsed():
     assert "table 1" in margin.detail          # somewhere to go and look
 
 
+def test_the_same_deviation_across_many_headings_is_collapsed():
+    """Measured on 1,597 real manuscripts: `heading.size` averages 11 findings a
+    paper and reaches 97 in one, every line word for word the one above it. The
+    heading rules were the largest single source of noise in the report."""
+    findings = [
+        H.Finding("heading.font", "error", i,
+                  "H3 is Cambria, house font is Times New Roman")
+        for i in range(64)
+    ]
+    collapsed = H.collapse_repeats(findings)
+
+    assert len(collapsed) == 1
+    # The count has to be stated. The heading message carries no number of its own, so
+    # without it the collapsed finding reads exactly like a single one and the other
+    # sixty-three are simply gone.
+    assert "64 headings" in collapsed[0].message
+    assert "Cambria" in collapsed[0].message
+    assert collapsed[0].paragraph == 0         # anchored at the first one
+
+
+def test_two_heading_levels_are_not_folded_together():
+    """`_COLLAPSIBLE`'s key normalises "table N" and "section N". It must not do the
+    same to the heading level: folding H1 into H3 would name a level the editor then
+    finds nothing wrong with."""
+    findings = ([H.Finding("heading.size", "error", i, "H1 is 12.0 pt, house size is 11.0 pt")
+                 for i in range(5)]
+                + [H.Finding("heading.size", "error", 10 + i, "H3 is 12.0 pt, house size is 11.0 pt")
+                   for i in range(3)])
+
+    collapsed = H.collapse_repeats(findings)
+    assert len(collapsed) == 2
+    assert {"5 headings: H1 is 12.0 pt, house size is 11.0 pt",
+            "3 headings: H3 is 12.0 pt, house size is 11.0 pt"} == {f.message for f in collapsed}
+
+
+def test_over_long_headings_fold_despite_differing_lengths():
+    """`heading.body-text-as-heading` is the one heading message carrying a varying
+    number — "(143 characters)". Unnormalised, every one is its own group and the rule
+    that reaches 118 findings in a manuscript would not fold at all."""
+    findings = [
+        H.Finding("heading.body-text-as-heading", "error", i,
+                  f"styled 'Heading 2' but reads as body text ({100 + i * 7} characters)")
+        for i in range(9)
+    ]
+    collapsed = H.collapse_repeats(findings)
+    assert len(collapsed) == 1
+    assert collapsed[0].message.startswith("9 headings:")
+    assert "(100 characters)" in collapsed[0].message      # the first one, exactly
+
+
+def test_a_heading_level_with_one_deviation_is_left_alone():
+    """One wrong heading should read as one wrong heading, not "1 headings:"."""
+    findings = [H.Finding("heading.case", "error", 3,
+                          "H1 should be upper case, reads as title")]
+    assert H.collapse_repeats(findings) == findings
+
+
+def test_skipped_level_is_never_collapsed():
+    """It names one specific place in the hierarchy. A count would say nothing."""
+    findings = [H.Finding("heading.skipped-level", "warning", i,
+                          "H2 is followed by H4 — H3 is missing") for i in (4, 19)]
+    assert len(H.collapse_repeats(findings)) == 2
+
+
 # ------------------------------------------------------- body text & front matter
 
 def _front(tmp_path, name="f.docx"):
