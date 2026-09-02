@@ -170,16 +170,69 @@ def test_table_addresses_round_trip_through_the_reader():
     d = docx.Document()
     d.add_paragraph("Body.")
     t = d.add_table(rows=1, cols=2)
-    t.cell(0, 0).text = "alpha"
-    t.cell(0, 1).text = "beta"
+    # Prose, not labels: `collect_table_texts` deliberately skips short and numeric
+    # cells, so a round-trip test built on "alpha"/"beta" would test nothing.
+    t.cell(0, 0).text = "The first column describes the sample preparation"
+    t.cell(0, 1).text = "The second column reports the measured yield"
     path = os.path.join(tempfile.mkdtemp(), "r.docx")
     d.save(path)
 
     items = E.collect_table_texts(M.read_structure(path))
-    assert [text for _, text in items] == ["alpha", "beta"]
+    assert [text for _, text in items] == [
+        "The first column describes the sample preparation",
+        "The second column reports the measured yield",
+    ]
 
     out = os.path.join(os.path.dirname(path), "out.docx")
     E.generate_redline_docx(path, [p.text for p in docx.Document(path).paragraphs],
-                            out, table_edits={items[0][0]: "alphabet"})
-    ins, _ = _changes(out)
-    assert "alphabet" in "".join(ins)
+                            out, table_edits={items[0][0]:
+                                "The first column describes how the sample was prepared"})
+    # The diff is word-level, so only what changed is inserted: "the sample" was
+    # already there and is not re-inserted. Asserting on the whole new sentence
+    # would be asserting that the redline is wasteful.
+    inserted = "".join(_changes(out)[0])
+    assert "how" in inserted and "was prepared" in inserted
+
+
+# ------------------------------------------------------- which cells are worth editing
+
+@pytest.mark.parametrize("text,editable", [
+    ("Table 1 Number of Ranks Given by Sample Respondents", True),
+    ("The samples were held at constant temperature", True),
+    ("0.15", False),
+    ("30", False),
+    ("4.5 N/mm2", False),
+    ("−0.469 to 5.133", False),
+    ("16.67%", False),
+    ("N", False),
+    ("Mean", False),
+    ("Standard deviation", False),      # two words is a label, not a sentence
+    ("", False),
+    ("   ", False),
+])
+def test_only_prose_cells_go_to_the_model(text, editable):
+    """Measured before this existed: of 1,556 cell paragraphs in one real manuscript,
+    71% were pure numbers. Sending them cost 311 LLM calls — and an LLM asked to
+    copyedit `0.15` may return `0.150`, which is a silently altered result."""
+    assert E.is_editable_cell(text) is editable
+
+
+def test_a_merged_cell_is_collected_once(tmp_path):
+    """python-docx returns the same cell for every grid position it spans, so a
+    caption merged across a row arrives once per column. Left alone it is edited,
+    billed and written back that many times."""
+    import docxmodel as M
+
+    d = docx.Document()
+    t = d.add_table(rows=2, cols=4)
+    merged = t.cell(0, 0).merge(t.cell(0, 3))
+    merged.text = "Table 1 Number of Ranks Given by Sample Respondents"
+    for c in range(4):
+        t.cell(1, c).text = str(c)
+
+    path = tmp_path / "m.docx"
+    d.save(str(path))
+
+    items = E.collect_table_texts(M.read_structure(str(path)))
+    captions = [text for _, text in items if text.startswith("Table 1")]
+    assert len(captions) == 1, items

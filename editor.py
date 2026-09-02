@@ -1075,22 +1075,72 @@ def add_track_change_run(paragraph, text: str, change_type: str, tc_id: int,
 TableAddress = Tuple[int, int, int, int]
 
 
+#: Below this there is nothing to edit: "N", "pH", "Mean", a column letter.
+#: Deliberately generous — the cost of skipping a two-word header is nil, and the cost
+#: of sending 1,260 of them is 250 LLM calls and a real chance of one coming back
+#: changed.
+_MIN_CELL_CHARS = 15
+
+#: Words of this length or more, made only of letters. Units and symbols are shorter
+#: than this almost without exception, so counting them is how a measurement is told
+#: from a sentence without listing every unit in existence.
+_WORD = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+
+
+def is_editable_cell(text: str) -> bool:
+    """Whether a table cell holds prose worth sending to a copyeditor.
+
+    Measured on a real manuscript before this existed: of 1,556 cell paragraphs, 71%
+    were pure numbers and 81% were under fifteen characters. Sending them all took 311
+    LLM calls and left the job on "Copyediting tables..." for a quarter of an hour, to
+    edit text that has no grammar in it. Worse than the cost: a model asked to
+    copyedit `0.15` may return `0.150`, and a silently altered number in a results
+    table is the most damaging thing this tool could do to a manuscript.
+
+    Decided by counting real words rather than by listing what a number looks like.
+    A pattern of permitted characters has to be widened for every unit and every
+    dash — the first version missed U+2212, which is the minus sign every results
+    table actually uses, and called "−0.469 to 5.133" prose.
+    """
+    t = (text or "").strip()
+    if len(t) < _MIN_CELL_CHARS:
+        return False
+    # Three real words. "4.5 N/mm2" has none, "Standard deviation" has two (a label),
+    # "Table 1 Number of Ranks Given by Sample Respondents" has seven.
+    return len(_WORD.findall(t)) >= 3
+
+
 def collect_table_texts(structure) -> List[Tuple[TableAddress, str]]:
-    """Every non-empty paragraph inside every table, with its address.
+    """Cell paragraphs worth copyediting, with the address to write each one back to.
 
     This is the 11.3% of a real manuscript the copyeditor has never seen: `read_docx`
     returns `doc.paragraphs`, which skips table cells entirely. The addresses are what
     `generate_redline_docx` writes the edits back through, so the two are defined in
     the same file and tested together — invented separately is how the edits end up
     written nowhere.
+
+    **A merged cell is returned once.** python-docx hands back the same cell for every
+    grid position it spans, so a caption merged across seven columns arrives seven
+    times; without this it is edited seven times, billed seven times, and — because
+    each pass diffs against the same original — written back seven times over.
     """
     out: List[Tuple[TableAddress, str]] = []
     for t in structure.tables:
+        seen: set = set()
         for row in t.grid:
             for cell in row:
                 for pi, para in enumerate(cell.paragraphs):
-                    if para.text.strip():
-                        out.append(((t.index, cell.row, cell.col, pi), para.text))
+                    if not is_editable_cell(para.text):
+                        continue
+                    # Keyed on the text and its position in the cell: a merged cell
+                    # repeats both, a genuinely repeated value in two separate cells
+                    # differs in neither — so this also collapses "Yes" in twenty
+                    # rows, which is correct, since editing it once is editing it.
+                    key = (pi, para.text)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(((t.index, cell.row, cell.col, pi), para.text))
     return out
 
 
