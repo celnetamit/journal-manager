@@ -432,16 +432,22 @@ def _process_job(job: Dict[str, Any]) -> None:
         print(f"[worker] job {job_id} cancelled; stopping work")
     except Exception as exc:
         traceback.print_exc()
-        # Record a failed entry in history too, so the user sees the error there.
+        # `skip_reason`, not `str(exc)`. This message is rendered straight into
+        # "Processing failed for **paper.docx**: {error_message}", and `str()` is
+        # empty for several exception classes — `NotImplementedError` among them,
+        # which is what python-docx raises on a document that has never contained a
+        # list. The user was shown a failure with nothing after the colon, and the
+        # history row was blank too, so there was no second place to look.
+        reason = skip_reason(exc)
         try:
             auth.log_job(
                 opts.get("user_id"), opts.get("filename", ""), 0,
                 opts.get("edit_style", ""), opts.get("ref_style", ""),
-                opts.get("lang_type", ""), 0.0, "Error", "", str(exc),
+                opts.get("lang_type", ""), 0.0, "Error", "", reason,
             )
         except Exception:
             pass
-        auth.fail_job(job_id, str(exc))
+        auth.fail_job(job_id, reason)
     finally:
         # The uploaded input file is no longer needed once the job is done.
         path = job.get("input_path")

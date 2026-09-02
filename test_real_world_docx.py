@@ -308,3 +308,33 @@ def test_an_unknown_alignment_is_unknown_not_a_crash(plain, tmp_path):
     d.save(str(out))
 
     assert M.read_structure(str(out)).paragraphs[0].alignment is None
+
+
+def test_a_failed_job_never_reaches_the_user_with_an_empty_reason(monkeypatch):
+    """`app.py` renders "Processing failed for **paper.docx**: {error_message}" and
+    the worker passed it `str(exc)` — empty for `NotImplementedError`, which is what
+    python-docx raises on a document that has never contained a list. The user got a
+    failure with nothing after the colon, and the history row was blank too, so there
+    was nowhere else to look. Same bug as the house-style warning, on the path that
+    actually stops someone's work."""
+    import pipeline
+
+    import json as _json
+
+    recorded = {}
+    monkeypatch.setattr(pipeline.auth, "fail_job",
+                        lambda jid, msg: recorded.setdefault("fail", msg))
+    # `log_job`'s error message is its last positional argument.
+    monkeypatch.setattr(pipeline.auth, "log_job",
+                        lambda *a, **k: recorded.setdefault("history", a[-1]))
+    monkeypatch.setattr(pipeline, "run_pipeline",
+                        lambda *a, **k: (_ for _ in ()).throw(NotImplementedError))
+
+    pipeline._process_job({
+        "id": 1,
+        "input_path": "/nonexistent.docx",
+        "options_json": _json.dumps(dict(_OPTS, filename="paper.docx")),
+    })
+
+    assert recorded["fail"] == "NotImplementedError"
+    assert recorded["history"] == "NotImplementedError"
