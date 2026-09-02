@@ -142,11 +142,25 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     def chunk_progress(frac: float) -> None:
         progress(0.05 + frac * 0.55, "Copyediting manuscript...")
 
-    edited_paragraphs, editor_queries = process_document_async(
+    edited_paragraphs, editor_queries, skipped_chunks = process_document_async(
         original_paragraphs, llm_settings, edit_style, ref_style, lang_type,
         custom_dict, use_crossref, chunk_progress, enabled_rule_ids, custom_rules,
         use_serper=use_serper, serper_key=serper_key,
     )
+    # Said out loud. A chunk the model could not answer for comes back untouched,
+    # and an untouched paragraph is indistinguishable from one that needed no
+    # changes — so without this the author is handed a manuscript with a hole in it
+    # and nothing anywhere admits to the hole.
+    skipped_paragraphs = sorted(i for c in skipped_chunks for i in c["indices"])
+    if skipped_paragraphs:
+        reasons = sorted({c["reason"] for c in skipped_chunks})
+        warnings.append(
+            f"{len(skipped_paragraphs)} of {paras_count} paragraphs could not be "
+            f"copyedited and are unchanged (paragraphs "
+            f"{', '.join(str(i + 1) for i in skipped_paragraphs[:12])}"
+            f"{'…' if len(skipped_paragraphs) > 12 else ''}). "
+            f"Reason: {reasons[0]}"
+        )
 
     # The 11.3%. Table cells are not in `doc.paragraphs`, so nothing has ever
     # copyedited them. Sent through the same pass as the body, then written back by
@@ -161,7 +175,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
                 progress(0.60, "Copyediting tables...")
                 addresses = [addr for addr, _ in table_items]
                 originals = [text for _, text in table_items]
-                edited_cells, cell_queries = process_document_async(
+                edited_cells, cell_queries, cell_skipped = process_document_async(
                     originals, llm_settings, edit_style, ref_style, lang_type,
                     custom_dict, use_crossref, lambda _f: None, enabled_rule_ids,
                     custom_rules, use_serper=use_serper, serper_key=serper_key,
@@ -181,6 +195,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
                             q, index=None,
                             query=f"[Table {t + 1}, row {r + 1}, column {c + 1}] "
                                   f"{q.get('query', '')}"))
+                if cell_skipped:
+                    n = sum(len(c["indices"]) for c in cell_skipped)
+                    warnings.append(
+                        f"{n} table cell(s) could not be copyedited and are unchanged."
+                    )
         except Exception as table_exc:                           # noqa: BLE001
             warnings.append(f"Table copyediting was skipped: {table_exc}")
 
@@ -351,6 +370,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
             for f in proof_findings
         ],
         "tables_edited": len(table_edits),
+        "skipped_paragraphs": skipped_paragraphs,
         "table_queries": table_queries,
     }
 

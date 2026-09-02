@@ -710,12 +710,26 @@ def _render_house_panel(result: dict, kp: str) -> None:
     tool has never been allowed to change formatting on its own, and this panel is
     the reason it does not need to be.
     """
+    # Said first and separately from the findings. Everything else in this panel is
+    # something the tool *did*; this is the part it did not do, and an editor needs
+    # that before they trust the rest of the page.
+    missed = result.get("skipped_paragraphs") or []
+    if missed:
+        shown = ", ".join(str(i + 1) for i in missed[:15])
+        st.error(
+            f"**{len(missed)} paragraph(s) were not copyedited** and are unchanged in "
+            f"the redline — the model could not be got to answer for them, after a "
+            f"retry. They are paragraphs {shown}"
+            f"{'…' if len(missed) > 15 else ''}. Everything else in this manuscript "
+            f"was processed normally; these need reading by hand."
+        )
+
     house = result.get("house_findings") or []
     proof = result.get("proof_findings") or []
     tables_edited = result.get("tables_edited") or 0
     table_queries = result.get("table_queries") or []
 
-    if not (house or proof or tables_edited or table_queries):
+    if not (house or proof or tables_edited or table_queries or missed):
         return
 
     def count(items, severity):

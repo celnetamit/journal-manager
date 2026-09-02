@@ -934,10 +934,19 @@ def ai_edit_chunk(
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
     use_serper: bool = False, serper_key: str = "",
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
-    """Returns (edited_texts, queries). `edited_texts` is the same length as
-    `chunk_texts`. `queries` is a list of
+    """Returns (edited_texts, queries, failure).
+
+    `edited_texts` is the same length as `chunk_texts`. `queries` is a list of
     {"local_index", "snippet", "query", "suggestion"} for paragraphs the model
-    flagged rather than silently changing ("suggestion" may be None)."""
+    flagged rather than silently changing ("suggestion" may be None).
+
+    `failure` is None on success, or a short reason. It exists because the old
+    behaviour on a bad response was to return the paragraphs unchanged and print a
+    warning to a console nobody reads — so a chunk that was never copyedited reached
+    the author looking exactly like a chunk that needed no changes. On a real 70-
+    paragraph manuscript that happened to four chunks, twenty paragraphs, and the
+    report said nothing.
+    """
     house_rules = build_house_rules_section(enabled_rule_ids, custom_rules)
     prompt = f"""You are a professional academic copyeditor.
 Rules:
@@ -979,59 +988,74 @@ Input JSON:
 {json.dumps(chunk_texts)}
 """
 
-    try:
-        text = _generate_text(prompt, settings=settings, response_mime_type="application/json")
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if not match:
-            print("Warning: No JSON array found in response.")
-            return chunk_texts, []
-        parsed = json.loads(match.group(0))
+    # One retry. A malformed response is usually a one-off — the same prompt
+    # answered again parses — and the alternative is silently shipping the chunk
+    # unedited. Two attempts, then the failure is reported rather than swallowed.
+    last_reason = "unknown"
+    for attempt in (1, 2):
+        try:
+            text = _generate_text(prompt, settings=settings,
+                                  response_mime_type="application/json")
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            if not match:
+                last_reason = "the model returned no JSON array"
+                continue
+            parsed = json.loads(match.group(0))
 
-        if len(parsed) != len(chunk_texts):
-            print("Warning: Array length mismatch.")
-            return chunk_texts, []
+            if len(parsed) != len(chunk_texts):
+                last_reason = (f"the model returned {len(parsed)} items for "
+                               f"{len(chunk_texts)} paragraphs")
+                continue
 
-        # Each element is normally an object {"edited", "query"}; tolerate a bare
-        # string (older format) by treating it as the edited text with no query.
-        result: List[str] = []
-        queries: List[Dict[str, Any]] = []
-        for i, elem in enumerate(parsed):
-            if isinstance(elem, str):
-                result.append(elem)
-            elif isinstance(elem, dict):
-                edited = elem.get("edited")
-                result.append(edited if isinstance(edited, str) else chunk_texts[i])
-                q = elem.get("query")
-                if isinstance(q, str) and q.strip():
-                    s = elem.get("suggestion")
-                    queries.append({
-                        "local_index": i,
-                        "snippet": chunk_texts[i],
-                        "query": q.strip(),
-                        "suggestion": s.strip() if isinstance(s, str) and s.strip() else None,
-                    })
-            else:
-                result.append(chunk_texts[i])
+            # Each element is normally an object {"edited", "query"}; tolerate a
+            # bare string (older format) as the edited text with no query.
+            result: List[str] = []
+            queries: List[Dict[str, Any]] = []
+            for i, elem in enumerate(parsed):
+                if isinstance(elem, str):
+                    result.append(elem)
+                elif isinstance(elem, dict):
+                    edited = elem.get("edited")
+                    result.append(edited if isinstance(edited, str) else chunk_texts[i])
+                    q = elem.get("query")
+                    if isinstance(q, str) and q.strip():
+                        sug = elem.get("suggestion")
+                        queries.append({
+                            "local_index": i,
+                            "snippet": chunk_texts[i],
+                            "query": q.strip(),
+                            "suggestion": (sug.strip() if isinstance(sug, str)
+                                           and sug.strip() else None),
+                        })
+                else:
+                    result.append(chunk_texts[i])
 
-        if use_crossref or use_serper:
-            for i in range(len(result)):
-                t = result[i]
-                if len(t) > 30 and re.search(r"\b(19|20)\d{2}\b", t) and "doi.org" not in t:
-                    doi = fetch_crossref_doi(t) if use_crossref else None
-                    if not doi and use_serper:
-                        # Crossref came up empty (or is off) — try Google Scholar.
-                        doi = fetch_serper_scholar_doi(t, serper_key)
-                    if doi:
-                        result[i] = t + f" {doi}"
-        return result, queries
-    except json.JSONDecodeError as e:
-        print(f"JSON Parse Error: {e}")
-        time.sleep(1)
-        return chunk_texts, []
-    except Exception as e:
-        print(f"Gemini API Error: {e}")
-        time.sleep(1)
-        return chunk_texts, []
+            if use_crossref or use_serper:
+                for i in range(len(result)):
+                    t = result[i]
+                    if (len(t) > 30 and re.search(r"\b(19|20)\d{2}\b", t)
+                            and "doi.org" not in t):
+                        doi = fetch_crossref_doi(t) if use_crossref else None
+                        if not doi and use_serper:
+                            # Crossref came up empty (or is off) — try Scholar.
+                            doi = fetch_serper_scholar_doi(t, serper_key)
+                        if doi:
+                            result[i] = t + f" {doi}"
+            return result, queries, None
+
+        except json.JSONDecodeError as e:
+            last_reason = f"the model returned invalid JSON ({e})"
+        except Exception as e:                                   # noqa: BLE001
+            last_reason = f"the request failed ({type(e).__name__}: {e})"
+
+        if attempt == 1:
+            time.sleep(1)
+
+    # Both attempts failed. The paragraphs come back untouched — which is the only
+    # safe thing to do with them — but the caller is told, so the manuscript does
+    # not go out with a silent hole in it.
+    print(f"Chunk not copyedited after 2 attempts: {last_reason}")
+    return chunk_texts, [], last_reason
 
 
 # --- Redline (.docx with native Word track changes) ---
@@ -2674,10 +2698,19 @@ def process_document_async(
     lang: str, custom_dict: str, use_crossref: bool, progress_callback,
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
     use_serper: bool = False, serper_key: str = "",
-) -> Tuple[List[str], List[Dict[str, Any]]]:
-    """Returns (edited_paras, queries). Each query is
-    {"index": <paragraph index in paras>, "snippet", "query", "suggestion"}
-    ("suggestion" may be None)."""
+) -> Tuple[List[str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Returns (edited_paras, queries, skipped).
+
+    Each query is {"index": <paragraph index in paras>, "snippet", "query",
+    "suggestion"} ("suggestion" may be None).
+
+    `skipped` lists the chunks that could not be copyedited after retrying:
+    [{"indices": [...], "reason": str}]. Their paragraphs are returned unchanged —
+    the only safe thing to do — but the caller now knows, so the report can say how
+    much of the manuscript was not looked at. Previously this was a `print` to a
+    container log, and an untouched paragraph was indistinguishable from one that
+    needed no changes.
+    """
     edited_paras = [""] * len(paras)
     all_queries: List[Dict[str, Any]] = []
     task_indices = [i for i, p in enumerate(paras) if p.strip()]
@@ -2695,9 +2728,10 @@ def process_document_async(
 
     total_chunks = len(chunks)
     if total_chunks == 0:
-        return edited_paras, all_queries
+        return edited_paras, all_queries, []
 
     completed = 0
+    skipped: List[Dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=_chunk_pool_size()) as ex:
         future_to_chunk = {
             ex.submit(ai_edit_chunk, chunk_texts, settings, edit_style, ref_style,
@@ -2709,7 +2743,7 @@ def process_document_async(
         for future in concurrent.futures.as_completed(future_to_chunk):
             chunk_inds = future_to_chunk[future]
             try:
-                result, chunk_queries = future.result()
+                result, chunk_queries, failure = future.result()
                 for idx, edited_text in zip(chunk_inds, result):
                     edited_paras[idx] = edited_text
                 for q in chunk_queries:
@@ -2719,12 +2753,16 @@ def process_document_async(
                         "query": q["query"],
                         "suggestion": q.get("suggestion"),
                     })
+                if failure:
+                    skipped.append({"indices": list(chunk_inds), "reason": failure})
             except Exception as exc:
                 print(f"Chunk generated an exception: {exc}")
                 for idx in chunk_inds:
                     edited_paras[idx] = paras[idx]
+                skipped.append({"indices": list(chunk_inds),
+                                "reason": f"{type(exc).__name__}: {exc}"})
             completed += 1
             if progress_callback:
                 progress_callback(completed / total_chunks)
     all_queries.sort(key=lambda q: q["index"])
-    return edited_paras, all_queries
+    return edited_paras, all_queries, skipped
