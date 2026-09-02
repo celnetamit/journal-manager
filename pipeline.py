@@ -19,6 +19,9 @@ from typing import Any, Callable, Dict, Optional
 
 import config as app_config
 import auth
+from docxmodel import read_structure
+from house_layout import check_all as house_check
+from proofread import proofread as run_proofread
 from editor import (
     align_global_citations,
     build_jats_xml,
@@ -37,6 +40,7 @@ from editor import (
     plagiarism_scan,
     process_document_async,
     read_docx,
+    _generate_text,
     recommend_journals,
     validate_jats,
     verify_serper_key,
@@ -97,6 +101,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     progress(0.02, "Reading document...")
     original_paragraphs = read_docx(input_path)
     paras_count = len(original_paragraphs)
+
+    # Everything the plain text reader drops — formatting, headings, list markers,
+    # tables, page geometry. Parsed once here and reused; a failure to parse the
+    # structure must not stop the copyedit, which is what the author is waiting for.
+    structure = None
+    layout_findings: list = []
+    try:
+        structure = read_structure(input_path)
+        layout_findings = house_check(structure)
+    except Exception as struct_exc:                              # noqa: BLE001
+        warnings.append(f"House-style layout check was skipped: {struct_exc}")
     if not original_paragraphs:
         raise ValueError("Document appears to be empty.")
 
@@ -143,6 +158,28 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs = enforce_drop_redundant_paren_citation(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_keywords_format(edited_paragraphs, enabled_rule_ids)
 
+    # The proofreading pass. Deliberately after every edit and enforcement, over the
+    # text as it will actually be published — proofreading the author's draft would
+    # report things the copyedit has already fixed. The mechanical half needs no
+    # model; the judgement half is given one when the run has it.
+    progress(0.66, "Proofreading...")
+    proof_findings: list = []
+    try:
+        proof_findings = run_proofread(
+            edited_paragraphs,
+            generate=_generate_text if ai_review_enabled else None,
+            settings=llm_settings,
+            use_llm=ai_review_enabled,
+        )
+        # Anchored in the redline as Word comments, next to the copyeditor's own
+        # queries. A finding with no paragraph (a manuscript-wide inconsistency) has
+        # nowhere to sit and stays in the report only.
+        editor_queries = list(editor_queries) + [
+            f.as_query() for f in proof_findings if f.paragraph is not None
+        ]
+    except Exception as proof_exc:                               # noqa: BLE001
+        warnings.append(f"Proofreading pass failed: {proof_exc}")
+
     # OPTIONAL preliminary originality scan (web verbatim matches via Serper).
     # Only runs when Serper is active AND the user enabled it. Scans the author's
     # ORIGINAL text, not our edited version. Never blocks the run on failure.
@@ -171,6 +208,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         enabled_rule_ids, custom_rules, queries=editor_queries, warnings=warnings,
         plagiarism=plagiarism,
     )
+    report += _house_style_section(layout_findings, proof_findings)
 
     progress(0.78, "Recommending journals...")
     proxy_abstract = " ".join(original_paragraphs[:15])[:1500]
@@ -358,3 +396,54 @@ def start_worker_once() -> None:
                 target=_worker_loop, name=f"job-worker-{i}", daemon=True
             ).start()
         print(f"[worker] started {workers} job worker(s)")
+
+
+def _house_style_section(layout_findings, proof_findings) -> str:
+    """The layout and proofreading findings, appended to the editorial report.
+
+    Written into the report rather than only anchored in the redline because most of
+    these are about the document as a whole — a heading level that is skipped, a
+    spelling used two ways, a table nobody cites. There is no single paragraph to put
+    a comment on, and a finding with nowhere to sit is one nobody ever reads.
+
+    Grouped by rule and capped: 21 identical "number range uses a hyphen" lines tell
+    an editor nothing that one line and a count does not.
+    """
+    if not layout_findings and not proof_findings:
+        return ("\n\n---\n\n## House Style & Proofreading\n\n"
+                "No house-style or proofreading issues were found.\n")
+
+    lines = ["", "", "---", "", "## House Style & Proofreading", ""]
+
+    for title, findings in (("Layout and house style", layout_findings),
+                            ("Proofreading", proof_findings)):
+        if not findings:
+            continue
+        errors = sum(1 for f in findings if f.severity == "error")
+        lines.append(f"### {title} — {len(findings)} item(s), {errors} error(s)")
+        lines.append("")
+
+        by_rule = {}
+        for f in findings:
+            by_rule.setdefault(f.rule, []).append(f)
+
+        for rule, group in sorted(by_rule.items(),
+                                  key=lambda kv: (-len(kv[1]), kv[0])):
+            head = group[0]
+            where = ""
+            if head.paragraph is not None:
+                where = f" (first at paragraph {head.paragraph + 1})"
+            lines.append(f"- **{rule}** — {len(group)} item(s){where}")
+            for f in group[:5]:
+                loc = f"¶{f.paragraph + 1}" if f.paragraph is not None else "document"
+                lines.append(f"    - {loc}: {f.message}")
+                fragment = getattr(f, "fragment", "") or getattr(f, "detail", "")
+                if fragment:
+                    lines.append(f"      > {fragment[:110]}")
+                if getattr(f, "suggestion", None):
+                    lines.append(f"      Suggested: {f.suggestion[:110]}")
+            if len(group) > 5:
+                lines.append(f"    - …and {len(group) - 5} more")
+            lines.append("")
+
+    return "\n".join(lines) + "\n"
