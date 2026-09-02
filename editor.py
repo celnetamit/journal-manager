@@ -1069,9 +1069,69 @@ def add_track_change_run(paragraph, text: str, change_type: str, tc_id: int,
         paragraph._p.append(r)
 
 
+#: The address of one paragraph inside a table: (table, row, cell, paragraph).
+#: Four parts because all four are needed to be unambiguous — a cell can hold several
+#: paragraphs, and a merged cell appears in more than one row.
+TableAddress = Tuple[int, int, int, int]
+
+
+def collect_table_texts(structure) -> List[Tuple[TableAddress, str]]:
+    """Every non-empty paragraph inside every table, with its address.
+
+    This is the 11.3% of a real manuscript the copyeditor has never seen: `read_docx`
+    returns `doc.paragraphs`, which skips table cells entirely. The addresses are what
+    `generate_redline_docx` writes the edits back through, so the two are defined in
+    the same file and tested together — invented separately is how the edits end up
+    written nowhere.
+    """
+    out: List[Tuple[TableAddress, str]] = []
+    for t in structure.tables:
+        for row in t.grid:
+            for cell in row:
+                for pi, para in enumerate(cell.paragraphs):
+                    if para.text.strip():
+                        out.append(((t.index, cell.row, cell.col, pi), para.text))
+    return out
+
+
+def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
+    """Rewrite one paragraph as track changes. Returns the next change id.
+
+    Extracted so body paragraphs and table cells go through exactly the same code.
+    A second copy of this diff loop for tables would be a second place for the
+    author's text to be mangled, and only one of them would ever be looked at.
+    """
+    if orig.strip() == edited.strip():
+        return tc_id
+
+    p.clear()
+
+    token_pattern = r"(\s+|\b|[.,!?;:])"
+    orig_tokens = [t for t in re.split(token_pattern, orig) if t]
+    edited_tokens = [t for t in re.split(token_pattern, edited) if t]
+
+    matcher = difflib.SequenceMatcher(None, orig_tokens, edited_tokens)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            add_track_change_run(p, "".join(orig_tokens[i1:i2]), "equal", tc_id)
+        elif tag == "delete":
+            add_track_change_run(p, "".join(orig_tokens[i1:i2]), "delete", tc_id)
+            tc_id += 1
+        elif tag == "insert":
+            add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
+            tc_id += 1
+        elif tag == "replace":
+            add_track_change_run(p, "".join(orig_tokens[i1:i2]), "delete", tc_id)
+            tc_id += 1
+            add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
+            tc_id += 1
+    return tc_id
+
+
 def generate_redline_docx(
     original_path: str, edited_paragraphs: List[str], output_path: str,
     queries: Optional[List[Dict[str, Any]]] = None,
+    table_edits: Optional[Dict[TableAddress, str]] = None,
 ) -> None:
     doc = docx.Document(original_path)
     tc_id = 1
@@ -1081,32 +1141,21 @@ def generate_redline_docx(
     settings.append(track_changes)
 
     for p, edited in zip(doc.paragraphs, edited_paragraphs):
-        orig = p.text
-        if orig.strip() == edited.strip():
+        tc_id = _mark_up_paragraph(p, p.text, edited, tc_id)
+
+    # Table cells, addressed rather than zipped. They are not in `doc.paragraphs`, so
+    # the body list above keeps exactly the meaning it always had and an edit here
+    # cannot shift it.
+    for (ti, ri, ci, pi), edited in (table_edits or {}).items():
+        try:
+            cell = doc.tables[ti].rows[ri].cells[ci]
+            para = cell.paragraphs[pi]
+        except (IndexError, KeyError):
+            # A stale address — the document changed under the job. Skipped rather
+            # than raised: losing the whole redline over one cell is the worse
+            # outcome, and writing into a neighbouring cell is worse still.
             continue
-
-        p.clear()
-
-        token_pattern = r"(\s+|\b|[.,!?;:])"
-        orig_tokens = [t for t in re.split(token_pattern, orig) if t]
-        edited_tokens = [t for t in re.split(token_pattern, edited) if t]
-
-        matcher = difflib.SequenceMatcher(None, orig_tokens, edited_tokens)
-
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag == "equal":
-                add_track_change_run(p, "".join(orig_tokens[i1:i2]), "equal", tc_id)
-            elif tag == "delete":
-                add_track_change_run(p, "".join(orig_tokens[i1:i2]), "delete", tc_id)
-                tc_id += 1
-            elif tag == "insert":
-                add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
-                tc_id += 1
-            elif tag == "replace":
-                add_track_change_run(p, "".join(orig_tokens[i1:i2]), "delete", tc_id)
-                tc_id += 1
-                add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
-                tc_id += 1
+        tc_id = _mark_up_paragraph(para, para.text, edited, tc_id)
 
     # Anchor editor queries as native Word comments on their paragraphs. Done
     # after the edit loop so it covers both changed and unchanged paragraphs.

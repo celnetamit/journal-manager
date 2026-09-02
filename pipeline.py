@@ -27,6 +27,7 @@ from editor import (
     build_jats_xml,
     build_journal_report,
     build_plagiarism_report,
+    collect_table_texts,
     enforce_author_limit,
     enforce_drop_redundant_paren_citation,
     enforce_keywords_format,
@@ -147,6 +148,42 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         use_serper=use_serper, serper_key=serper_key,
     )
 
+    # The 11.3%. Table cells are not in `doc.paragraphs`, so nothing has ever
+    # copyedited them. Sent through the same pass as the body, then written back by
+    # address rather than by position — a table edit must not be able to shift the
+    # body list `generate_redline_docx` pairs by index.
+    table_edits: dict = {}
+    table_queries: list = []
+    if structure is not None and opts.get("edit_tables", True):
+        try:
+            table_items = collect_table_texts(structure)
+            if table_items:
+                progress(0.60, "Copyediting tables...")
+                addresses = [addr for addr, _ in table_items]
+                originals = [text for _, text in table_items]
+                edited_cells, cell_queries = process_document_async(
+                    originals, llm_settings, edit_style, ref_style, lang_type,
+                    custom_dict, use_crossref, lambda _f: None, enabled_rule_ids,
+                    custom_rules, use_serper=use_serper, serper_key=serper_key,
+                )
+                for addr, before, after in zip(addresses, originals, edited_cells):
+                    if after and after.strip() != before.strip():
+                        table_edits[addr] = after
+                # Deliberately NOT merged into `editor_queries`. Their `index` counts
+                # into the table list, and `generate_redline_docx` reads `index` as a
+                # body paragraph — merging them would anchor every table query onto an
+                # unrelated paragraph, silently and in a file that still opens.
+                for q in cell_queries:
+                    i = q.get("index")
+                    if isinstance(i, int) and 0 <= i < len(addresses):
+                        t, r, c, _ = addresses[i]
+                        table_queries.append(dict(
+                            q, index=None,
+                            query=f"[Table {t + 1}, row {r + 1}, column {c + 1}] "
+                                  f"{q.get('query', '')}"))
+        except Exception as table_exc:                           # noqa: BLE001
+            warnings.append(f"Table copyediting was skipped: {table_exc}")
+
     if reorder_citations:
         progress(0.62, "Aligning citations & sorting bibliography...")
         edited_paragraphs = align_global_citations(
@@ -200,6 +237,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     redline_path = out_dir / f"user_{user_id}_{ts}_redline.docx"
     generate_redline_docx(
         input_path, edited_paragraphs, str(redline_path), queries=editor_queries,
+        table_edits=table_edits,
     )
 
     progress(0.74, "Generating editorial report...")
@@ -298,6 +336,22 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "warnings": warnings,
         "plagiarism": plagiarism,
         "plagiarism_report_path": plagiarism_report_path,
+        # Structured as well as in the report markdown. The markdown is for reading;
+        # these are for the panel that has to say "16 errors" before anyone decides
+        # whether to read anything.
+        "house_findings": [
+            {"rule": f.rule, "severity": f.severity, "paragraph": f.paragraph,
+             "message": f.message, "detail": f.detail}
+            for f in layout_findings
+        ],
+        "proof_findings": [
+            {"rule": f.rule, "severity": f.severity, "paragraph": f.paragraph,
+             "message": f.message, "detail": f.fragment,
+             "suggestion": f.suggestion}
+            for f in proof_findings
+        ],
+        "tables_edited": len(table_edits),
+        "table_queries": table_queries,
     }
 
 

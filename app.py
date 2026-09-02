@@ -694,10 +694,83 @@ def _safe_stem(filename: str) -> str:
     return stem or "manuscript"
 
 
+_SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+_SEVERITY_ICON = {"error": "🔴", "warning": "🟠", "info": "🔵"}
+
+
+def _render_house_panel(result: dict, kp: str) -> None:
+    """House-style and proofreading findings, above the report rather than inside it.
+
+    The report already carries these in prose, and prose is what you read once you
+    have decided to. This is the count you decide *from*: an editor opening a job
+    wants to know there are sixteen errors before reading a word, and a number buried
+    three headings into a markdown blob is a number nobody sees.
+
+    Nothing here is a blocker. Every finding is something a person confirms — the
+    tool has never been allowed to change formatting on its own, and this panel is
+    the reason it does not need to be.
+    """
+    house = result.get("house_findings") or []
+    proof = result.get("proof_findings") or []
+    tables_edited = result.get("tables_edited") or 0
+    table_queries = result.get("table_queries") or []
+
+    if not (house or proof or tables_edited or table_queries):
+        return
+
+    def count(items, severity):
+        return sum(1 for f in items if f.get("severity") == severity)
+
+    errors = count(house, "error") + count(proof, "error")
+    warnings_n = count(house, "warning") + count(proof, "warning")
+    infos = count(house, "info") + count(proof, "info")
+
+    st.subheader("📐 House Style & Proofreading")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Errors", errors)
+    c2.metric("Warnings", warnings_n)
+    c3.metric("For review", infos)
+    c4.metric("Table cells edited", tables_edited)
+
+    if tables_edited:
+        st.caption(
+            f"{tables_edited} paragraph(s) inside tables were copyedited. Table text "
+            "is not part of the document body, so until now nothing had ever read it."
+        )
+
+    for title, items in (("Layout and house style", house), ("Proofreading", proof)):
+        if not items:
+            continue
+        ordered = sorted(items, key=lambda f: (_SEVERITY_ORDER.get(f.get("severity"), 3),
+                                               f.get("rule", "")))
+        with st.expander(f"{title} — {len(items)} item(s)", expanded=bool(errors)):
+            for f in ordered:
+                icon = _SEVERITY_ICON.get(f.get("severity"), "•")
+                where = (f"¶{f['paragraph'] + 1}" if isinstance(f.get("paragraph"), int)
+                         else "document")
+                st.markdown(f"{icon} **{where}** · `{f.get('rule', '')}` — "
+                            f"{f.get('message', '')}")
+                detail = (f.get("detail") or "").strip()
+                if detail:
+                    st.caption(f"> {detail[:160]}")
+                suggestion = (f.get("suggestion") or "").strip()
+                if suggestion:
+                    st.caption(f"Suggested: {suggestion[:160]}")
+
+    if table_queries:
+        with st.expander(f"Questions about table content — {len(table_queries)}"):
+            for q in table_queries:
+                st.markdown(f"• {q.get('query', '')}")
+                if q.get("suggestion"):
+                    st.caption(f"Suggested: {q['suggestion'][:160]}")
+
+
 def _render_result(result: dict, kp: str) -> None:
     """Render a completed job's reports and downloads. `kp` keys the widgets."""
     for _w in result.get("warnings") or []:
         st.warning(_w)
+    _render_house_panel(result, kp)
+
     res_col1, res_col2 = st.columns([1.5, 1])
     with res_col1:
         st.subheader("📊 Editorial Report")
