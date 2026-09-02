@@ -236,3 +236,41 @@ def test_a_merged_cell_is_collected_once(tmp_path):
     items = E.collect_table_texts(M.read_structure(str(path)))
     captions = [text for _, text in items if text.startswith("Table 1")]
     assert len(captions) == 1, items
+
+
+# ------------------------------------------------------------------ serper failures
+
+class _Resp:
+    def __init__(self, code, payload=None, text=""):
+        self.status_code, self._payload, self.text = code, payload, text
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+
+def test_an_exhausted_serper_account_is_not_reported_as_a_bad_key(monkeypatch):
+    """Serper answers 400 "Not enough credits" when the account runs dry. Reported as
+    a bare "HTTP 400" it reads like a malformed request or a dead token, and sends
+    somebody to reissue a key that was never the problem — which is exactly what
+    happened."""
+    monkeypatch.setattr(E.requests, "post",
+                        lambda *a, **k: _Resp(400, {"message": "Not enough credits"}))
+    ok, msg = E.verify_serper_key("a" * 40)
+    assert ok is False
+    assert "out of credits" in msg
+    assert "valid" in msg
+
+
+def test_a_genuinely_rejected_key_still_says_so(monkeypatch):
+    monkeypatch.setattr(E.requests, "post", lambda *a, **k: _Resp(401))
+    ok, msg = E.verify_serper_key("a" * 40)
+    assert ok is False and "rejected" in msg
+
+
+def test_an_unexplained_failure_carries_the_body(monkeypatch):
+    monkeypatch.setattr(E.requests, "post",
+                        lambda *a, **k: _Resp(503, {"message": "upstream unavailable"}))
+    ok, msg = E.verify_serper_key("a" * 40)
+    assert ok is False and "upstream unavailable" in msg

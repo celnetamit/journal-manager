@@ -315,7 +315,22 @@ def verify_serper_key(api_key: str) -> Tuple[bool, str]:
         if r.status_code == 429:
             return False, "Serper API quota exceeded (HTTP 429)."
         if r.status_code != 200:
-            return False, f"Serper API returned HTTP {r.status_code}."
+            # Serper explains itself in the body and the status code alone does not.
+            # An exhausted account answers 400 "Not enough credits" — which reads, as
+            # a bare "HTTP 400", exactly like a malformed request or a dead key, and
+            # sends somebody to reissue a token that was never the problem.
+            reason = ""
+            try:
+                reason = (r.json() or {}).get("message") or ""
+            except ValueError:
+                reason = (r.text or "")[:120]
+            if "credit" in reason.lower():
+                return False, (
+                    f"Serper account is out of credits ({reason}). The key is valid — "
+                    "it needs topping up, not replacing."
+                )
+            return False, (f"Serper API returned HTTP {r.status_code}"
+                           + (f": {reason}" if reason else "."))
         return True, "ok"
     except requests.exceptions.RequestException as e:
         return False, f"Serper API unreachable: {e}"
