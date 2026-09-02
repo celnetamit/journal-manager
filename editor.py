@@ -983,6 +983,11 @@ def enforce_keywords_format(
 #: as "Gear Design and Geometry" — it read the run-on section heading, kept that, and
 #: threw the two sentences after it away. No query was raised, and in the redline it
 #: reads as an ordinary deletion the editor might have wanted.
+#: How many times a failing chunk may be halved before giving up. Two levels turns a
+#: 20-paragraph chunk into pieces of 5, which is small enough that a model returning
+#: the wrong array length is a real refusal rather than a slip.
+_MAX_SPLIT_DEPTH = 2
+
 _MIN_KEPT = 0.6
 #: Short paragraphs are headings, labels and captions, where a large proportional cut
 #: is often a correct edit ("2.2 Material characteristics" -> "Material characteristics").
@@ -1010,6 +1015,7 @@ def ai_edit_chunk(
     lang: str, custom_dict: str, use_crossref: bool,
     enabled_rule_ids: Optional[List[str]] = None, custom_rules: str = "",
     use_serper: bool = False, serper_key: str = "",
+    _split_depth: int = 0,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Returns (edited_texts, queries, failure).
 
@@ -1144,7 +1150,36 @@ Input JSON:
         if attempt == 1:
             time.sleep(1)
 
-    # Both attempts failed. The paragraphs come back untouched — which is the only
+    # Both attempts failed. Before giving up on all of them, try smaller pieces.
+    #
+    # Measured on real manuscripts: the failure is almost always the model returning an
+    # array one element short — "19 items for 20 paragraphs", "10 items for 12" — and a
+    # shorter list is easier for it to get right. Retrying the identical prompt twice and
+    # then abandoning twenty paragraphs threw away work that a split recovers. Seen on
+    # 1 of 12 manuscripts in one sample and 1 of ~10 chunks in another, so this is
+    # roughly a tenth of a manuscript coming back uncopyedited.
+    if len(chunk_texts) > 1 and _split_depth < _MAX_SPLIT_DEPTH:
+        half = len(chunk_texts) // 2
+        left, left_q, left_fail = ai_edit_chunk(
+            chunk_texts[:half], settings, edit_style, ref_style, lang, custom_dict,
+            use_crossref, enabled_rule_ids, custom_rules, use_serper, serper_key,
+            _split_depth=_split_depth + 1)
+        right, right_q, right_fail = ai_edit_chunk(
+            chunk_texts[half:], settings, edit_style, ref_style, lang, custom_dict,
+            use_crossref, enabled_rule_ids, custom_rules, use_serper, serper_key,
+            _split_depth=_split_depth + 1)
+        # `local_index` is relative to the chunk it was raised in, so the right half's
+        # queries have to be moved up by the length of the left one or every query
+        # lands on the wrong paragraph — the same class of bug as a misaligned redline.
+        merged_q = list(left_q) + [{**q, "local_index": q["local_index"] + half}
+                                   for q in right_q]
+        halves_failed = [f for f in (left_fail, right_fail) if f]
+        if len(halves_failed) < 2:
+            # Some of it was recovered. Report only what is still unedited.
+            return left + right, merged_q, (halves_failed[0] if halves_failed else None)
+        return left + right, merged_q, last_reason
+
+    # Nothing left to split. The paragraphs come back untouched — which is the only
     # safe thing to do with them — but the caller is told, so the manuscript does
     # not go out with a silent hole in it.
     print(f"Chunk not copyedited after 2 attempts: {last_reason}")

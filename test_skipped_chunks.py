@@ -64,15 +64,60 @@ def test_two_failures_report_a_reason_and_change_nothing(monkeypatch):
     assert queries == []
 
 
-def test_a_short_array_is_a_failure_not_a_partial_edit(monkeypatch):
-    """Two paragraphs in, one out. Zipping that would apply the first paragraph's
-    edit and leave the second — or worse, shift them by one."""
-    short = '[{"edited": "only one"}]'
-    monkeypatch.setattr(E, "_generate_text", _generate(short, short))
+def test_a_short_array_at_the_smallest_size_is_still_a_failure(monkeypatch):
+    """One paragraph in, none out, and nothing left to split. The reason must reach
+    the caller and the text must be untouched."""
+    monkeypatch.setattr(E, "_generate_text", _generate("[]", "[]"))
+    texts, _, failure = E.ai_edit_chunk(
+        ["The result was signifcant."], {}, "CMOS", "Vancouver", "US English", "", False)
+    assert failure and "0 items for 1 paragraphs" in failure
+    assert texts == ["The result was signifcant."]
+
+
+def test_a_short_array_is_retried_in_halves(monkeypatch):
+    """Measured on real manuscripts: the model returns an array one element short —
+    "19 items for 20 paragraphs" — and the old behaviour abandoned all twenty after two
+    identical retries. A shorter list is easier to answer correctly, so the chunk is
+    halved and retried; here both halves come back right and nothing is lost."""
+    def gen(prompt, settings=None, response_mime_type=None):
+        # Answers with one element, which is wrong for the pair and right for a single.
+        return '[{"edited": "edited text"}]'
+
+    monkeypatch.setattr(E, "_generate_text", gen)
     texts, _, failure = E.ai_edit_chunk(
         CHUNK, {}, "CMOS", "Vancouver", "US English", "", False)
-    assert failure and "1 items for 2 paragraphs" in failure
-    assert texts == CHUNK
+    assert failure is None
+    assert texts == ["edited text", "edited text"]
+
+
+def test_the_returned_list_is_always_the_length_of_the_input(monkeypatch):
+    """The contract the redline depends on. `generate_redline_docx` walks
+    `zip(doc.paragraphs, edited_paragraphs)`, so a list that loses or gains an entry
+    writes every later tracked change onto the wrong paragraph — in a file that still
+    opens and still looks like a redline. Whatever the model does, this must hold."""
+    for response in ("[]", "not json", '[{"edited": "one"}]',
+                     '[{"edited": "a"}, {"edited": "b"}, {"edited": "c"}]'):
+        monkeypatch.setattr(E, "_generate_text", _generate(response, response))
+        texts, _, _ = E.ai_edit_chunk(
+            CHUNK, {}, "CMOS", "Vancouver", "US English", "", False)
+        assert len(texts) == len(CHUNK), response
+
+
+def test_a_query_from_the_second_half_keeps_its_real_index(monkeypatch):
+    """`local_index` is relative to the chunk it was raised in. When a chunk is split,
+    the right half's indices have to move up by the length of the left one, or every
+    query lands on the wrong paragraph."""
+    def gen(prompt, settings=None, response_mime_type=None):
+        if "A second one." in prompt:
+            return '[{"edited": "A second one.", "query": "check this"}]'
+        return '[{"edited": "The result was significant."}]'
+
+    monkeypatch.setattr(E, "_generate_text", gen)
+    _, queries, failure = E.ai_edit_chunk(
+        CHUNK, {}, "CMOS", "Vancouver", "US English", "", False)
+    assert failure is None
+    assert len(queries) == 1
+    assert queries[0]["local_index"] == 1
 
 
 def test_an_exception_is_reported_rather_than_swallowed(monkeypatch):
