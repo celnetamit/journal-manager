@@ -118,3 +118,78 @@ def test_a_fully_successful_run_reports_nothing_skipped(monkeypatch):
 
     assert skipped == []
     assert edited == paras
+
+
+# ------------------------------------------------------------- reasoning-token cap
+
+def test_the_reasoning_cap_has_a_default(monkeypatch):
+    """Measured on a real chunk: uncapped, the model burned 3,924 completion tokens
+    reasoning and returned empty content — which reaches the parser as "no JSON
+    array" and skipped 25 of 154 paragraphs. Capped, the same chunk answers."""
+    monkeypatch.delenv("REASONING_MAX_TOKENS", raising=False)
+    assert E._reasoning_max_tokens() == 512
+
+
+def test_the_cap_can_be_raised_or_removed(monkeypatch):
+    monkeypatch.setenv("REASONING_MAX_TOKENS", "2048")
+    assert E._reasoning_max_tokens() == 2048
+    monkeypatch.setenv("REASONING_MAX_TOKENS", "0")
+    assert E._reasoning_max_tokens() == 0
+
+
+def test_a_nonsense_cap_falls_back_to_the_default(monkeypatch):
+    monkeypatch.setenv("REASONING_MAX_TOKENS", "lots")
+    assert E._reasoning_max_tokens() == 512
+
+
+def test_the_cap_is_sent_to_the_provider(monkeypatch):
+    sent = {}
+
+    def fake_post(url, payload, headers=None, **kw):
+        sent.update(payload)
+        return {"choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(E, "_post_json", fake_post)
+    monkeypatch.delenv("REASONING_MAX_TOKENS", raising=False)
+    E._generate_text("hello", settings={
+        "provider": "openrouter", "base_url": "https://x/api/v1",
+        "text_model": "m", "api_key": "k"}, response_mime_type="application/json")
+    assert sent["reasoning"] == {"max_tokens": 512}
+    assert sent["response_format"] == {"type": "json_object"}
+
+
+def test_no_cap_is_sent_when_it_is_switched_off(monkeypatch):
+    sent = {}
+
+    def fake_post(url, payload, headers=None, **kw):
+        sent.update(payload)
+        return {"choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(E, "_post_json", fake_post)
+    monkeypatch.setenv("REASONING_MAX_TOKENS", "0")
+    E._generate_text("hello", settings={
+        "provider": "openrouter", "base_url": "https://x/api/v1",
+        "text_model": "m", "api_key": "k"})
+    assert "reasoning" not in sent
+
+
+def test_empty_content_is_named_rather_than_returned_as_an_empty_string(monkeypatch):
+    """This is the actual production failure. Returning "" makes the caller report
+    "no JSON array", which describes the symptom and hides the cause."""
+    def fake_post(url, payload, headers=None, **kw):
+        return {"choices": [{"message": {"content": ""}, "finish_reason": "error"}],
+                "usage": {"completion_tokens": 3924,
+                          "completion_tokens_details": {"reasoning_tokens": 3900}}}
+
+    monkeypatch.setattr(E, "_post_json", fake_post)
+    try:
+        E._generate_text("hello", settings={
+            "provider": "openrouter", "base_url": "https://x/api/v1",
+            "text_model": "m", "api_key": "k"})
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert "empty content" in msg
+        assert "finish_reason=error" in msg
+        assert "reasoning_tokens=3900" in msg
+    else:
+        raise AssertionError("an empty answer must not pass as a valid response")

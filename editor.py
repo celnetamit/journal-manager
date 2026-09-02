@@ -48,6 +48,32 @@ def _llm_temperature() -> float:
 # AI reviewer. This keeps peak load on the provider fixed no matter how many
 # tasks run concurrently, so adding the reviewer can't push us past the
 # provider's concurrency ceiling. Tunable per provider tier via env.
+def _reasoning_max_tokens() -> int:
+    """How many tokens a reasoning model may spend thinking before it answers.
+
+    Measured, not guessed. `google/gemini-2.5-pro` through OpenRouter spends almost
+    all of its completion budget reasoning about a copyedit: 4,511 reasoning tokens
+    of 4,850 completion on one real chunk. Often it never gets to the answer at all —
+    the same five paragraphs came back `finish_reason: error`, 3,924 completion
+    tokens burned, and **empty content**, which reaches the parser as "the model
+    returned no JSON array". That is what skipped 25 of 154 paragraphs on a real
+    manuscript.
+
+    Capped at 512 the same chunk answers in 8 seconds instead of 42, for $0.014
+    instead of $0.055, and parses. Copyediting a paragraph does not need four
+    thousand tokens of deliberation.
+
+    Set REASONING_MAX_TOKENS=0 to remove the cap.
+    """
+    raw = os.environ.get("REASONING_MAX_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return 512
+
+
 def _llm_max_concurrency() -> int:
     try:
         return max(1, int(os.getenv("LLM_MAX_CONCURRENCY", "3")))
@@ -160,14 +186,35 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
             }
             if response_mime_type == "application/json":
                 payload["response_format"] = {"type": "json_object"}
+            cap = _reasoning_max_tokens()
+            if cap:
+                # OpenRouter's own knob. `effort: "low"` and `enabled: false` were
+                # both tried against this model and returned an error and an HTTP
+                # 400 respectively; an explicit token cap is the form it accepts.
+                payload["reasoning"] = {"max_tokens": cap}
             headers = {"Content-Type": "application/json"}
             if cfg["api_key"]:
                 headers["Authorization"] = f"Bearer {cfg['api_key']}"
             data = _post_json(f"{base}/chat/completions", payload, headers=headers)
             try:
-                text = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                text = choice["message"]["content"]
             except Exception as exc:
                 raise RuntimeError(f"Unexpected chat completion response: {data}") from exc
+            # An empty answer is a failure with a name, and the name is the
+            # difference between "the model refused" and "it ran out of room
+            # thinking". Without this both arrive as "no JSON array" and there is
+            # nothing to act on.
+            if not (text or "").strip():
+                usage = data.get("usage") or {}
+                reasoning = (usage.get("completion_tokens_details") or {}).get(
+                    "reasoning_tokens", 0)
+                raise RuntimeError(
+                    f"the model returned empty content "
+                    f"(finish_reason={choice.get('finish_reason')}, "
+                    f"reasoning_tokens={reasoning}, "
+                    f"completion_tokens={usage.get('completion_tokens')})"
+                )
             time.sleep(0.6)
             return (text or "").strip()
 
