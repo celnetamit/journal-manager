@@ -342,3 +342,154 @@ def test_the_same_deviation_across_many_tables_is_collapsed():
     margin = next(f for f in collapsed if f.rule == "table.cell-margin")
     assert "12 tables" in margin.message
     assert "table 1" in margin.detail          # somewhere to go and look
+
+
+# ------------------------------------------------------- body text & front matter
+
+def _front(tmp_path, name="f.docx"):
+    d = docx.Document()
+    t = d.add_paragraph()
+    r = t.add_run("Safety Analysis of a Three Span Reinforced Concrete Beam")
+    r.font.name = "Calibri Light"
+    r.font.size = Pt(20)
+    r.bold = True
+    t.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    a = d.add_paragraph()
+    ar = a.add_run("Sule S., T.C. Nwofor, Matthew F.")
+    ar.font.name = "Garamond"
+    ar.font.size = Pt(12)
+    a.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    return d
+
+
+def test_a_correct_title_and_author_line_say_nothing(tmp_path):
+    d = _front(tmp_path)
+    d.add_paragraph("Abstract")
+    d.add_paragraph("Keywords: one, two")
+    path = tmp_path / "ok.docx"
+    d.save(str(path))
+
+    findings = H.check_front_matter(M.read_structure(str(path)))
+    assert not [f for f in findings if f.rule.startswith(("title.", "authors."))], findings
+
+
+def test_a_title_in_the_wrong_font_is_reported(tmp_path):
+    d = docx.Document()
+    p = d.add_paragraph()
+    r = p.add_run("Safety Analysis of a Three Span Reinforced Concrete Beam")
+    r.font.name = "Times New Roman"          # house is Calibri Light
+    r.font.size = Pt(20)
+    d.add_paragraph("Sule S.")
+    path = tmp_path / "t.docx"
+    d.save(str(path))
+
+    findings = H.check_front_matter(M.read_structure(str(path)))
+    assert any(f.rule == "title.font" for f in findings)
+
+
+def test_a_run_on_abstract_is_not_reported_as_missing(tmp_path):
+    """`Abstract— This study examines…` is an abstract that is formatted wrong, not a
+    missing one. Saying "no abstract was found" sends an editor looking for something
+    that is on the page."""
+    d = _front(tmp_path)
+    d.add_paragraph("Abstract— This study examines gender inequality and its influence "
+                    "on economic empowerment across three districts of the region.")
+    d.add_paragraph("Keywords: gender, economics")
+    path = tmp_path / "r.docx"
+    d.save(str(path))
+
+    rules = {f.rule for f in H.check_front_matter(M.read_structure(str(path)))}
+    assert "front.abstract-runon" in rules
+    assert "front.abstract-missing" not in rules
+
+
+def test_a_genuinely_missing_abstract_is_still_reported(tmp_path):
+    d = _front(tmp_path)
+    d.add_paragraph("Keywords: gender, economics")
+    path = tmp_path / "n.docx"
+    d.save(str(path))
+
+    rules = {f.rule for f in H.check_front_matter(M.read_structure(str(path)))}
+    assert "front.abstract-missing" in rules
+
+
+def test_the_keywords_finding_names_the_separator_that_is_there(tmp_path):
+    d = _front(tmp_path)
+    d.add_paragraph("Abstract")
+    d.add_paragraph("Keywords – Biophilic Design, Vastu Shastra, Interior Design")
+    path = tmp_path / "k.docx"
+    d.save(str(path))
+
+    findings = H.check_front_matter(M.read_structure(str(path)))
+    kw = next(f for f in findings if f.rule == "front.keywords-colon")
+    # Saying only "should be a colon" is a complaint; naming what is there is an
+    # instruction.
+    assert "–" in kw.message
+
+
+def test_body_text_is_reported_as_a_share_not_per_paragraph(tmp_path):
+    """A manuscript on the wrong template has every paragraph wrong, and three
+    hundred identical findings is one piece of information told badly."""
+    d = docx.Document()
+    for _ in range(10):
+        p = d.add_paragraph()
+        r = p.add_run("Reinforced concrete beam is one of the most widely used "
+                      "structural members and beams are used in buildings and "
+                      "bridges throughout the region under study here. " * 2)
+        r.font.name = "Arial"                # house is Times New Roman
+        r.font.size = Pt(11)
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    path = tmp_path / "b.docx"
+    d.save(str(path))
+
+    findings = H.check_body_text(M.read_structure(str(path)))
+    font = [f for f in findings if f.rule == "body.font"]
+    assert len(font) == 1
+    assert "10 of 10" in font[0].message
+
+
+def test_one_stray_paragraph_does_not_trip_the_body_check(tmp_path):
+    d = docx.Document()
+    for i in range(10):
+        p = d.add_paragraph()
+        r = p.add_run("Reinforced concrete beam is one of the most widely used "
+                      "structural members and beams are used in buildings and "
+                      "bridges throughout the region under study here. " * 2)
+        r.font.name = "Arial" if i == 0 else "Times New Roman"
+        r.font.size = Pt(11)
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    path = tmp_path / "one.docx"
+    d.save(str(path))
+
+    findings = H.check_body_text(M.read_structure(str(path)))
+    assert not [f for f in findings if f.rule == "body.font"]
+
+
+def test_unnumbered_references_are_reported(tmp_path):
+    d = docx.Document()
+    d.add_paragraph("REFERENCES", style="Heading 1")
+    for name in ("Afolayan JO, Abubakar I. Reliability-based design program for slabs.",
+                 "Amartey YD. Reliability evaluation of in-situ strength of members.",
+                 "Biondini F. Probabilistic limit states analysis of framed structures."):
+        d.add_paragraph(name)
+    path = tmp_path / "ref.docx"
+    d.save(str(path))
+
+    findings = H.check_references(M.read_structure(str(path)))
+    assert any(f.rule == "references.numbering" for f in findings)
+
+
+def test_numbered_references_are_accepted(tmp_path):
+    d = docx.Document()
+    d.add_paragraph("REFERENCES", style="Heading 1")
+    for i, name in enumerate((
+            "Afolayan JO, Abubakar I. Reliability-based design program for slabs.",
+            "Amartey YD. Reliability evaluation of in-situ strength of members.",
+            "Biondini F. Probabilistic limit states analysis of framed structures."), 1):
+        d.add_paragraph(f"{i}. {name}")
+    path = tmp_path / "ref2.docx"
+    d.save(str(path))
+
+    findings = H.check_references(M.read_structure(str(path)))
+    assert not [f for f in findings if f.rule == "references.numbering"]

@@ -520,11 +520,248 @@ def collapse_repeats(findings: List[Finding]) -> List[Finding]:
     return out
 
 
+# --------------------------------------------------- body text and front matter
+
+#: The body-text and front-matter specification, from the annotated JoSEM article.
+#: Sizes in points, indents in inches.
+BODY_SPEC = {
+    "font": HOUSE_FONT, "size_pt": 11.0, "align": "justify",
+    "first_line_in": 0.15, "space_after_pt": 11.0,
+}
+TITLE_SPEC = {"font": "Calibri Light", "size_pt": 20.0, "bold": True, "align": "left"}
+AUTHORS_SPEC = {"font": "Garamond", "size_pt": 12.0, "align": "left"}
+ABSTRACT_HEADING_SPEC = {"size_pt": 11.0, "bold": True, "italic": True, "align": "center"}
+ABSTRACT_BODY_SPEC = {"size_pt": 11.0, "italic": True, "align": "justify"}
+KEYWORDS_SPEC = {"size_pt": 11.0, "align": "justify"}
+REFERENCE_SPEC = {"size_pt": 11.0, "align": "justify", "hanging_in": -0.25}
+
+#: Indents are typed in inches and stored in EMU, so 0.15" round-trips exactly while
+#: 11 pt of space-after can land a tenth away.
+INDENT_TOLERANCE_IN = 0.01
+SPACING_TOLERANCE_PT = 0.6
+
+#: How much of the body has to disagree before it is worth one finding. Below this it
+#: is a stray paragraph, above it the manuscript was written to a different template —
+#: and the second is the one an editor can act on in a single pass.
+BODY_SHARE_THRESHOLD = 0.30
+#: Paragraphs shorter than this are captions, labels and equation lines rather than
+#: body text, and none of them follow the body rule.
+BODY_MIN_CHARS = 120
+
+
+def find_front_matter(structure: Structure) -> Dict[str, Any]:
+    """Locate the title, authors, abstract and keywords, or say nothing.
+
+    Heuristic and deliberately timid: it only names a part when the manuscript makes
+    it obvious. A confident guess here would report the abstract's formatting against
+    a paragraph that is not the abstract, and every one of those findings would look
+    exactly like a real one.
+    """
+    found: Dict[str, Any] = {}
+    body = [p for p in structure.body_paragraphs() if _visible(p.text)]
+    if not body:
+        return found
+
+    for i, p in enumerate(body[:40]):
+        text = _visible(p.text)
+        low = text.lower().rstrip(":")
+        if "abstract" not in found and low == "abstract":
+            found["abstract_heading"] = p
+            if i + 1 < len(body):
+                found["abstract_body"] = body[i + 1]
+            found["abstract"] = True
+        # `Abstract— This study examines...` — the heading run on with the text. The
+        # abstract is present and is not formatted the way the house asks. Recorded
+        # separately so the finding can say that, instead of "no abstract was found",
+        # which sends an editor looking for something that is on the page.
+        elif ("abstract" not in found
+              and re.match(r"(?i)^abstract\s*[—–:-]", text) and len(text) > 60):
+            found["abstract_runon"] = p
+            found["abstract_body"] = p
+            found["abstract"] = True
+        if "keywords" not in found and low.startswith("keywords"):
+            found["keywords"] = p
+
+    # The title is the first paragraph only when nothing above it looks like one.
+    first = body[0]
+    if len(_visible(first.text)) < 200 and first.outline_level is None:
+        found["title"] = first
+        if len(body) > 1 and len(_visible(body[1].text)) < 200:
+            found["authors"] = body[1]
+    return found
+
+
+def find_references(structure: Structure) -> List[Para]:
+    """Everything after a REFERENCES heading. Empty when there is no such heading."""
+    body = structure.body_paragraphs()
+    start = None
+    for p in body:
+        if re.fullmatch(r"(?i)\s*references\s*", _visible(p.text)):
+            start = p.index
+            break
+    if start is None:
+        return []
+    return [p for p in body if p.index > start and _visible(p.text)]
+
+
+def check_body_text(structure: Structure) -> List[Finding]:
+    """The body against 11 pt Times New Roman, justified, 0.15" first line.
+
+    Reported as a share rather than per paragraph. A manuscript written to the wrong
+    template has every paragraph wrong, and three hundred identical findings is not
+    three hundred pieces of information — it is one, told badly.
+    """
+    out: List[Finding] = []
+    refs = {p.index for p in find_references(structure)}
+    front = find_front_matter(structure)
+    skip = {p.index for p in front.values() if isinstance(p, Para)}
+
+    body = [p for p in structure.body_paragraphs()
+            if len(_visible(p.text)) >= BODY_MIN_CHARS
+            and p.outline_level is None
+            and not p.listing
+            and p.index not in refs
+            and p.index not in skip]
+    if not body:
+        return out
+
+    total = len(body)
+
+    def report(rule, predicate, message, severity="warning"):
+        bad = [p for p in body if predicate(p)]
+        if len(bad) / total >= BODY_SHARE_THRESHOLD:
+            out.append(Finding(
+                rule, severity, bad[0].index,
+                f"{len(bad)} of {total} body paragraphs {message}",
+                _visible(bad[0].text)[:70]))
+
+    report("body.font",
+           lambda p: p.dominant_font and p.dominant_font != BODY_SPEC["font"],
+           f"are not {BODY_SPEC['font']}")
+    report("body.size",
+           lambda p: (p.dominant_size_pt is not None
+                      and abs(p.dominant_size_pt - BODY_SPEC["size_pt"]) > 0.01),
+           f"are not {BODY_SPEC['size_pt']} pt")
+    report("body.alignment",
+           lambda p: p.alignment is not None and p.alignment != BODY_SPEC["align"],
+           f"are not {BODY_SPEC['align']}-aligned")
+    report("body.first-line-indent",
+           lambda p: (p.first_line_in is None
+                      or abs(p.first_line_in - BODY_SPEC["first_line_in"]) > INDENT_TOLERANCE_IN),
+           f'do not have the {BODY_SPEC["first_line_in"]}" first-line indent',
+           severity="info")
+    return out
+
+
+def check_front_matter(structure: Structure) -> List[Finding]:
+    out: List[Finding] = []
+    front = find_front_matter(structure)
+
+    def check(part: str, spec: Dict[str, Any], rule_prefix: str):
+        p = front.get(part)
+        if not isinstance(p, Para):
+            return
+        if "font" in spec and p.dominant_font and p.dominant_font != spec["font"]:
+            out.append(Finding(f"{rule_prefix}.font", "warning", p.index,
+                               f"{part.replace('_', ' ')} is {p.dominant_font}, "
+                               f"house is {spec['font']}", _visible(p.text)[:60]))
+        if ("size_pt" in spec and p.dominant_size_pt is not None
+                and abs(p.dominant_size_pt - spec["size_pt"]) > 0.01):
+            out.append(Finding(f"{rule_prefix}.size", "warning", p.index,
+                               f"{part.replace('_', ' ')} is {p.dominant_size_pt} pt, "
+                               f"house is {spec['size_pt']} pt", _visible(p.text)[:60]))
+        # `is_bold`/`is_italic` are None when the file says nothing, which is not the
+        # same as False — reporting it would flag every part that inherits correctly.
+        if "bold" in spec and p.is_bold is not None and p.is_bold != spec["bold"]:
+            out.append(Finding(f"{rule_prefix}.weight", "warning", p.index,
+                               f"{part.replace('_', ' ')} should be "
+                               f"{'bold' if spec['bold'] else 'not bold'}",
+                               _visible(p.text)[:60]))
+        if "italic" in spec and p.is_italic is not None and p.is_italic != spec["italic"]:
+            out.append(Finding(f"{rule_prefix}.italic", "warning", p.index,
+                               f"{part.replace('_', ' ')} should be "
+                               f"{'italic' if spec['italic'] else 'not italic'}",
+                               _visible(p.text)[:60]))
+        if "align" in spec and p.alignment and p.alignment != spec["align"]:
+            out.append(Finding(f"{rule_prefix}.alignment", "info", p.index,
+                               f"{part.replace('_', ' ')} is {p.alignment}-aligned, "
+                               f"house is {spec['align']}", _visible(p.text)[:60]))
+
+    check("title", TITLE_SPEC, "title")
+    check("authors", AUTHORS_SPEC, "authors")
+    check("abstract_heading", ABSTRACT_HEADING_SPEC, "abstract-heading")
+    check("abstract_body", ABSTRACT_BODY_SPEC, "abstract")
+    check("keywords", KEYWORDS_SPEC, "keywords")
+
+    runon = front.get("abstract_runon")
+    if isinstance(runon, Para):
+        out.append(Finding(
+            "front.abstract-runon", "warning", runon.index,
+            "the Abstract heading runs on with the abstract text; house sets it as "
+            "its own centred, bold, italic line",
+            _visible(runon.text)[:70]))
+    elif "abstract" not in front:
+        out.append(Finding("front.abstract-missing", "warning", None,
+                           "no paragraph reading just 'Abstract' was found"))
+    if "keywords" not in front:
+        out.append(Finding("front.keywords-missing", "warning", None,
+                           "no 'Keywords:' line was found"))
+    elif not _visible(front["keywords"].text).lower().startswith("keywords:"):
+        # Names the separator actually used, so the fix is obvious. Both real
+        # manuscripts checked used a dash, and "should use a colon" without saying
+        # what is there now reads as a complaint rather than an instruction.
+        after = _visible(front["keywords"].text)[len("keywords"):][:3].strip()
+        out.append(Finding("front.keywords-colon", "info",
+                           front["keywords"].index,
+                           f"the keywords line separates with {after[:1]!r}; "
+                           f"house is a colon",
+                           _visible(front["keywords"].text)[:60]))
+    return out
+
+
+def check_references(structure: Structure) -> List[Finding]:
+    """Vancouver: 11 pt, justified, numbered, 0.25" hanging indent."""
+    out: List[Finding] = []
+    refs = [p for p in find_references(structure)
+            if len(_visible(p.text)) > 30]
+    if not refs:
+        return out
+
+    total = len(refs)
+    numbered = sum(1 for p in refs
+                   if re.match(r"^\s*\[?\d{1,3}[\].]", _visible(p.text)) or p.listing)
+    if numbered / total < 0.5:
+        out.append(Finding("references.numbering", "warning", refs[0].index,
+                           f"only {numbered} of {total} references are numbered; "
+                           f"the house uses a numbered (Vancouver) list",
+                           _visible(refs[0].text)[:70]))
+
+    hanging = sum(1 for p in refs
+                  if p.first_line_in is not None
+                  and abs(p.first_line_in - REFERENCE_SPEC["hanging_in"]) <= INDENT_TOLERANCE_IN)
+    if hanging / total < 0.5:
+        out.append(Finding("references.hanging-indent", "info", refs[0].index,
+                           f'{total - hanging} of {total} references lack the '
+                           f'0.25" hanging indent'))
+
+    wrong_size = [p for p in refs
+                  if p.dominant_size_pt is not None
+                  and abs(p.dominant_size_pt - REFERENCE_SPEC["size_pt"]) > 0.01]
+    if len(wrong_size) / total >= BODY_SHARE_THRESHOLD:
+        out.append(Finding("references.size", "warning", wrong_size[0].index,
+                           f"{len(wrong_size)} of {total} references are not "
+                           f"{REFERENCE_SPEC['size_pt']} pt",
+                           _visible(wrong_size[0].text)[:70]))
+    return out
+
+
 def check_all(structure: Structure) -> List[Finding]:
     return collapse_repeats(
         check_headings(structure) + check_listings(structure)
         + check_artwork(structure) + check_page(structure)
-        + check_tables(structure) + check_table_format(structure))
+        + check_tables(structure) + check_table_format(structure)
+        + check_body_text(structure) + check_front_matter(structure)
+        + check_references(structure))
 
 
 def summarise(findings: List[Finding]) -> Dict[str, Any]:

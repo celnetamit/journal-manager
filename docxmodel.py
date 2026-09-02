@@ -81,6 +81,14 @@ class Para:
     listing: Dict[str, Any] = field(default_factory=dict)
     #: True when the paragraph sits inside a table cell rather than the body flow.
     in_table: bool = False
+    #: Indents in inches. `first_line_in` is negative for a hanging indent, which is
+    #: how the reference list's 0.25" hang is expressed.
+    first_line_in: Optional[float] = None
+    left_indent_in: Optional[float] = None
+    #: Space after the paragraph, in points, and the line spacing rule.
+    space_after_pt: Optional[float] = None
+    space_before_pt: Optional[float] = None
+    line_spacing: Optional[float] = None
 
     @property
     def dominant_font(self) -> Optional[str]:
@@ -509,6 +517,7 @@ def read_structure(path: str) -> Structure:
         num_id, ilvl = _para_numbering(p)
         listing = numbering.describe(num_id, ilvl) if num_id else {}
         align = p.alignment
+        pf = p.paragraph_format
         paragraphs.append(Para(
             index=i,
             text=p.text,
@@ -517,6 +526,16 @@ def read_structure(path: str) -> Structure:
             alignment=ALIGNMENT_NAMES.get(int(align)) if align is not None else None,
             runs=[_read_run(r, inherited) for r in p.runs],
             listing=listing,
+            first_line_in=_emu_to_in(pf.first_line_indent),
+            left_indent_in=_emu_to_in(pf.left_indent),
+            space_after_pt=(round(pf.space_after.pt, 1)
+                            if pf.space_after is not None else None),
+            space_before_pt=(round(pf.space_before.pt, 1)
+                             if pf.space_before is not None else None),
+            # A float is a multiple (1.0 single, 1.5); a Length is an exact height.
+            # Kept as the multiple only, because that is what the spec is written in.
+            line_spacing=(pf.line_spacing
+                          if isinstance(pf.line_spacing, float) else None),
         ))
 
     # Where each table sits in the body flow. python-docx exposes tables and
