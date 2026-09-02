@@ -557,3 +557,53 @@ def test_numbered_references_are_accepted(tmp_path):
 
     findings = H.check_references(M.read_structure(str(path)))
     assert not [f for f in findings if f.rule == "references.numbering"]
+
+
+# ------------------------------------------------- glyphs and labels the corpus uses
+
+def _bullet_para(index, glyph, num_id=1):
+    """A list paragraph as `read_structure` would return it."""
+    return M.Para(index=index, text="a list item", style="List Paragraph",
+                  listing={"num_id": num_id, "level": 0, "kind": "bullet",
+                           "house_code": M.BULLET_GLYPHS.get(glyph), "glyph": glyph})
+
+
+def test_the_solid_round_bullet_is_a_house_mark():
+    """The checker printed "bullet '●' is not one of the house marks (B1 ● …)" — it
+    rejected the very glyph its own message shows as B1. `●` is U+25CF; only U+F0B7 and
+    U+2022 were mapped. 196 findings over 400 manuscripts, and nothing was wrong."""
+    assert M.BULLET_GLYPHS["●"] == "B1"
+    st = M.Structure(paragraphs=[_bullet_para(0, "●")], tables=[], sections=[], images=[])
+    assert not [f for f in H.check_listings(st) if f.rule == "listing.bullet"]
+
+
+def test_a_bullet_that_is_not_a_house_mark_is_still_reported():
+    """Wingdings' tick. Narrowing must not empty the rule."""
+    st = M.Structure(paragraphs=[_bullet_para(0, "")], tables=[], sections=[], images=[])
+    assert [f for f in H.check_listings(st) if f.rule == "listing.bullet"]
+
+
+def _one_table(caption):
+    cap = M.Para(index=0, text=caption, style="Normal")
+    tbl = M.Table(index=0, rows=1, cols=1, cells=[["x"]], after_paragraph=0)
+    return M.Structure(paragraphs=[cap], tables=[tbl], sections=[], images=[])
+
+
+def test_a_roman_numbered_caption_is_a_caption():
+    """`Table I – Summary of Cybersecurity Threats` was reported as "table 1 has no
+    'Table N' caption immediately above it", with the caption sitting right there. The
+    numbering style is a different question from whether a caption exists."""
+    assert not [f for f in H.check_tables(_one_table("Table I – Summary of Threats"))
+                if f.rule == "table.caption"]
+
+
+def test_a_table_with_no_caption_is_still_reported():
+    for text in ("N=150", "This case study is located in Cairo."):
+        assert [f for f in H.check_tables(_one_table(text)) if f.rule == "table.caption"]
+
+
+def test_a_sentence_starting_with_table_is_not_a_caption():
+    """`[ivxlc]+` must not swallow ordinary words — "Table Illustrating…" begins with
+    an I and is prose."""
+    assert [f for f in H.check_tables(_one_table("Table Illustrating the overall trend"))
+            if f.rule == "table.caption"]

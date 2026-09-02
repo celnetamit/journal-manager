@@ -218,6 +218,14 @@ def _check_hierarchy(headings: List[Para]) -> List[Finding]:
     return out
 
 
+#: What a table caption opens with. Digits only was too narrow: `Table I: Calculated
+#: radius of Au, Ag…` is an ordinary Roman-numbered caption, and the checker reported
+#: the table as having no caption at all while the caption sat directly above it. The
+#: numbering style is a separate question from whether a caption exists, and only the
+#: second one is what `table.caption` claims to answer.
+_TABLE_LABEL = r"(?i)^\s*table\s*(?:\d+|[ivxlc]+\b)"
+
+
 def check_listings(structure: Structure) -> List[Finding]:
     """Bullets must be one of B1-B4 and numbers one of N1-N3, with a dot."""
     out: List[Finding] = []
@@ -303,7 +311,7 @@ def check_tables(structure: Structure) -> List[Finding]:
     for t in structure.tables:
         above = body.get(t.after_paragraph)
         caption = _visible(above.text) if above else ""
-        if not re.match(r"(?i)^table\s*\d", caption):
+        if not re.match(_TABLE_LABEL, caption):
             out.append(Finding(
                 "table.caption", "warning", t.after_paragraph if above else None,
                 f"table {t.index + 1} has no 'Table N' caption immediately above it",
@@ -428,7 +436,7 @@ def _check_table_caption(t, label: str, body: Dict[int, Para]) -> List[Finding]:
     """`Table N.` bold at 9 pt, the caption itself 11 pt normal, above the table."""
     out: List[Finding] = []
     above = body.get(t.after_paragraph)
-    if above is None or not re.match(r"(?i)^\s*table\s*\d", _visible(above.text)):
+    if above is None or not re.match(_TABLE_LABEL, _visible(above.text)):
         return out                     # `check_tables` already reports the absence
 
     size = above.dominant_size_pt

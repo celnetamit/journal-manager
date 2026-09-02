@@ -40,14 +40,22 @@ NUMBER_FORMATS = {
 #: to produce today.
 BULLET_GLYPHS = {
     "": "B1",   # Symbol: round solid
-    "•": "B1",   # •
+    "•": "B1",   # bullet U+2022
+    "●": "B1",   # black circle U+25CF — the same solid round mark at another
+                 #   code point, and the very glyph this checker's own message prints
+                 #   as B1. Without it the report read "bullet '●' is not one of the
+                 #   house marks (B1 ● …)", which is wrong and visibly self-contradictory.
+    "∙": "B1",   # bullet operator U+2219
     "": "B2",   # Symbol: round hollow
-    "○": "B2",   # ○
+    "○": "B2",   # white circle U+25CB
+    "◦": "B2",   # white bullet U+25E6
     "o": "B2",   # Courier New 'o' — Word's default hollow bullet
     "": "B3",   # Wingdings: square solid
-    "■": "B3",   # ■
+    "■": "B3",   # black square U+25A0
+    "▪": "B3",   # black small square U+25AA
     "": "B4",   # Wingdings: square hollow
-    "□": "B4",   # □
+    "□": "B4",   # white square U+25A1
+    "▫": "B4",   # white small square U+25AB
 }
 
 
