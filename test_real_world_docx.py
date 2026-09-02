@@ -15,6 +15,7 @@ shape worth testing: not "does it raise", but "does the check still happen".
 import zipfile
 
 import docx
+from docx.oxml.ns import qn
 import pytest
 
 import docxmodel as M
@@ -225,3 +226,85 @@ def test_ranking_success_adds_no_warning(monkeypatch):
     warnings: list = []
     E._llm_rank_journals("an abstract", [{"_cid": 1, "id": 1, "name": "J"}], {}, warnings=warnings)
     assert warnings == []
+
+
+# -------------------------------------------------- fractional twips, everywhere else
+
+def _pPr(doc, index=0):
+    """The `w:pPr` of one paragraph, created if Word did not write one."""
+    p = doc.paragraphs[index]._p
+    return p.get_or_add_pPr()
+
+
+def test_a_fractional_page_margin_is_read_not_raised(plain, tmp_path):
+    """8 of 1,606. A page converted from A4 lands as `w:left="1275.5905511811022"`,
+    and `Section.left_margin` puts that through `int()`. The manuscript then lost its
+    entire house-style check over the page geometry the check is largely about."""
+    d = docx.Document(plain)
+    pgMar = d.sections[0]._sectPr.find(qn("w:pgMar"))
+    pgMar.set(qn("w:left"), "1275.5905511811022")
+    out = tmp_path / "frac-margin.docx"
+    d.save(str(out))
+
+    st = M.read_structure(str(out))
+    assert st.sections[0].left_margin_in == round(1275.5905511811022 / 1440, 3)
+
+
+def test_a_fractional_first_line_indent_is_read_not_raised(plain, tmp_path):
+    d = docx.Document(plain)
+    ind = _pPr(d).get_or_add_ind()
+    ind.set(qn("w:firstLine"), "216.00000000000003")
+    out = tmp_path / "frac-indent.docx"
+    d.save(str(out))
+
+    st = M.read_structure(str(out))
+    assert st.paragraphs[0].first_line_in == 0.15
+
+
+def test_a_hanging_indent_keeps_its_sign(plain, tmp_path):
+    """`w:hanging` is the same measurement negated — the reference list's 0.25" hang.
+    Reading it unsigned would turn a hanging indent into a first-line one."""
+    d = docx.Document(plain)
+    ind = _pPr(d).get_or_add_ind()
+    ind.set(qn("w:hanging"), "360.00000000000006")
+    out = tmp_path / "hanging.docx"
+    d.save(str(out))
+
+    st = M.read_structure(str(out))
+    assert st.paragraphs[0].first_line_in == -0.25
+
+
+def test_fractional_paragraph_spacing_is_points_not_inches(plain, tmp_path):
+    """Word writes spacing in twips and the house spec is in points: 20 twips to the
+    point, 1440 to the inch. Crossing the two conversions makes the checker
+    confidently wrong rather than silent."""
+    d = docx.Document(plain)
+    spacing = _pPr(d).get_or_add_spacing()
+    spacing.set(qn("w:before"), "359.00000000000006")
+    out = tmp_path / "frac-spacing.docx"
+    d.save(str(out))
+
+    st = M.read_structure(str(out))
+    assert st.paragraphs[0].space_before_pt == 18.0
+
+
+def test_the_newer_alignment_spelling_is_understood(plain, tmp_path):
+    """Word writes the direction-neutral `w:jc val="start"`; python-docx's enum knows
+    only `left` and raises. One paragraph like this cost a whole manuscript."""
+    d = docx.Document(plain)
+    jc = _pPr(d).get_or_add_jc()
+    jc.set(qn("w:val"), "start")
+    out = tmp_path / "jc-start.docx"
+    d.save(str(out))
+
+    st = M.read_structure(str(out))
+    assert st.paragraphs[0].alignment == "left"
+
+
+def test_an_unknown_alignment_is_unknown_not_a_crash(plain, tmp_path):
+    d = docx.Document(plain)
+    _pPr(d).get_or_add_jc().set(qn("w:val"), "distribute")
+    out = tmp_path / "jc-odd.docx"
+    d.save(str(out))
+
+    assert M.read_structure(str(out)).paragraphs[0].alignment is None

@@ -278,6 +278,107 @@ def _size_pt(font) -> Optional[float]:
         return None
 
 
+#: Word writes `w:sectPr` geometry in twips, and python-docx's typed accessors put
+#: each one through `int()`. Real files carry fractional values — a page converted
+#: from A4 lands as `1275.5905511811022` — and that killed the whole manuscript. Same
+#: failure as `_size_pt`, one directory over.
+_SECTION_XML = {
+    "page_width": ("w:pgSz", "w:w"), "page_height": ("w:pgSz", "w:h"),
+    "left_margin": ("w:pgMar", "w:left"), "right_margin": ("w:pgMar", "w:right"),
+    "top_margin": ("w:pgMar", "w:top"), "bottom_margin": ("w:pgMar", "w:bottom"),
+}
+_TWIPS_PER_INCH = 1440.0
+
+
+def _section_in(section, name: str) -> Optional[float]:
+    """One section dimension in inches, tolerant of fractional twips."""
+    try:
+        return _emu_to_in(getattr(section, name))
+    except ValueError:
+        pass
+    tag, attr = _SECTION_XML[name]
+    el = section._sectPr.find(qn(tag))
+    try:
+        return round(float(el.get(qn(attr))) / _TWIPS_PER_INCH, 3)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+#: The paragraph-format accessors convert the same strict way, and real files carry
+#: fractional twips there too — `w:firstLine="1.0000000000000009"`,
+#: `w:before="359.00000000000006"`. Each entry lists the places the measurement can be
+#: written, in order; `w:hanging` is the same number negated, which is how Word
+#: expresses a hanging indent, and `w:start` is the newer spelling of `w:left`.
+_PF_XML = {
+    "first_line_indent": (("w:ind", "w:firstLine", 1), ("w:ind", "w:hanging", -1)),
+    "left_indent": (("w:ind", "w:left", 1), ("w:ind", "w:start", 1)),
+    "space_before": (("w:spacing", "w:before", 1),),
+    "space_after": (("w:spacing", "w:after", 1),),
+}
+#: 1 pt is 20 twips. Word writes paragraph spacing in twips and the house spec is in
+#: points, so the two conversions differ and must not be crossed.
+_TWIPS_PER_PT = 20.0
+
+
+def _pf_twips(pf, name: str) -> Optional[float]:
+    """A paragraph-format measurement read straight out of the XML, in twips.
+
+    Kept as a float rather than a python-docx `Length`, because the reason we are
+    here at all is that the value does not fit in one.
+    """
+    pPr = pf._element.find(qn("w:pPr"))
+    if pPr is None:
+        return None
+    for tag, attr, sign in _PF_XML[name]:
+        el = pPr.find(qn(tag))
+        raw = el.get(qn(attr)) if el is not None else None
+        if raw is not None:
+            try:
+                return sign * float(raw)
+            except ValueError:
+                return None
+    return None
+
+
+def _pf_in(pf, name: str) -> Optional[float]:
+    """A paragraph-format indent in inches, tolerant of fractional twips."""
+    try:
+        return _emu_to_in(getattr(pf, name))
+    except ValueError:
+        twips = _pf_twips(pf, name)
+        return round(twips / _TWIPS_PER_INCH, 3) if twips is not None else None
+
+
+def _pf_pt(pf, name: str) -> Optional[float]:
+    """Paragraph spacing in points, tolerant of fractional twips."""
+    try:
+        value = getattr(pf, name)
+    except ValueError:
+        twips = _pf_twips(pf, name)
+        return round(twips / _TWIPS_PER_PT, 1) if twips is not None else None
+    return round(value.pt, 1) if value is not None else None
+
+
+#: `w:jc` gained direction-neutral spellings in the later OOXML revision, and Word
+#: writes them. python-docx's enum knows only the older pair and raises on the rest,
+#: so one `w:jc val="start"` — the commonest alignment there is — cost a manuscript
+#: its entire house-style check.
+_JC_ALIASES = {"start": "left", "end": "right", "both": "justify"}
+
+
+def _alignment(p) -> Optional[str]:
+    """A paragraph's alignment by name, tolerant of the newer OOXML spellings."""
+    try:
+        align = p.alignment
+    except ValueError:
+        pPr = p._p.find(qn("w:pPr"))
+        jc = pPr.find(qn("w:jc")) if pPr is not None else None
+        raw = jc.get(qn("w:val")) if jc is not None else None
+        alias = _JC_ALIASES.get(raw, raw)
+        return alias if alias in set(ALIGNMENT_NAMES.values()) else None
+    return ALIGNMENT_NAMES.get(int(align)) if align is not None else None
+
+
 def _style_font(style) -> tuple:
     """(name, size_pt) a style asks for, following `basedOn` upwards.
 
@@ -561,22 +662,19 @@ def read_structure(path: str) -> Structure:
         inherited = (s_name or default_font[0], s_size if s_size is not None else default_font[1])
         num_id, ilvl = _para_numbering(p)
         listing = numbering.describe(num_id, ilvl) if num_id else {}
-        align = p.alignment
         pf = p.paragraph_format
         paragraphs.append(Para(
             index=i,
             text=p.text,
             style=getattr(p.style, "name", "") or "",
             outline_level=_outline_level(p),
-            alignment=ALIGNMENT_NAMES.get(int(align)) if align is not None else None,
+            alignment=_alignment(p),
             runs=[_read_run(r, inherited) for r in p.runs],
             listing=listing,
-            first_line_in=_emu_to_in(pf.first_line_indent),
-            left_indent_in=_emu_to_in(pf.left_indent),
-            space_after_pt=(round(pf.space_after.pt, 1)
-                            if pf.space_after is not None else None),
-            space_before_pt=(round(pf.space_before.pt, 1)
-                             if pf.space_before is not None else None),
+            first_line_in=_pf_in(pf, "first_line_indent"),
+            left_indent_in=_pf_in(pf, "left_indent"),
+            space_after_pt=_pf_pt(pf, "space_after"),
+            space_before_pt=_pf_pt(pf, "space_before"),
             # A float is a multiple (1.0 single, 1.5); a Length is an exact height.
             # Kept as the multiple only, because that is what the spec is written in.
             line_spacing=(pf.line_spacing
@@ -617,7 +715,6 @@ def read_structure(path: str) -> Structure:
                     s_name, s_size = _style_font(p.style)
                     inh = (s_name or default_font[0],
                            s_size if s_size is not None else default_font[1])
-                    align = p.alignment
                     paras.append(Para(
                         # Cell paragraphs are not in `doc.paragraphs` and have no
                         # index there. -1 says so rather than pointing at a body
@@ -626,7 +723,7 @@ def read_structure(path: str) -> Structure:
                         text=p.text,
                         style=getattr(p.style, "name", "") or "",
                         outline_level=None,
-                        alignment=ALIGNMENT_NAMES.get(int(align)) if align is not None else None,
+                        alignment=_alignment(p),
                         runs=[_read_run(r, inh) for r in p.runs],
                         in_table=True,
                     ))
@@ -644,12 +741,12 @@ def read_structure(path: str) -> Structure:
         ))
 
     sections = [Section(
-        page_width_in=_emu_to_in(s.page_width),
-        page_height_in=_emu_to_in(s.page_height),
-        left_margin_in=_emu_to_in(s.left_margin),
-        right_margin_in=_emu_to_in(s.right_margin),
-        top_margin_in=_emu_to_in(s.top_margin),
-        bottom_margin_in=_emu_to_in(s.bottom_margin),
+        page_width_in=_section_in(s, "page_width"),
+        page_height_in=_section_in(s, "page_height"),
+        left_margin_in=_section_in(s, "left_margin"),
+        right_margin_in=_section_in(s, "right_margin"),
+        top_margin_in=_section_in(s, "top_margin"),
+        bottom_margin_in=_section_in(s, "bottom_margin"),
     ) for s in doc.sections]
 
     images = [Image(index=i,
