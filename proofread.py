@@ -129,10 +129,54 @@ def _is_reference_block(text: str) -> bool:
     t = text.strip()
     if len(t) < 25:
         return False
-    return bool(
-        re.match(r"^\[?\d{1,3}[\].]\s", t)
+    # `[1]. Bennett M. D.` — a bracketed number *and* a full stop. The original
+    # `[\].]` matched one or the other and then demanded whitespace, so every entry
+    # in a `[n].` bibliography fell through to the general checks.
+    if bool(
+        re.match(r"^\[?\d{1,3}[\].]{1,2}\s", t)
         and re.search(r"\b(19|20)\d{2}\b", t)
-    ) or bool(re.search(r"\bdoi\s*[:.]\s*(?:org/)?10\.\d{4}", t, re.I))
+    ) or bool(re.search(r"\bdoi\s*[:.]\s*(?:org/)?10\.\d{4}", t, re.I)):
+        return True
+
+    # An author-year entry — `Correia J. Environ Geol 35(1): 55-65` — carries no
+    # leading number and often no DOI, so the tests above missed all of them and the
+    # general checks ran over the whole bibliography: page ranges alone accounted for
+    # a third of `dash.range` across the corpus. A volume(issue) followed by a page
+    # range, or an explicit `pp.`, is citation notation and appears in body prose
+    # essentially never, so it can carry the decision on its own.
+    if len(t) > 400:
+        return False                     # a long paragraph is prose, not an entry
+    return bool(
+        # `35(1): 55-65`, and also `7(1).3-11` — some houses separate the issue from
+        # the page range with a full stop, which `[:,]?` alone rejected.
+        re.search(r"\b\d{1,4}\s*\(\s*\d{1,4}[a-z]?\s*\)\s*[:.,]?\s*\d{1,5}\s*[-–—]\s*\d{1,5}", t)
+        or re.search(r"\bpp?\.?\s*\d{1,5}\s*[-–—]\s*\d{1,5}", t)
+        # Vancouver with no parenthesised issue at all — `Handb Clin Neurol. 2018;
+        # 147:93-102`. The `year;volume:pages` run is citation notation; prose does
+        # not put a semicolon between a year and a colon-led page range.
+        or re.search(r"\b(?:19|20)\d{2}\s*;\s*\d{1,4}\s*"
+                     r"(?:\(\s*[\w\s./-]{1,15}\s*\))?\s*[:.,]\s*\d{1,5}\s*[-–—]\s*\d{1,5}", t)
+    )
+
+
+def _is_not_a_measurement(text: str, m: "re.Match") -> bool:
+    """True when a digit-then-unit match is a name, not a quantity.
+
+    The unit list has to contain the single letters — `5 V`, `8 M`, `100 W` are all
+    real — and those are also how equipment models, material grades and space groups
+    are written. Over 400 manuscripts the wrong ones all fell into two shapes:
+
+    * a decade: `the 1970s and 1980s` read as 1970 seconds;
+    * a designation hung off a hyphen: `HuanJing-1A`, space group `Fm-3m`.
+
+    Narrowed to those two rather than dropping the single-letter units, which would
+    stop the check finding `12V DC` and `8Hz` — the cases it exists for.
+    """
+    number, unit = m.group(1), m.group(2)
+    if unit == "s" and re.fullmatch(r"(1[5-9]|20)\d{2}", number):
+        return True                      # 1800s, 1970s — a decade, not seconds
+    before = text[:m.start()]
+    return bool(re.search(r"[A-Za-z]-$", before))     # -1A, Fm-3m
 
 
 def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
@@ -153,7 +197,11 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
                 "space.double", "warning", i,
                 "two or more spaces between words",
                 text[max(0, m.start() - 22):m.end() + 22].strip(),
-                re.sub(r"  +", " ", m.group(0))))
+                # Sliced out of `text`, never quoted from `scan`. The mask is
+                # equal-length precisely so offsets stay usable, but the characters
+                # under it are filler — quoting them puts a run of `xxxxxxxx` in
+                # front of the editor as the suggested correction.
+                re.sub(r"  +", " ", text[m.start():m.end()])))
 
         if not is_ref:
             for m in re.finditer(r"\s+([,.;:!?])", scan):
@@ -167,10 +215,15 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
             # rather than a decimal or an initial.
             for m in re.finditer(r"(?<![A-Z])([.,;:])([A-Za-z]{2,})", scan):
                 frag = text[max(0, m.start() - 22):m.end() + 22].strip()
+                # `.` immediately before a masked URL or address matches here, and
+                # the word after the stop is then filler. Read the real characters
+                # back out of `text` at the same offsets — an email list otherwise
+                # suggested `, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
+                word = text[m.start(2):m.end(2)]
                 out.append(ProofFinding(
                     "space.after-punctuation", "error", i,
                     f"no space after {m.group(1)!r}", frag,
-                    f"{m.group(1)} {m.group(2)}"))
+                    f"{m.group(1)} {word}"))
 
         for open_c, close_c, name in (("(", ")", "parenthesis"),
                                       ("[", "]", "bracket")):
@@ -212,6 +265,8 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
 
             units = "|".join(sorted(SPACED_UNITS, key=len, reverse=True))
             for m in re.finditer(rf"(?<![\w.])(\d+(?:\.\d+)?)({units})\b", scan):
+                if _is_not_a_measurement(scan, m):
+                    continue
                 out.append(ProofFinding(
                     "unit.spacing", "info", i,
                     f"no space between the number and {m.group(2)!r}",
@@ -387,11 +442,68 @@ def llm_findings(paragraphs: List[str], generate, settings: Dict[str, Any],
     return out
 
 
+#: Rules where the same fault recurs mechanically through a manuscript and every
+#: occurrence reads identically. Anchoring all of them buries the findings that are
+#: about the writing. Rules that fire rarely, or whose message differs each time
+#: (`word.doubled`, `punctuation.unbalanced`, the consistency and cross-reference
+#: checks), are left alone — they are not the volume problem.
+_REPEATING = {
+    "space.double", "space.before-punctuation", "space.after-punctuation",
+    "dash.range", "unit.spacing",
+}
+
+#: How many of a repeating rule keep their own anchor. Enough to show the editor the
+#: shape of the problem and three places to look; the rest are counted, not pinned.
+ANCHOR_LIMIT = 3
+
+
+def collapse_repeats(findings: List[ProofFinding]) -> List[ProofFinding]:
+    """Cap each repeating rule's anchored findings, and count the remainder.
+
+    `house_layout.check_all` has ended in its own `collapse_repeats` for a while;
+    the proofreading half never had one, and every mechanical finding with a
+    paragraph becomes a Word comment. Over 397 real manuscripts that came to 33
+    findings each — `space.double` alone averaged 10.9 — so the copyeditor's actual
+    queries sat behind a dozen identical notes about spacing.
+
+    Nothing is dropped. What loses its anchor is replaced by one document-level
+    finding naming the total, which the editorial report prints; an editor fixing
+    whitespace does it with one find-and-replace, not by visiting 30 comments.
+    """
+    out: List[ProofFinding] = []
+    seen: Dict[str, int] = {}
+    extra: Dict[str, ProofFinding] = {}
+
+    for f in findings:
+        if f.rule not in _REPEATING or f.paragraph is None:
+            out.append(f)
+            continue
+        n = seen[f.rule] = seen.get(f.rule, 0) + 1
+        if n <= ANCHOR_LIMIT:
+            out.append(f)
+        else:
+            extra.setdefault(f.rule, f)
+
+    for rule, first in extra.items():
+        hidden = seen[rule] - ANCHOR_LIMIT
+        out.append(ProofFinding(
+            rule, first.severity, None,
+            f"{hidden} further occurrence(s) of this beyond the {ANCHOR_LIMIT} marked "
+            f"in the text: {first.message}",
+            first.fragment))
+    return out
+
+
 def proofread(paragraphs: List[str], generate=None,
               settings: Optional[Dict[str, Any]] = None,
               use_llm: bool = True) -> List[ProofFinding]:
-    """Mechanical findings always; the model pass when one is available."""
-    findings = mechanical_findings(paragraphs)
+    """Mechanical findings always; the model pass when one is available.
+
+    Collapsed here rather than inside `mechanical_findings`, which stays the raw,
+    exactly-testable primitive — the same split `house_layout` makes between its
+    individual checks and `check_all`.
+    """
+    findings = collapse_repeats(mechanical_findings(paragraphs))
     if use_llm and generate is not None:
         findings += llm_findings(paragraphs, generate, settings or {})
     return findings
