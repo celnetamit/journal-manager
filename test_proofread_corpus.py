@@ -10,6 +10,8 @@ Each false-positive test is paired with a true-positive one. A check narrowed un
 stops finding the thing it exists for is worse than the false positive was.
 """
 
+import json
+
 import proofread as P
 
 
@@ -320,3 +322,50 @@ def test_proofread_passes_the_variant_down():
                  "of every specimen across the whole of the observation period."],
                 generate=fake_generate, settings={}, lang_type="UK English")
     assert seen and "UK English" in seen[0]
+
+
+# ------------------------------- claims about a manuscript the model has not been shown
+
+def _batch_returning(items, paragraphs):
+    """Run `llm_findings` against a fixed model response."""
+    return P.llm_findings(paragraphs, lambda *a, **k: json.dumps(items), {})
+
+
+_DEFINED_EARLY = (
+    ["Artificial Intelligence (AI) and Machine Learning (ML) have emerged as "
+     "transformative forces across the whole of the pharmaceutical industry."]
+    + ["Filler text that is long enough to be sent to the model for review." for _ in range(5)]
+    + ["ML models were trained on the dataset described in the section above."]
+)
+
+
+def test_an_abbreviation_defined_outside_the_batch_is_not_undefined():
+    """`llm_findings` sends 25 paragraphs at a time. Measured on a real manuscript:
+    `Machine Learning (ML)` is defined in paragraph 8 and the model reported ML as
+    "used without being defined" at paragraph 232 — a claim about a document it was
+    never shown. The whole text is right here, so the claim is checkable."""
+    findings = _batch_returning(
+        [{"index": 6, "fragment": "ML models",
+          "problem": "the abbreviation ML is used without being defined"}],
+        _DEFINED_EARLY)
+    assert findings == []
+
+
+def test_an_abbreviation_never_expanded_is_still_reported():
+    """Narrowed, not deleted: only a bracketed introduction earlier counts, so an
+    abbreviation that appears and is never expanded survives."""
+    findings = _batch_returning(
+        [{"index": 6, "fragment": "ML models",
+          "problem": "the abbreviation QRS is not defined anywhere in the manuscript"}],
+        _DEFINED_EARLY)
+    assert len(findings) == 1
+
+
+def test_a_consistency_claim_is_not_a_definition_claim():
+    """"'IoT' was used previously, but 'IOT' is used here" is a good finding — both
+    spellings are inside the model's own batch. It must not be filtered."""
+    findings = _batch_returning(
+        [{"index": 6, "fragment": "ML models",
+          "problem": "'IoT' was used previously, but 'IOT' is used here"}],
+        _DEFINED_EARLY)
+    assert len(findings) == 1

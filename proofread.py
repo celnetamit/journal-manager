@@ -495,6 +495,40 @@ Paragraphs:
 """
 
 
+#: A claim that an abbreviation was never introduced. Deliberately not matched against
+#: "used previously", which is a *consistency* claim ("'IoT' earlier, 'IOT' here") and a
+#: perfectly good one — the model can see both spellings inside its own batch.
+_UNDEFINED_CLAIM = re.compile(
+    r"\b(?:is\s+not|never|without\s+being|before\s+(?:it\s+is|being))\s+defined", re.I)
+#: The abbreviation a finding is about.
+_ABBREVIATION = re.compile(r"\b([A-Z]{2,6})\b")
+
+
+def _defined_earlier(message: str, fragment: str, upto: Optional[int],
+                     paragraphs: List[str]) -> bool:
+    """True when the manuscript introduces that abbreviation before this paragraph.
+
+    `llm_findings` sends 25 paragraphs at a time, so a model told to report "an
+    abbreviation used before it is defined" is being asked something its input cannot
+    answer. Measured: `Machine Learning (ML)` is defined in paragraph 8 of a real
+    manuscript and the model reported ML as undefined at paragraph 232.
+
+    Only a *bracketed* introduction earlier counts. An abbreviation that merely appears
+    earlier and is never expanded anywhere is a real finding, and this must not swallow
+    it — so the test is for the definition, not for the string.
+    """
+    if upto is None or not _UNDEFINED_CLAIM.search(message):
+        return False
+    # The message first: it is where the claim names its abbreviation. The fragment
+    # is the surrounding sentence and may mention a different one entirely.
+    match = _ABBREVIATION.search(message) or _ABBREVIATION.search(fragment)
+    if not match:
+        return False
+    abbr = re.escape(match.group(1))
+    earlier = " ".join(paragraphs[:upto])
+    return bool(re.search(rf"\(\s*{abbr}s?\s*\)", earlier))
+
+
 def llm_findings(paragraphs: List[str], generate, settings: Dict[str, Any],
                  batch_size: int = 25,
                  lang_type: str = DEFAULT_LANG) -> List[ProofFinding]:
@@ -544,6 +578,11 @@ def llm_findings(paragraphs: List[str], generate, settings: Dict[str, Any],
             # The fragment has to actually be in the paragraph. Without this a
             # paraphrase reaches the editor as a verbatim quotation of their author.
             if fragment and fragment not in paragraphs[idx]:
+                continue
+            # The model is shown 25 paragraphs and cannot see the rest, so a claim
+            # that something was never defined is a claim about a document it has not
+            # read. Checked here against the whole text, which is exact.
+            if _defined_earlier(problem, fragment, idx, paragraphs):
                 continue
             correction = it.get("correction")
             out.append(ProofFinding(
