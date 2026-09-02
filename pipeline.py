@@ -15,6 +15,9 @@ import threading
 import time
 import traceback
 import uuid
+import zipfile
+
+from docx.opc.exceptions import PackageNotFoundError
 from typing import Any, Callable, Dict, Optional
 
 import config as app_config
@@ -73,6 +76,17 @@ def _sanitize_recommended(recommended) -> list:
     return out
 
 
+def skip_reason(exc: BaseException) -> str:
+    """Why a check was skipped, in words, always.
+
+    `str(exc)` is empty for several exception classes — `NotImplementedError` among
+    them — so "House-style layout check was skipped: " reached the editor with nothing
+    after the colon on 8% of real manuscripts. There is no way to tell that from a
+    document that genuinely had no layout to check.
+    """
+    return str(exc) or type(exc).__name__
+
+
 def run_pipeline(opts: Dict[str, Any], input_path: str,
                  progress_cb: Optional[Callable[[float, str], None]] = None,
                  job_id: Optional[Any] = None) -> Dict[str, Any]:
@@ -100,7 +114,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
 
     start_time = time.time()
     progress(0.02, "Reading document...")
-    original_paragraphs = read_docx(input_path)
+    try:
+        original_paragraphs = read_docx(input_path)
+    except (zipfile.BadZipFile, PackageNotFoundError, KeyError) as open_exc:
+        # A .docx is a zip. Three of 400 real manuscripts had a corrupt embedded
+        # image, and the author got the raw "Bad CRC-32 for file 'word/media/
+        # image1.png'" — true, and meaningless to the person who has to act on it.
+        raise ValueError(
+            "This .docx could not be opened — the file appears to be damaged "
+            f"({open_exc}). Open it in Word and use File > Save As to write a fresh "
+            "copy, then upload that."
+        ) from open_exc
     paras_count = len(original_paragraphs)
 
     # Everything the plain text reader drops — formatting, headings, list markers,
@@ -112,7 +136,8 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         structure = read_structure(input_path)
         layout_findings = house_check(structure)
     except Exception as struct_exc:                              # noqa: BLE001
-        warnings.append(f"House-style layout check was skipped: {struct_exc}")
+        warnings.append(
+            f"House-style layout check was skipped: {skip_reason(struct_exc)}")
     if not original_paragraphs:
         raise ValueError("Document appears to be empty.")
 

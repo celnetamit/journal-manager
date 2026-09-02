@@ -198,6 +198,12 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
                 # far more often than it is a range.
                 if int(lo) >= int(hi) or (len(lo) >= 4 and len(hi) >= 4):
                     continue
+                # A phone number, not a range: `Tel: +91-8816867362` ascends and its
+                # first half is only two digits, so both guards above wave it through
+                # and the report suggests dialling `91–8816867362`. Two signals, either
+                # alone enough — a leading `+`, or halves of wildly unequal length.
+                if scan[:m.start()].rstrip().endswith("+") or len(hi) - len(lo) >= 3:
+                    continue
                 out.append(ProofFinding(
                     "dash.range", "info", i,
                     "number range uses a hyphen; an en dash (–) is conventional",

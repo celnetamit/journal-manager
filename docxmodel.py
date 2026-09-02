@@ -235,6 +235,49 @@ def _emu_to_in(value) -> Optional[float]:
     return round(int(value) / EMU_PER_INCH, 3)
 
 
+def _row_cells(row) -> list:
+    """The cells of a table row, tolerant of irregular vertical merges.
+
+    `row.cells` resolves every vertically merged continuation cell by walking to the
+    cell above it, and raises `ValueError: no 'tc' element at grid_offset=N` when a
+    real table's grid does not line up — which Word tolerates and writes anyway.
+
+    Falling back to the row's own `w:tc` children loses the merge resolution: a merged
+    cell is then read once, in the row it is actually written in, rather than repeated
+    down the rows it spans. That is a worse reading of the table and a much better
+    outcome than failing the manuscript, which is what this did before.
+    """
+    try:
+        return list(row.cells)
+    except ValueError:
+        from docx.table import _Cell
+        return [_Cell(tc, row.table) for tc in row._tr.tc_lst]
+
+
+def _size_pt(font) -> Optional[float]:
+    """Point size from a run or style font, tolerant of fractional half-points.
+
+    `font.size` puts `w:sz/@w:val` through python-docx's typed accessor, which does
+    `int(value)` and raises on anything fractional. LibreOffice and Google Docs both
+    export sizes like `26.666666666666668`, and that `ValueError` came out of
+    `read_structure` and failed the entire manuscript over one heading.
+    """
+    try:
+        size = font.size
+    except ValueError:
+        pass
+    else:
+        return round(size.pt, 1) if size is not None else None
+
+    el = getattr(font, "_element", None)
+    rpr = el.find(qn("w:rPr")) if el is not None else None
+    sz = rpr.find(qn("w:sz")) if rpr is not None else None
+    try:
+        return round(float(sz.get(qn("w:val"))) / 2, 1)      # half-points
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _style_font(style) -> tuple:
     """(name, size_pt) a style asks for, following `basedOn` upwards.
 
@@ -253,8 +296,8 @@ def _style_font(style) -> tuple:
         if f is not None:
             if name is None and f.name:
                 name = f.name
-            if size is None and f.size is not None:
-                size = round(f.size.pt, 1)
+            if size is None:
+                size = _size_pt(f)
         if name is not None and size is not None:
             break
         style = getattr(style, "base_style", None)
@@ -287,9 +330,7 @@ def _doc_default_font(document) -> tuple:
 
 def _read_run(r, inherited=(None, None)) -> Run:
     font = r.font
-    size = None
-    if font.size is not None:
-        size = round(font.size.pt, 1)
+    size = _size_pt(font)
     sup = sub = False
     # `font.superscript` is None when unset rather than False, and reading the
     # vertAlign element directly also catches runs where Word wrote the property
@@ -370,7 +411,11 @@ class _Numbering:
         self._levels: Dict[tuple, Dict[str, Any]] = {}
         try:
             part = document.part.numbering_part
-        except (KeyError, AttributeError, ValueError):
+        except (KeyError, AttributeError, ValueError, NotImplementedError):
+            # A document that has never contained a list has no numbering part, and
+            # python-docx answers that with a bare `NotImplementedError` — which this
+            # guard originally missed. It took the whole read down on 32 of 400 real
+            # manuscripts. No numbering part simply means no numbering to resolve.
             return
         root = part.element
 
@@ -562,11 +607,11 @@ def read_structure(path: str) -> Structure:
 
     tables: List[Table] = []
     for ti, t in enumerate(doc.tables):
-        cells = [[c.text.strip() for c in row.cells] for row in t.rows]
+        cells = [[c.text.strip() for c in _row_cells(row)] for row in t.rows]
         grid: List[List[Cell]] = []
         for ri, row in enumerate(t.rows):
             row_cells: List[Cell] = []
-            for ci, c in enumerate(row.cells):
+            for ci, c in enumerate(_row_cells(row)):
                 paras: List[Para] = []
                 for p in c.paragraphs:
                     s_name, s_size = _style_font(p.style)

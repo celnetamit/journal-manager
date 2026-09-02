@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 
 import docx
+import docxmodel as _docxmodel
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import numpy as np
@@ -1284,12 +1285,15 @@ def generate_redline_docx(
     # cannot shift it.
     for (ti, ri, ci, pi), edited in (table_edits or {}).items():
         try:
-            cell = doc.tables[ti].rows[ri].cells[ci]
+            # `_row_cells`, not `row.cells` — it must be the *same* enumeration the
+            # reader used to mint this address, or on a table with irregular merges
+            # the two disagree and every edit lands one cell over.
+            cell = _docxmodel._row_cells(doc.tables[ti].rows[ri])[ci]
             para = cell.paragraphs[pi]
-        except (IndexError, KeyError):
-            # A stale address — the document changed under the job. Skipped rather
-            # than raised: losing the whole redline over one cell is the worse
-            # outcome, and writing into a neighbouring cell is worse still.
+        except (IndexError, KeyError, ValueError):
+            # A stale address, or a table whose grid python-docx cannot resolve.
+            # Skipped rather than raised: losing the whole redline over one cell is
+            # the worse outcome, and writing into a neighbour is worse still.
             continue
         tc_id = _mark_up_paragraph(para, para.text, edited, tc_id)
 
