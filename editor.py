@@ -976,6 +976,35 @@ def enforce_keywords_format(
     ]
 
 
+#: How much of a paragraph a copyedit may remove before it stops being an edit.
+#: Measured on a sample of real manuscripts: the model returned
+#:   "2.1 Gear Design and Geometry A 24-tooth spur gear was modeled in Autodesk Fusion
+#:    360 following ISO metric gear design principles. The selected parameters were:"
+#: as "Gear Design and Geometry" — it read the run-on section heading, kept that, and
+#: threw the two sentences after it away. No query was raised, and in the redline it
+#: reads as an ordinary deletion the editor might have wanted.
+_MIN_KEPT = 0.6
+#: Short paragraphs are headings, labels and captions, where a large proportional cut
+#: is often a correct edit ("2.2 Material characteristics" -> "Material characteristics").
+_GUARD_MIN_CHARS = 120
+
+
+def _lost_content(original: str, edited: str) -> bool:
+    """True when an edit removed so much of the paragraph that it is not an edit.
+
+    Deliberately blunt. The question is not whether the shorter text reads well — it
+    usually does, which is what makes this dangerous — but whether the author's
+    sentences are still there. Nothing else in `ai_edit_chunk` asks that: it checks the
+    array length and the type of `edited`, so a truncated paragraph is accepted in
+    silence and reaches the redline looking like a deliberate cut.
+    """
+    if len(original.strip()) < _GUARD_MIN_CHARS:
+        return False
+    if not edited.strip():
+        return True
+    return len(edited) < len(original) * _MIN_KEPT
+
+
 def ai_edit_chunk(
     chunk_texts: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool,
@@ -1064,8 +1093,24 @@ Input JSON:
                     result.append(elem)
                 elif isinstance(elem, dict):
                     edited = elem.get("edited")
-                    result.append(edited if isinstance(edited, str) else chunk_texts[i])
+                    edited = edited if isinstance(edited, str) else chunk_texts[i]
                     q = elem.get("query")
+                    if _lost_content(chunk_texts[i], edited):
+                        # Keep the author's paragraph and say so. The prompt's own
+                        # contract is "raise a query rather than guess"; this is the
+                        # same rule applied to the one case the model cannot be
+                        # trusted to notice it has broken.
+                        queries.append({
+                            "local_index": i,
+                            "snippet": chunk_texts[i],
+                            "query": ("The copyedit returned only part of this "
+                                      "paragraph, so it was left unchanged. Please "
+                                      "edit it by hand."),
+                            "suggestion": None,
+                        })
+                        result.append(chunk_texts[i])
+                        continue
+                    result.append(edited)
                     if isinstance(q, str) and q.strip():
                         sug = elem.get("suggestion")
                         queries.append({

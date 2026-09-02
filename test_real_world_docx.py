@@ -12,6 +12,7 @@ read "House-style layout check was skipped: " with nothing after the colon. That
 shape worth testing: not "does it raise", but "does the check still happen".
 """
 
+import json
 import zipfile
 
 import docx
@@ -338,3 +339,62 @@ def test_a_failed_job_never_reaches_the_user_with_an_empty_reason(monkeypatch):
 
     assert recorded["fail"] == "NotImplementedError"
     assert recorded["history"] == "NotImplementedError"
+
+
+# ----------------------------------------------- the copyedit deleting the manuscript
+
+_GEAR = ("2.1 Gear Design and Geometry A 24-tooth spur gear was modeled in Autodesk "
+         "Fusion 360 following ISO metric gear design principles. The selected "
+         "parameters were:")
+
+
+def _chunk_returning(monkeypatch, payload):
+    """Run `ai_edit_chunk` against a fixed model response."""
+    import editor as E
+    monkeypatch.setattr(E, "_generate_text",
+                        lambda *a, **k: json.dumps(payload), raising=True)
+    return E.ai_edit_chunk([_GEAR], {}, "CMOS", "Vancouver", "US English", "", False)
+
+
+def test_a_truncated_paragraph_is_refused_not_applied(monkeypatch):
+    """Measured on a real manuscript: the model read the run-on section heading, kept
+    it, and threw the two sentences after it away — with no query. `ai_edit_chunk`
+    checked the array length and the type of `edited` and nothing else, so it reached
+    the redline looking like a deletion the editor had asked for."""
+    edited, queries, failure = _chunk_returning(
+        monkeypatch, [{"edited": "Gear Design and Geometry"}])
+
+    assert failure is None
+    assert edited == [_GEAR], "the author's paragraph must survive"
+    assert len(queries) == 1
+    assert queries[0]["local_index"] == 0
+    assert "left unchanged" in queries[0]["query"]
+
+
+def test_an_emptied_paragraph_is_refused(monkeypatch):
+    edited, queries, _ = _chunk_returning(monkeypatch, [{"edited": "   "}])
+    assert edited == [_GEAR]
+    assert len(queries) == 1
+
+
+def test_an_ordinary_copyedit_is_applied_untouched(monkeypatch):
+    """Narrowed, not blocking: a real edit must still go through, with its own query."""
+    fixed = _GEAR.replace("modeled", "modelled")
+    edited, queries, _ = _chunk_returning(
+        monkeypatch, [{"edited": fixed, "query": "US or UK spelling?",
+                       "suggestion": "modeled"}])
+    assert edited == [fixed]
+    assert len(queries) == 1 and queries[0]["query"] == "US or UK spelling?"
+
+
+def test_a_short_heading_may_lose_its_number(monkeypatch):
+    """The guard must not fire on headings and captions, where a large proportional
+    cut is usually the correct edit."""
+    import editor as E
+    monkeypatch.setattr(E, "_generate_text",
+                        lambda *a, **k: json.dumps([{"edited": "Material characteristics"}]),
+                        raising=True)
+    edited, queries, _ = E.ai_edit_chunk(
+        ["2.2 Material characteristics"], {}, "CMOS", "Vancouver", "US English", "", False)
+    assert edited == ["Material characteristics"]
+    assert queries == []
