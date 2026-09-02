@@ -251,6 +251,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
             generate=_generate_text if ai_review_enabled else None,
             settings=llm_settings,
             use_llm=ai_review_enabled,
+            # The copyedit has always been told the variant; the proofreader never
+            # was, so it defaulted to American and reported "low centre of gravity"
+            # in a London paper as a spelling error needing "center".
+            lang_type=lang_type,
         )
         # Anchored in the redline as Word comments, next to the copyeditor's own
         # queries. A finding with no paragraph (a manuscript-wide inconsistency) has

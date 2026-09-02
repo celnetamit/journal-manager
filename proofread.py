@@ -25,6 +25,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+#: What the proofreader assumes when the job does not say. The copyedit has always
+#: been told the variant; the proofreading prompt never was, so on a British paper it
+#: reported "centre" as a spelling error and proposed "center" — silently re-spelling
+#: an author, which is the one thing this module's own docstring says not to do.
+DEFAULT_LANG = "US English"
+
+
 #: Pairs whose two spellings should not both appear in one manuscript. Neither is
 #: wrong; using both is. The house style decides which — this only reports the clash,
 #: because a checker that "corrects" -ise to -ize silently re-spells a British author.
@@ -457,6 +464,8 @@ PROOFREAD_PROMPT = """You are a proofreader reading the FINAL, already-copyedite
 
 A copyeditor has been over this already and was told to change as little as possible. Your job is different and narrower: find what is still WRONG. You are the last person to read it before it is typeset.
 
+The manuscript is written in {lang_type}. Spellings belonging to that variant are CORRECT: do not report "centre", "behaviour", "analyse" or "programme" in British English, or "center", "behavior", "analyze" or "program" in American English. Do not report a British/American variant as inconsistent either — whether the manuscript mixes the two is checked separately, over the whole text. You are shown a slice of the manuscript, so you cannot know what the rest of it does: never claim that "the manuscript uses both" anything.
+
 Report ONLY:
 - spelling errors, including a wrong word that is spelled correctly ("effect" for "affect", "principle" for "principal")
 - grammar and agreement errors that survived
@@ -469,6 +478,7 @@ Do NOT report:
 - style, tone, flow, word choice, sentence length or anything you would merely prefer
 - anything already correct
 - formatting, fonts or layout — those are checked elsewhere
+- curly quotation marks and apostrophes (’ “ ”). They are correct and the file is going to be typeset; replacing them with ASCII ' and " is damage, not a correction
 
 You are NOT rewriting the manuscript. For each problem, name it and give the exact corrected fragment. If you are not confident it is an error, leave it out entirely: a proofreader who reports doubts is worse than one who misses one, because the editor stops trusting the list.
 
@@ -486,7 +496,8 @@ Paragraphs:
 
 
 def llm_findings(paragraphs: List[str], generate, settings: Dict[str, Any],
-                 batch_size: int = 25) -> List[ProofFinding]:
+                 batch_size: int = 25,
+                 lang_type: str = DEFAULT_LANG) -> List[ProofFinding]:
     """The judgement half of the pass. `generate(prompt, settings, ...)` is injected
     so this is testable without a network — the same reason the mechanical half comes
     first and stands alone."""
@@ -503,7 +514,10 @@ def llm_findings(paragraphs: List[str], generate, settings: Dict[str, Any],
         payload = json.dumps([{"index": i, "text": t} for i, t in batch],
                              ensure_ascii=False)
         try:
-            raw = generate(PROOFREAD_PROMPT.replace("{payload}", payload),
+            prompt = (PROOFREAD_PROMPT
+                      .replace("{lang_type}", lang_type or DEFAULT_LANG)
+                      .replace("{payload}", payload))
+            raw = generate(prompt,
                            settings=settings, response_mime_type="application/json")
             match = re.search(r"\[.*\]", raw or "", re.DOTALL)
             items = json.loads(match.group(0)) if match else []
@@ -598,7 +612,8 @@ def collapse_repeats(findings: List[ProofFinding]) -> List[ProofFinding]:
 
 def proofread(paragraphs: List[str], generate=None,
               settings: Optional[Dict[str, Any]] = None,
-              use_llm: bool = True) -> List[ProofFinding]:
+              use_llm: bool = True,
+              lang_type: str = DEFAULT_LANG) -> List[ProofFinding]:
     """Mechanical findings always; the model pass when one is available.
 
     Collapsed here rather than inside `mechanical_findings`, which stays the raw,
@@ -607,7 +622,8 @@ def proofread(paragraphs: List[str], generate=None,
     """
     findings = collapse_repeats(mechanical_findings(paragraphs))
     if use_llm and generate is not None:
-        findings += llm_findings(paragraphs, generate, settings or {})
+        findings += llm_findings(paragraphs, generate, settings or {},
+                                 lang_type=lang_type)
     return findings
 
 

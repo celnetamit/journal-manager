@@ -268,3 +268,55 @@ def test_a_figure_referred_to_but_never_captioned_is_still_reported():
     missing = [f for f in P._cross_reference_findings(paras, " ".join(paras))
                if f.rule == "crossref.figure-missing"]
     assert len(missing) == 1 and "Figure 5" in missing[0].message
+
+
+# ------------------------------------------------ the proofreader's language variant
+
+def _prompt_for(lang=None, paras=None):
+    """The prompt `llm_findings` actually sends, captured from a fake `generate`."""
+    seen = []
+
+    def fake_generate(prompt, settings=None, **kw):
+        seen.append(prompt)
+        return "[]"
+
+    kwargs = {} if lang is None else {"lang_type": lang}
+    P.llm_findings(paras or ["The prototype has a low centre of gravity and is stable "
+                             "across the full range of operating speeds tested here."],
+                   fake_generate, {}, **kwargs)
+    assert seen, "llm_findings sent nothing to the model"
+    return seen[0]
+
+
+def test_the_proofreader_is_told_the_language_variant():
+    """It never was. `lang_type` reached the copyedit and stopped there, so on a London
+    manuscript the proofreader reported `low centre of gravity` as "this is a spelling
+    error" and proposed `center` — silently re-spelling a British author, which is the
+    one thing this module's docstring says not to do."""
+    assert "UK English" in _prompt_for("UK English")
+    assert "US English" in _prompt_for("US English")
+
+
+def test_the_prompt_has_no_placeholder_left_in_it():
+    """A `{lang_type}` reaching the model as a literal would be worse than no variant
+    at all — it reads as an instruction the model has to guess at."""
+    for lang in ("UK English", "US English", "", None):
+        assert "{lang_type}" not in _prompt_for(lang)
+        assert "{payload}" not in _prompt_for(lang)
+
+
+def test_an_unset_variant_still_names_one():
+    assert P.DEFAULT_LANG in _prompt_for("")
+
+
+def test_proofread_passes_the_variant_down():
+    seen = []
+
+    def fake_generate(prompt, settings=None, **kw):
+        seen.append(prompt)
+        return "[]"
+
+    P.proofread(["The organisation analysed the samples and recorded the behaviour "
+                 "of every specimen across the whole of the observation period."],
+                generate=fake_generate, settings={}, lang_type="UK English")
+    assert seen and "UK English" in seen[0]
