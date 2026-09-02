@@ -136,3 +136,76 @@ def test_non_repeating_rules_keep_every_anchor():
     doubled = [f for f in collapsed if f.rule == "word.doubled"]
     assert len(doubled) == 5
     assert all(f.paragraph is not None for f in doubled)
+
+
+# ------------------------------------------------- lists are not broken parentheses
+
+def _unbal(text):
+    """The `punctuation.unbalanced` findings for one paragraph."""
+    return [f for f in P.mechanical_findings([text])
+            if f.rule == "punctuation.unbalanced"]
+
+
+def test_a_numbered_list_is_not_an_unbalanced_parenthesis():
+    """Half of the 1,546 `punctuation.unbalanced` findings over the corpus were this:
+    a manuscript labelling its list `A)` `B)` `C)`, reported as "0 ( and 5 )". An
+    editor told five times that their list is broken stops reading the report."""
+    for text in (
+        "The 2d images are A) Interleukin 1 beta; B) Interleukin 6; C) CD33.",
+        "e) Applying a bubble-forming solution to the weld.",
+        "iv) Promote Clean Energy: invest in solar, wind, and hydro power.",
+        "5.2) Physical characteristics recommendations",       # a section number
+        "ⅰ) ",                                                  # Unicode roman numeral
+    ):
+        assert _unbal(text) == [], text
+
+
+def test_a_label_inside_a_pair_still_closes_it():
+    """The obvious fix — strip label-shaped `)` before counting — is wrong: the ` 1)`
+    in `(Figure 1)` matches the same shape, so stripping it breaks a balanced pair and
+    invents a fault. Nothing is forgiven while something is open to close."""
+    assert _unbal("a) Hardware Circuitry (Figure 1)") == []
+    assert _unbal("See panel b) of Fig. 2 (Reinforced).") == []
+
+
+def test_a_genuinely_unclosed_parenthesis_is_still_found():
+    """Narrowed, not deleted."""
+    assert _unbal("Head cabbage; disease symptom ( pest occurrence, leaf yellowing")
+    assert _unbal("Noble, A. (. (2003). Patterns of Indian houses.")
+    # A stray closer that is not label-shaped is still a stray closer.
+    assert _unbal("the viscosity of solution).")
+
+
+def test_reversed_parentheses_are_found_now_that_order_is_read():
+    """`Front. Cardiovasc. Med. 2016;3)3(:1-14` — one `(` and one `)`, so the old
+    character count called this balanced and said nothing. It is a real typo, and it
+    is reported only because the text is now walked in order.
+
+    The `)` itself is forgiven — `;3)` is exactly the shape of a list label after a
+    semicolon, which is how `1) foo; 2) bar` is written, and the guard cannot tell
+    the two apart from the characters alone. It does not need to: the `(` that never
+    closes is enough to put the paragraph in front of the editor."""
+    (f,) = _unbal("Saklayen MG. Timeline of Hypertension. Med. 2016;3)3(:1-14.")
+    assert f.message == "unbalanced parenthesis: 1 ( never closed"
+
+
+def test_the_message_says_which_way_it_is_unbalanced():
+    """"3 ( and 4 )" made the editor count the characters again to find out whether
+    one was missing or one was spare."""
+    (f,) = _unbal("The samples (held at constant mass were weighed.")
+    assert f.message == "unbalanced parenthesis: 1 ( never closed"
+
+
+def test_mixed_quotes_collapse_like_every_other_repeating_rule():
+    """One manuscript in the corpus anchored 78 Word comments and 77 were this rule —
+    a document that mixes `"` and `”` throughout. Its message is a constant string, so
+    the "message differs each time" exemption never applied to it."""
+    paras = [f'The {w} was called “stable" throughout.' for w in
+             ("mass", "length", "volume", "density", "charge", "field")]
+    raw = P.mechanical_findings(paras)
+    assert len([f for f in raw if f.rule == "punctuation.unbalanced-quotes"]) == 6
+
+    collapsed = P.collapse_repeats(raw)
+    quotes = [f for f in collapsed if f.rule == "punctuation.unbalanced-quotes"]
+    assert len([f for f in quotes if f.paragraph is not None]) == P.ANCHOR_LIMIT
+    assert len([f for f in quotes if f.paragraph is None]) == 1

@@ -179,6 +179,44 @@ def _is_not_a_measurement(text: str, m: "re.Match") -> bool:
     return bool(re.search(r"[A-Za-z]-$", before))     # -1A, Fm-3m
 
 
+#: A list label — a short token then `)`, with nothing but the start of the text or a
+#: separator in front of it. Manuscripts number their lists `a)`, `1)`, `iii)`, `A)`,
+#: and that closing parenthesis has no opening one by design.
+#: `5.2)` and `10.10.2.)` are section numbers, `ⅰ)` is the Unicode roman numeral rather
+#: than a latin `i` — all three are labels the plain `\d{1,2}` shape did not cover.
+_LIST_LABEL = re.compile(
+    r"(?:(?<=^)|(?<=[\s;,\t]))"
+    r"(?:\d{1,3}(?:\.\d{1,3})*\.?|[A-Za-z]|[ivxlcIVXLC]{1,4}|[Ⅰ-ⅿ]{1,4})\)$")
+
+
+def _unbalanced(text: str, open_c: str, close_c: str) -> Optional[tuple]:
+    """(unmatched opens, unmatched closes), or None when the text is balanced.
+
+    Counting `text.count("(") != text.count(")")` was 1,546 findings over the corpus
+    and more than half of them were numbered lists: "A) Interleukin 1 beta; B)
+    Interleukin 6; C) CD33" was reported as "0 ( and 5 )". An editor told five times
+    that their list is broken stops reading the report.
+
+    Stripping label-shaped `)` before counting is the obvious fix and it is wrong —
+    the ` 1)` inside `(Figure 1)` matches the same shape, so it would break a properly
+    balanced pair and invent a fault. So the text is walked instead, and a `)` is only
+    forgiven as a label when nothing is open for it to close.
+    """
+    depth = 0
+    stray_closes = 0
+    for i, ch in enumerate(text):
+        if ch == open_c:
+            depth += 1
+        elif ch == close_c:
+            if depth:
+                depth -= 1
+            elif close_c == ")" and _LIST_LABEL.search(text[:i + 1]):
+                continue                 # `a)`, `1)`, `iii)` — a label, not a pair
+            else:
+                stray_closes += 1
+    return (depth, stray_closes) if depth or stray_closes else None
+
+
 def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
     """Everything that can be decided by looking, without a model."""
     out: List[ProofFinding] = []
@@ -227,11 +265,20 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
 
         for open_c, close_c, name in (("(", ")", "parenthesis"),
                                       ("[", "]", "bracket")):
-            if text.count(open_c) != text.count(close_c):
+            counts = _unbalanced(text, open_c, close_c)
+            if counts is not None:
+                opens, closes = counts
+                # Say which way it is unbalanced. "3 ( and 4 )" made the editor count
+                # the characters again to find out whether one was missing or one was
+                # spare; the pair that never closed is the thing to go and look at.
+                parts = []
+                if opens:
+                    parts.append(f"{opens} {open_c} never closed")
+                if closes:
+                    parts.append(f"{closes} {close_c} with nothing open")
                 out.append(ProofFinding(
                     "punctuation.unbalanced", "error", i,
-                    f"unbalanced {name}: {text.count(open_c)} {open_c} "
-                    f"and {text.count(close_c)} {close_c}",
+                    f"unbalanced {name}: " + ", ".join(parts),
                     text[:80]))
 
         if text.count("“") != text.count("”"):
@@ -450,6 +497,11 @@ def llm_findings(paragraphs: List[str], generate, settings: Dict[str, Any],
 _REPEATING = {
     "space.double", "space.before-punctuation", "space.after-punctuation",
     "dash.range", "unit.spacing",
+    # Its message is the constant string "unbalanced curly quotes" — it never
+    # differs, so the exemption above was never true of it. One manuscript in the
+    # corpus anchored 78 Word comments and 77 were this rule, which is a document
+    # that mixes " and ” throughout: one note, not seventy-seven.
+    "punctuation.unbalanced-quotes",
 }
 
 #: How many of a repeating rule keep their own anchor. Enough to show the editor the
