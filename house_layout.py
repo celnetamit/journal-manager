@@ -74,7 +74,12 @@ class Finding:
     detail: str = ""
 
     def __str__(self) -> str:
-        where = f"¶{self.paragraph}" if self.paragraph is not None else "document"
+        # 1-based, because every place this number is shown to a person is 1-based:
+        # the House Style panel (`app.py`) and the editorial report (`pipeline.py`)
+        # both render `paragraph + 1`. Leaving this one 0-based meant the same
+        # paragraph could be named ¶142 in one line of a report and ¶143 in the next,
+        # which reads as a tool that cannot count.
+        where = f"¶{self.paragraph + 1}" if self.paragraph is not None else "document"
         return f"[{self.severity}] {where} {self.rule}: {self.message}"
 
 

@@ -168,3 +168,20 @@ def test_a_skipped_house_check_always_gives_a_reason():
     assert pipeline.skip_reason(zipfile.BadZipFile()) == "BadZipFile"
     # A real message is still preferred over the class name.
     assert pipeline.skip_reason(ValueError("no `tc` element")) == "no `tc` element"
+
+
+# --------------------------------------------------- one numbering, not two
+
+def test_every_surface_numbers_paragraphs_the_same_way():
+    """`app.py` and `pipeline.py` both render `paragraph + 1`; `Finding.__str__` used
+    to render `paragraph`. The same paragraph then appeared as ¶142 in one line of a
+    report and ¶143 in the next, which reads as a tool that cannot count — and an
+    editor sent to the wrong paragraph finds nothing wrong there."""
+    import house_layout as H
+
+    f = H.Finding("heading.size", "error", 141, "H3 is 13.0 pt, house size is 11.0 pt")
+    assert "¶142" in str(f)
+
+    # A document-wide finding has no paragraph and must not become "¶1".
+    g = H.Finding("page.margin", "warning", None, "top margin is 1.2 in")
+    assert "document" in str(g)
