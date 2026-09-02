@@ -294,7 +294,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
 
     progress(0.78, "Recommending journals...")
     proxy_abstract = " ".join(original_paragraphs[:15])[:1500]
-    recommended = recommend_journals(proxy_abstract, llm_settings)
+    recommended = recommend_journals(proxy_abstract, llm_settings, warnings=warnings)
     journal_report_md = build_journal_report(recommended)
 
     review_report_path = out_dir / f"user_{user_id}_{ts}_review.docx"

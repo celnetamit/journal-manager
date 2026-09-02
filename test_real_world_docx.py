@@ -185,3 +185,43 @@ def test_every_surface_numbers_paragraphs_the_same_way():
     # A document-wide finding has no paragraph and must not become "¶1".
     g = H.Finding("page.margin", "warning", None, "top margin is 1.2 in")
     assert "document" in str(g)
+
+
+# ------------------------------------------- a degraded feature must say so
+
+def test_trailing_text_after_the_json_no_longer_breaks_journal_ranking(monkeypatch):
+    r"""`re.search(r"\{.*\}", DOTALL)` is greedy — it ran from the first brace to the
+    last one anywhere in the response, so one trailing sentence produced "Extra data"
+    and the manuscript silently dropped to semantic-only ranking. Observed live."""
+    import editor as E
+
+    payload = ('{"recommended_journals":[{"rank":1,"journal_id":7,'
+               '"journal_name":"J Materials","overall_fit_score":81}]}\n'
+               'Note: scores are approximate. {not json}')
+    monkeypatch.setattr(E, "_generate_text", lambda *a, **k: payload)
+
+    picks = E._llm_rank_journals("an abstract", [{"_cid": 7, "id": 7, "name": "J Materials"}], {})
+    assert [p["journal_id"] for p in picks] == [7]
+
+
+def test_a_failed_ranking_is_reported_to_the_editor(monkeypatch):
+    """It used to be a `print` to the container log. The editor was shown
+    semantic-only picks with nothing anywhere saying the ranking had degraded."""
+    import editor as E
+
+    monkeypatch.setattr(E, "_generate_text", lambda *a, **k: "no json here at all")
+    warnings: list = []
+    picks = E._llm_rank_journals("an abstract", [{"_cid": 1, "id": 1, "name": "J"}], {},
+                                 warnings=warnings)
+    assert picks == []
+    assert warnings and "semantic matching only" in warnings[0]
+
+
+def test_ranking_success_adds_no_warning(monkeypatch):
+    import editor as E
+
+    monkeypatch.setattr(E, "_generate_text", lambda *a, **k:
+                        '{"recommended_journals":[{"rank":1,"journal_id":1}]}')
+    warnings: list = []
+    E._llm_rank_journals("an abstract", [{"_cid": 1, "id": 1, "name": "J"}], {}, warnings=warnings)
+    assert warnings == []

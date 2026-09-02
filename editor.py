@@ -1591,7 +1591,8 @@ def _prescreen_score(journal: Dict[str, Any], abstract: str) -> float:
 
 
 def _llm_rank_journals(abstract: str, candidates: List[Dict[str, Any]],
-                       settings: Dict[str, Any], k: int = 3) -> List[dict]:
+                       settings: Dict[str, Any], k: int = 3,
+                       warnings: Optional[List[str]] = None) -> List[dict]:
     """Ask the LLM to pick the best k journals, constrained to the candidate
     list. Returns the parsed ``recommended_journals`` array, or [] on any failure
     (the caller then falls back to the heuristic ranking)."""
@@ -1632,15 +1633,30 @@ Return ONLY valid JSON (no markdown, no commentary) of this exact shape:
 {{"recommended_journals":[{{"rank":1,"journal_id":0,"journal_name":"","overall_fit_score":0,"confidence":"High|Medium|Low","fit_verdict":"Excellent Fit|Good Fit|Possible Fit","why_this_journal":"concrete, evidence-based reasons grounded in the journal's own topics — not generic praise","fit_risks_or_cautions":[]}}]}}"""
     try:
         text = _generate_text(prompt, settings=settings, response_mime_type="application/json")
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            print("Journal LLM ranking: no JSON found in response.")
-            return []
-        data = json.loads(match.group(0))
+        start = text.find("{")
+        if start < 0:
+            # This branch used to return without a word to anyone — the other
+            # failure path warned and this one did not, so "no JSON at all" was the
+            # one way the ranking could degrade completely silently.
+            raise ValueError("no JSON object in the model's response")
+        # `re.search(r"\{.*\}", ..., DOTALL)` is greedy: it ran from the first brace to
+        # the *last* one in the whole response, so a single trailing sentence or a
+        # second object made `json.loads` fail with "Extra data" and the manuscript
+        # silently dropped to semantic-only ranking. `raw_decode` takes the first
+        # complete JSON value and ignores whatever follows it.
+        data, _ = json.JSONDecoder().raw_decode(text[start:])
         picks = data.get("recommended_journals", [])
         return picks if isinstance(picks, list) else []
     except Exception as e:
-        print(f"Journal LLM ranking failed, falling back to semantic ranking: {e}")
+        # Was a bare `print` to the container log. The recommendation list is a
+        # headline feature and this quietly halves its quality — the editor was
+        # shown semantic-only picks with nothing saying so.
+        msg = ("Journal ranking used semantic matching only — the model's ranking "
+               f"could not be read ({e}). The suggestions are still from your own "
+               "journal list, but ranked less precisely.")
+        print(msg)
+        if warnings is not None:
+            warnings.append(msg)
         return []
 
 
@@ -1711,7 +1727,8 @@ def _finalize(top: List[Dict[str, Any]], abstract: str, total: int) -> List[Dict
     return top
 
 
-def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> List[dict]:
+def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3,
+                       warnings: Optional[List[str]] = None) -> List[dict]:
     try:
         abstract_emb = np.array(_embed(abstract, settings=settings))
     except Exception as e:
@@ -1753,7 +1770,8 @@ def recommend_journals(abstract: str, settings: Dict[str, Any], k: int = 3) -> L
     candidates = ranked[:CANDIDATE_POOL_SIZE]
 
     # Stage 3-5: LLM ranking constrained to candidates, then validate + scope-gate.
-    picks = _llm_rank_journals(abstract, candidates, settings, k=k) if candidates else []
+    picks = (_llm_rank_journals(abstract, candidates, settings, k=k, warnings=warnings)
+             if candidates else [])
     gated = _validate_and_gate(picks, candidates)
 
     # Stage 6: LLM picks first (sorted by blended fit), backfill from the
