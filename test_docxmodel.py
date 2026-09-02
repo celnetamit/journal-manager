@@ -204,3 +204,141 @@ def test_wrong_margins_are_reported():
     findings = H.check_page(s)
     assert len(findings) == 4
     assert all(f.rule == "page.geometry" for f in findings)
+
+
+# --------------------------------------------------------------- table formatting
+
+@pytest.fixture
+def table_doc(tmp_path):
+    """A table set the way the house asks, so a deviation is the exception."""
+    d = docx.Document()
+
+    cap = d.add_paragraph()
+    label = cap.add_run("Table 1. ")
+    label.bold = True
+    label.font.name = "Times New Roman"
+    label.font.size = Pt(9)
+    rest = cap.add_run("Frequency and percentage distribution.")
+    rest.font.name = "Times New Roman"
+    rest.font.size = Pt(11)
+
+    t = d.add_table(rows=2, cols=2)
+    for (r, c), text, bold in (((0, 0), "S.N.", True), ((0, 1), "Description", True),
+                               ((1, 0), "1.", False), ((1, 1), "Age", False)):
+        para = t.cell(r, c).paragraphs[0]
+        run = para.add_run(text)
+        run.bold = bold
+        run.font.name = "Times New Roman"
+        run.font.size = Pt(9)
+
+    path = tmp_path / "t.docx"
+    d.save(str(path))
+    return str(path)
+
+
+def test_table_cells_keep_their_formatting(table_doc):
+    t = M.read_structure(table_doc).tables[0]
+    head = t.grid[0][0].paragraphs[0]
+    assert head.text == "S.N."
+    assert head.is_bold is True
+    assert head.dominant_size_pt == 9.0
+    assert head.in_table is True
+    # Cell paragraphs are not in `doc.paragraphs`, so they carry no index there.
+    assert head.index == -1
+
+
+def test_a_correctly_set_table_is_quiet_about_its_text(table_doc):
+    findings = H.check_table_format(M.read_structure(table_doc))
+    rules = {f.rule for f in findings}
+    assert "table.font" not in rules
+    assert "table.size" not in rules
+    assert "table.column-head" not in rules
+
+
+def test_wrong_table_text_size_is_reported(tmp_path):
+    d = docx.Document()
+    d.add_paragraph("Table 1. Something.")
+    t = d.add_table(rows=1, cols=1)
+    run = t.cell(0, 0).paragraphs[0].add_run("value")
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(8.5)          # the Biophilic manuscript's real defect
+    path = tmp_path / "s.docx"
+    d.save(str(path))
+
+    findings = H.check_table_format(M.read_structure(str(path)))
+    assert any(f.rule == "table.size" and "8.5 pt" in f.message for f in findings)
+
+
+def test_a_caption_that_is_bold_throughout_is_reported(tmp_path):
+    """The house sets 'Table N.' bold and the caption text normal. A paragraph that
+    is uniformly one or the other cannot be right, and no per-paragraph bold check
+    can see it — it has to look run by run."""
+    d = docx.Document()
+    p = d.add_paragraph()
+    r = p.add_run("Table 1. Everything here is bold.")
+    r.bold = True
+    r.font.size = Pt(11)
+    t = d.add_table(rows=1, cols=1)
+    t.cell(0, 0).text = "x"
+    path = tmp_path / "c.docx"
+    d.save(str(path))
+
+    findings = H.check_table_format(M.read_structure(str(path)))
+    assert any(f.rule == "table.caption-weight" for f in findings)
+
+
+def test_border_and_margins_are_read_in_the_units_the_spec_uses(tmp_path):
+    """Word stores borders in eighths of a point and margins in twentieths.
+    Comparing a spec of "1/2 pt" against a stored 4 is confidently wrong."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    d = docx.Document()
+    t = d.add_table(rows=1, cols=1)
+    t.cell(0, 0).text = "x"
+    tblPr = t._tbl.find(qn("w:tblPr"))
+
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right"):
+        e = OxmlElement("w:" + edge)
+        e.set(qn("w:val"), "single")
+        e.set(qn("w:sz"), "4")            # 4 eighths = 0.5 pt
+        borders.append(e)
+    tblPr.append(borders)
+
+    mar = OxmlElement("w:tblCellMar")
+    for edge, dxa in (("top", "29"), ("bottom", "29"), ("left", "58"), ("right", "58")):
+        e = OxmlElement("w:" + edge)
+        e.set(qn("w:w"), dxa)             # 58/1440 = 0.04"
+        e.set(qn("w:type"), "dxa")
+        mar.append(e)
+    tblPr.append(mar)
+
+    path = tmp_path / "b.docx"
+    d.save(str(path))
+
+    fmt = M.read_structure(str(path)).tables[0].fmt
+    assert fmt.border_style == "single"
+    assert fmt.border_size_pt == 0.5
+    assert fmt.margin_left_in == 0.04
+    assert fmt.margin_top_in == 0.02
+
+    # …and a table set exactly to spec says nothing about its borders or margins.
+    findings = H.check_table_format(M.read_structure(str(path)))
+    assert not [f for f in findings if f.rule in ("table.border", "table.cell-margin")]
+
+
+def test_the_same_deviation_across_many_tables_is_collapsed():
+    """Twelve tables with one wrong margin produced 34 findings on a real paper —
+    enough to bury the four that were about something else."""
+    findings = [
+        H.Finding("table.cell-margin", "info", None,
+                  f"table {i} left cell margin is 0.03\", house is 0.04\"")
+        for i in range(1, 13)
+    ] + [H.Finding("heading.case", "error", 3, "H1 should be upper case")]
+
+    collapsed = H.collapse_repeats(findings)
+    assert len(collapsed) == 2
+    margin = next(f for f in collapsed if f.rule == "table.cell-margin")
+    assert "12 tables" in margin.message
+    assert "table 1" in margin.detail          # somewhere to go and look

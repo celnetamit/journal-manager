@@ -113,12 +113,48 @@ class Para:
 
 
 @dataclass
+class Cell:
+    """One table cell, with the paragraphs inside it.
+
+    Paragraphs rather than a string: the house table spec is about weight, slant and
+    size — a column head is 9 pt bold, a subhead 9 pt bold italic — and none of that
+    survives `cell.text`.
+    """
+    row: int
+    col: int
+    paragraphs: List["Para"] = field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(p.text for p in self.paragraphs).strip()
+
+
+@dataclass
+class TableFormat:
+    """The table's own geometry, as the house spec measures it."""
+    #: Border style and width, from `w:tblBorders`. `None` when the table sets none
+    #: and inherits from its style — which is not the same as having no borders, so
+    #: the checker says "not stated" rather than "wrong".
+    border_style: Optional[str] = None
+    border_size_pt: Optional[float] = None
+    #: Default cell margins in inches: top, bottom, left, right.
+    margin_top_in: Optional[float] = None
+    margin_bottom_in: Optional[float] = None
+    margin_left_in: Optional[float] = None
+    margin_right_in: Optional[float] = None
+    style: str = ""
+
+
+@dataclass
 class Table:
     """A table, and where it sits relative to the body paragraphs."""
     index: int
     rows: int
     cols: int
     cells: List[List[str]]
+    #: The same grid, with formatting kept.
+    grid: List[List["Cell"]] = field(default_factory=list)
+    fmt: "TableFormat" = field(default_factory=lambda: TableFormat())
     #: Index of the body paragraph immediately before this table, or -1 when the
     #: table opens the document. This is how a caption is found: a table's caption
     #: is the paragraph on one side of it, and without the position there is no
@@ -404,6 +440,61 @@ def _para_numbering(p) -> tuple:
 
 ALIGNMENT_NAMES = {0: "left", 1: "center", 2: "right", 3: "justify"}
 
+#: Word measures table borders in eighths of a point and cell margins in twentieths
+#: of a point (dxa). The house spec is written in points and inches, so both are
+#: converted here — comparing a spec of "1/2 pt" against a stored `4` is the kind of
+#: unit mismatch that makes a checker confidently wrong.
+_EIGHTHS_PER_PT = 8.0
+_DXA_PER_INCH = 1440.0
+
+
+def _table_format(table) -> "TableFormat":
+    """Borders and cell margins, read from the table's own properties.
+
+    Only what the table states. A table that inherits its borders from a style
+    reports `None`, and the checker says "not stated" rather than "wrong" — calling
+    an inherited border missing would flag every table built from a Word table style.
+    """
+    fmt = TableFormat(style=getattr(getattr(table, "style", None), "name", "") or "")
+    tblPr = table._tbl.find(qn("w:tblPr"))
+    if tblPr is None:
+        return fmt
+
+    borders = tblPr.find(qn("w:tblBorders"))
+    if borders is not None:
+        # The four outer edges plus the two insides. Reported as one style/size
+        # because the house asks for one, and a table with six different borders is
+        # better described by naming the disagreement than by listing all six.
+        seen_styles, seen_sizes = [], []
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            e = borders.find(qn("w:" + edge))
+            if e is None:
+                continue
+            val = e.get(qn("w:val"))
+            sz = e.get(qn("w:sz"))
+            if val:
+                seen_styles.append(val)
+            if sz and sz.isdigit():
+                seen_sizes.append(int(sz) / _EIGHTHS_PER_PT)
+        if seen_styles:
+            fmt.border_style = (seen_styles[0] if len(set(seen_styles)) == 1
+                                else "mixed:" + ",".join(sorted(set(seen_styles))))
+        if seen_sizes:
+            fmt.border_size_pt = (seen_sizes[0] if len(set(seen_sizes)) == 1
+                                  else max(seen_sizes))
+
+    margins = tblPr.find(qn("w:tblCellMar"))
+    if margins is not None:
+        for edge, attr in (("top", "margin_top_in"), ("bottom", "margin_bottom_in"),
+                           ("left", "margin_left_in"), ("right", "margin_right_in")):
+            e = margins.find(qn("w:" + edge))
+            if e is None:
+                continue
+            w = e.get(qn("w:w"))
+            if w and w.lstrip("-").isdigit():
+                setattr(fmt, attr, round(int(w) / _DXA_PER_INCH, 3))
+    return fmt
+
 
 def read_structure(path: str) -> Structure:
     """Parse a manuscript into everything the house rules need to see."""
@@ -453,11 +544,38 @@ def read_structure(path: str) -> Structure:
     tables: List[Table] = []
     for ti, t in enumerate(doc.tables):
         cells = [[c.text.strip() for c in row.cells] for row in t.rows]
+        grid: List[List[Cell]] = []
+        for ri, row in enumerate(t.rows):
+            row_cells: List[Cell] = []
+            for ci, c in enumerate(row.cells):
+                paras: List[Para] = []
+                for p in c.paragraphs:
+                    s_name, s_size = _style_font(p.style)
+                    inh = (s_name or default_font[0],
+                           s_size if s_size is not None else default_font[1])
+                    align = p.alignment
+                    paras.append(Para(
+                        # Cell paragraphs are not in `doc.paragraphs` and have no
+                        # index there. -1 says so rather than pointing at a body
+                        # paragraph that has nothing to do with them.
+                        index=-1,
+                        text=p.text,
+                        style=getattr(p.style, "name", "") or "",
+                        outline_level=None,
+                        alignment=ALIGNMENT_NAMES.get(int(align)) if align is not None else None,
+                        runs=[_read_run(r, inh) for r in p.runs],
+                        in_table=True,
+                    ))
+                row_cells.append(Cell(row=ri, col=ci, paragraphs=paras))
+            grid.append(row_cells)
+
         tables.append(Table(
             index=ti,
             rows=len(t.rows),
             cols=len(t.columns),
             cells=cells,
+            grid=grid,
+            fmt=_table_format(t),
             after_paragraph=after.get(ti, -1),
         ))
 

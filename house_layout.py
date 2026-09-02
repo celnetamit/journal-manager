@@ -316,10 +316,215 @@ def check_tables(structure: Structure) -> List[Finding]:
     return out
 
 
+#: The table specification. Sizes in points, margins in inches.
+TABLE_SPEC = {
+    "caption_size_pt": 11.0,        # "Table 3. Frequency and percentage…"
+    "number_size_pt": 9.0,          # the "Table 3." label itself, bold
+    "body_size_pt": 9.0,
+    "font": HOUSE_FONT,
+    "border_style": "single",
+    "border_size_pt": 0.5,
+    "margin_top_in": 0.02, "margin_bottom_in": 0.02,
+    "margin_left_in": 0.04, "margin_right_in": 0.04,
+    "note_size_pt": 9.0,
+}
+#: Cell margins are typed in inches and stored in twentieths of a point, so 0.04"
+#: round-trips as 0.04 but 0.02" can land a thousandth away. Half a hundredth of an
+#: inch is below what anyone can see on a page.
+MARGIN_TOLERANCE_IN = 0.005
+
+#: Paragraphs under a table that carry their own 9 pt rule.
+NOTE_PREFIXES = ("note:", "note ", "abbreviation", "abbreviations", "source:")
+
+
+def check_table_format(structure: Structure) -> List[Finding]:
+    """Tables against the house table specification.
+
+    Reported per table rather than per cell. A 7x8 table whose body font is wrong is
+    one decision an editor makes once; fifty-six findings saying the same thing is a
+    report that hides its other contents.
+    """
+    out: List[Finding] = []
+    body = {p.index: p for p in structure.paragraphs if not p.in_table}
+
+    for t in structure.tables:
+        label = f"table {t.index + 1}"
+        f = t.fmt
+
+        if f.border_style is None:
+            out.append(Finding(
+                "table.border", "info", None,
+                f"{label} states no borders of its own (style {f.style!r}); "
+                f"house is a single solid {TABLE_SPEC['border_size_pt']} pt line"))
+        else:
+            if f.border_style != TABLE_SPEC["border_style"]:
+                out.append(Finding("table.border", "warning", None,
+                                   f"{label} border is {f.border_style!r}, "
+                                   f"house is {TABLE_SPEC['border_style']!r}"))
+            if (f.border_size_pt is not None
+                    and abs(f.border_size_pt - TABLE_SPEC["border_size_pt"]) > 0.01):
+                out.append(Finding("table.border", "warning", None,
+                                   f"{label} border is {f.border_size_pt} pt, "
+                                   f"house is {TABLE_SPEC['border_size_pt']} pt"))
+
+        for edge, attr in (("top", "margin_top_in"), ("bottom", "margin_bottom_in"),
+                           ("left", "margin_left_in"), ("right", "margin_right_in")):
+            got = getattr(f, attr)
+            want = TABLE_SPEC[attr]
+            if got is not None and abs(got - want) > MARGIN_TOLERANCE_IN:
+                out.append(Finding("table.cell-margin", "info", None,
+                                   f"{label} {edge} cell margin is {got}\", "
+                                   f"house is {want}\""))
+
+        out.extend(_check_table_cells(t, label))
+        out.extend(_check_table_caption(t, label, body))
+        out.extend(_check_table_notes(t, label, body))
+    return out
+
+
+def _check_table_cells(t, label: str) -> List[Finding]:
+    """Column heads bold, body text plain, everything 9 pt Times New Roman."""
+    out: List[Finding] = []
+    if not t.grid:
+        return out
+
+    wrong_font, wrong_size, unbold_head = set(), set(), 0
+    for ri, row in enumerate(t.grid):
+        for cell in row:
+            for p in cell.paragraphs:
+                if not p.text.strip():
+                    continue
+                if p.dominant_font and p.dominant_font != TABLE_SPEC["font"]:
+                    wrong_font.add(p.dominant_font)
+                size = p.dominant_size_pt
+                if size is not None and abs(size - TABLE_SPEC["body_size_pt"]) > 0.01:
+                    wrong_size.add(size)
+                # Only the first row: a subhead row is bold italic and legitimate,
+                # and rows below the head are meant to be plain.
+                if ri == 0 and p.is_bold is False:
+                    unbold_head += 1
+
+    if wrong_font:
+        out.append(Finding("table.font", "warning", None,
+                           f"{label} uses {', '.join(sorted(wrong_font))}, "
+                           f"house table font is {TABLE_SPEC['font']}"))
+    if wrong_size:
+        sizes = ", ".join(f"{s} pt" for s in sorted(wrong_size))
+        out.append(Finding("table.size", "warning", None,
+                           f"{label} has text at {sizes}, "
+                           f"house table size is {TABLE_SPEC['body_size_pt']} pt"))
+    if unbold_head:
+        out.append(Finding("table.column-head", "warning", None,
+                           f"{label} has {unbold_head} column head cell(s) not in bold"))
+    return out
+
+
+def _check_table_caption(t, label: str, body: Dict[int, Para]) -> List[Finding]:
+    """`Table N.` bold at 9 pt, the caption itself 11 pt normal, above the table."""
+    out: List[Finding] = []
+    above = body.get(t.after_paragraph)
+    if above is None or not re.match(r"(?i)^\s*table\s*\d", _visible(above.text)):
+        return out                     # `check_tables` already reports the absence
+
+    size = above.dominant_size_pt
+    if size is not None and abs(size - TABLE_SPEC["caption_size_pt"]) > 0.01:
+        out.append(Finding("table.caption-size", "warning", above.index,
+                           f"{label} caption is {size} pt, house is "
+                           f"{TABLE_SPEC['caption_size_pt']} pt",
+                           _visible(above.text)[:60]))
+
+    if above.dominant_font and above.dominant_font != TABLE_SPEC["font"]:
+        out.append(Finding("table.caption-font", "warning", above.index,
+                           f"{label} caption is {above.dominant_font}, house is "
+                           f"{TABLE_SPEC['font']}", _visible(above.text)[:60]))
+
+    # "Table 3." is bold and the sentence after it is not, so the caption paragraph
+    # must contain both. A caption that is bold throughout, or nowhere, is wrong in
+    # a way a per-paragraph bold check cannot see — it has to look run by run.
+    weights = {bool(r.bold) for r in above.runs if r.text.strip()}
+    if len(weights) == 1:
+        out.append(Finding(
+            "table.caption-weight", "info", above.index,
+            f"{label} caption is "
+            f"{'entirely bold' if weights == {True} else 'not bold anywhere'}; "
+            f"house sets the 'Table N.' label bold and the caption text normal",
+            _visible(above.text)[:60]))
+    return out
+
+
+def _check_table_notes(t, label: str, body: Dict[int, Para]) -> List[Finding]:
+    """Note, Abbreviation and Source lines under a table are 9 pt."""
+    out: List[Finding] = []
+    # The note sits after the table, so it is the first body paragraph whose index is
+    # greater than the one the table follows.
+    following = sorted(i for i in body if i > t.after_paragraph)
+    for idx in following[:3]:
+        p = body[idx]
+        text = _visible(p.text).lower()
+        if not any(text.startswith(prefix) for prefix in NOTE_PREFIXES):
+            continue
+        size = p.dominant_size_pt
+        if size is not None and abs(size - TABLE_SPEC["note_size_pt"]) > 0.01:
+            out.append(Finding("table.note-size", "info", p.index,
+                               f"{label} note line is {size} pt, house is "
+                               f"{TABLE_SPEC['note_size_pt']} pt",
+                               _visible(p.text)[:60]))
+    return out
+
+
+#: Rules where the same deviation repeating across tables is one decision, not many.
+#: Twelve tables with the same wrong cell margin produced 34 findings on the Guanidine
+#: paper — enough to bury the four that were about something else.
+_COLLAPSIBLE = ("table.cell-margin", "table.border", "table.font", "table.size",
+                "page.geometry")
+
+
+def collapse_repeats(findings: List[Finding]) -> List[Finding]:
+    """Fold identical deviations that differ only in which table they are about.
+
+    Keyed on the message with the table number removed, so "table 1 left cell margin
+    is 0.03" and "table 7 left cell margin is 0.03" become one line that names the
+    count. The first table is still named, so there is somewhere to go and look.
+    """
+    out: List[Finding] = []
+    groups: Dict[str, List[Finding]] = {}
+    order: List[Any] = []
+
+    for f in findings:
+        if f.rule not in _COLLAPSIBLE:
+            order.append(f)
+            continue
+        # Section number normalised alongside the table number: a manuscript with
+        # five sections reported the same four wrong margins twenty times.
+        generic_key = re.sub(r"\btable \d+\b", "table N", f.message)
+        generic_key = re.sub(r"\bsection \d+\b", "section N", generic_key)
+        key = f.rule + "|" + generic_key
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(f)
+
+    for item in order:
+        if isinstance(item, Finding):
+            out.append(item)
+            continue
+        group = groups[item]
+        first = group[0]
+        if len(group) == 1:
+            out.append(first)
+            continue
+        generic = re.sub(r"\btable \d+\b", f"{len(group)} tables", first.message, count=1)
+        generic = re.sub(r"\bsection \d+\b", f"{len(group)} sections", generic, count=1)
+        out.append(Finding(first.rule, first.severity, first.paragraph, generic,
+                           f"first: {first.message}"))
+    return out
+
+
 def check_all(structure: Structure) -> List[Finding]:
-    return (check_headings(structure) + check_listings(structure)
-            + check_artwork(structure) + check_page(structure)
-            + check_tables(structure))
+    return collapse_repeats(
+        check_headings(structure) + check_listings(structure)
+        + check_artwork(structure) + check_page(structure)
+        + check_tables(structure) + check_table_format(structure))
 
 
 def summarise(findings: List[Finding]) -> Dict[str, Any]:
