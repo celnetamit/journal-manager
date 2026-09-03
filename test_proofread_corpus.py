@@ -403,3 +403,53 @@ def test_a_misplaced_stop_after_an_element_label_is_still_found():
 def test_ordinary_space_before_punctuation_is_untouched():
     assert _before_punct("Table 1 : Dataset Distribution")
     assert _before_punct("The samples were weighed , dried and stored.")
+
+
+# ------------------------------------------------- "Key Words" is a keywords line
+
+def _front(*lines):
+    """Run the front-matter checks over a minimal manuscript."""
+    import house_layout as H
+    import docxmodel as D
+
+    paras = [D.Para(index=i, text=t, style="Normal") for i, t in enumerate(lines)]
+    st = D.Structure(paragraphs=paras, tables=[], sections=[], images=[])
+    return {f.rule: f for f in H.check_front_matter(st)}
+
+
+def test_key_words_with_a_space_is_still_a_keywords_line():
+    """45 of 397 real manuscripts write `Key Words:` or `Key words:`. Matching only
+    `keywords` told every one of them "no 'Keywords:' line was found" with the
+    keywords plainly on the page — and silently dropped their keywords size, font and
+    alignment checks, because those only run once the line has been located."""
+    found = _front("A Study of Things", "J Maitra, Mohit", "Abstract",
+                   "This paper studies things at length and in detail.",
+                   "Key words: nanoparticles, starch, FTIR")
+    assert "front.keywords-missing" not in found
+    # The spelling is still a deviation, and it is its own finding.
+    assert "front.keywords-label" in found
+    assert "Key words" in found["front.keywords-label"].message
+
+
+def test_a_correct_colon_is_not_reported_as_a_wrong_separator():
+    """`Key words:` has a correct colon and a wrong label. Testing both with
+    `startswith("keywords:")` reported "separates with ':'; house is a colon" —
+    which asks the editor to change a colon into a colon."""
+    found = _front("Title", "Authors", "Abstract", "Body text of the abstract here.",
+                   "Key words: alpha, beta")
+    assert "front.keywords-colon" not in found
+
+
+def test_a_wrong_separator_is_still_reported():
+    found = _front("Title", "Authors", "Abstract", "Body text of the abstract here.",
+                   "Keywords— alpha, beta")
+    assert "front.keywords-colon" in found
+    assert "front.keywords-label" not in found      # the label itself is fine
+
+
+def test_a_correct_keywords_line_is_silent():
+    found = _front("Title", "Authors", "Abstract", "Body text of the abstract here.",
+                   "Keywords: alpha, beta")
+    assert "front.keywords-colon" not in found
+    assert "front.keywords-label" not in found
+    assert "front.keywords-missing" not in found

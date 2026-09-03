@@ -583,6 +583,13 @@ BODY_SHARE_THRESHOLD = 0.30
 #: body text, and none of them follow the body rule.
 BODY_MIN_CHARS = 120
 
+#: How a manuscript opens its keywords line. Matching only `keywords` missed
+#: `Key Words:` and `Key words:` — 45 of 397 real manuscripts, 11%. Each of those was
+#: told "no 'Keywords:' line was found" with the keywords plainly on the page, and,
+#: worse, silently lost its keywords size/font/alignment checks: those only run when
+#: the line has been located, so the miss removed three checks without saying so.
+_KEYWORDS_OPENER = re.compile(r"key\s?[-‐-―]?\s?words?\b")
+
 
 def find_front_matter(structure: Structure) -> Dict[str, Any]:
     """Locate the title, authors, abstract and keywords, or say nothing.
@@ -614,7 +621,7 @@ def find_front_matter(structure: Structure) -> Dict[str, Any]:
             found["abstract_runon"] = p
             found["abstract_body"] = p
             found["abstract"] = True
-        if "keywords" not in found and low.startswith("keywords"):
+        if "keywords" not in found and _KEYWORDS_OPENER.match(low):
             found["keywords"] = p
 
     # The title is the first paragraph only when nothing above it looks like one.
@@ -741,16 +748,31 @@ def check_front_matter(structure: Structure) -> List[Finding]:
     if "keywords" not in front:
         out.append(Finding("front.keywords-missing", "warning", None,
                            "no 'Keywords:' line was found"))
-    elif not _visible(front["keywords"].text).lower().startswith("keywords:"):
+    else:
+        text = _visible(front["keywords"].text)
+        label = _KEYWORDS_OPENER.match(text.lower())
+        # The label and the separator are two different faults and want two different
+        # sentences. Testing `startswith("keywords:")` for both meant `Key words:` —
+        # a correct colon, a wrong spelling — was reported as "separates with ':';
+        # house is a colon", which tells the editor to change a colon into a colon.
+        # Compared without normalising the space away — `Key words` differing from
+        # `Keywords` by exactly that space is the whole point of the finding.
+        if text[:label.end()].lower() != "keywords":
+            out.append(Finding("front.keywords-label", "info",
+                               front["keywords"].index,
+                               f"the line opens {text[:label.end()]!r}; "
+                               f"house is 'Keywords'",
+                               text[:60]))
         # Names the separator actually used, so the fix is obvious. Both real
         # manuscripts checked used a dash, and "should use a colon" without saying
         # what is there now reads as a complaint rather than an instruction.
-        after = _visible(front["keywords"].text)[len("keywords"):][:3].strip()
-        out.append(Finding("front.keywords-colon", "info",
-                           front["keywords"].index,
-                           f"the keywords line separates with {after[:1]!r}; "
-                           f"house is a colon",
-                           _visible(front["keywords"].text)[:60]))
+        after = text[label.end():].lstrip()[:1]
+        if after != ":":
+            out.append(Finding("front.keywords-colon", "info",
+                               front["keywords"].index,
+                               f"the keywords line separates with {after!r}; "
+                               f"house is a colon",
+                               text[:60]))
     return out
 
 
