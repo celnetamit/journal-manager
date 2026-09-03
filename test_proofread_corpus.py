@@ -517,3 +517,34 @@ def test_other_spaced_units_are_not_closed_up():
 
     text = ["a 550 mg dose at 12 V across 30 min."]
     assert E.enforce_temperature_spacing(text) == text
+
+
+# ------------------------------------- the consistency check must follow the setting
+
+def test_the_spelling_clash_follows_the_configured_variant():
+    """A real job set to US English was told: "the manuscript mostly uses
+    'behaviour'; change the 'behavior' occurrences to match" — the tool arguing
+    against the setting the editor had just chosen, because the author happened to
+    write UK more often."""
+    paras = ["The behaviour was noted."] * 5 + ["The behavior was noted."]
+    (f,) = [x for x in P.mechanical_findings(paras, "US English")
+            if x.rule == "consistency.spelling"]
+    assert "to 'behavior'" in f.suggestion
+    assert "US English" in f.suggestion
+
+    (g,) = [x for x in P.mechanical_findings(paras, "British English")
+            if x.rule == "consistency.spelling"]
+    assert "to 'behaviour'" in g.suggestion
+
+
+def test_with_no_variant_it_still_falls_back_to_the_majority():
+    paras = ["The behaviour was noted."] * 5 + ["The behavior was noted."]
+    (f,) = [x for x in P.mechanical_findings(paras)
+            if x.rule == "consistency.spelling"]
+    assert "mostly uses 'behaviour'" in f.suggestion
+
+
+def test_a_manuscript_in_one_variant_raises_nothing():
+    paras = ["The behavior was analyzed at the center."] * 3
+    assert [x for x in P.mechanical_findings(paras, "US English")
+            if x.rule == "consistency.spelling"] == []

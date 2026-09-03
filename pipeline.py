@@ -26,7 +26,10 @@ from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
 from proofread import proofread as run_proofread
-from science_format import enforce_formula_subscripts
+from science_format import (
+    enforce_formula_subscripts,
+    enforce_language_variant,
+)
 from editor import (
     align_global_citations,
     build_jats_xml,
@@ -249,6 +252,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_temperature_spacing(edited_paragraphs)
     edited_paragraphs = enforce_formula_subscripts(edited_paragraphs)
+    # Before `run_proofread`, so the spelling-consistency check sees the text as
+    # it will be published. Reporting a clash the enforcement has just resolved
+    # would put a finding in the report about text that no longer exists.
+    edited_paragraphs = enforce_language_variant(edited_paragraphs, lang_type)
 
     # The proofreading pass. Deliberately after every edit and enforcement, over the
     # text as it will actually be published — proofreading the author's draft would

@@ -251,7 +251,8 @@ def _opens_a_statistic(text: str, m: "re.Match") -> bool:
     return bool(_COMPARISON.search(text[:m.start()]))
 
 
-def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
+def mechanical_findings(paragraphs: List[str],
+                        lang_type: str = "") -> List[ProofFinding]:
     """Everything that can be decided by looking, without a model."""
     out: List[ProofFinding] = []
     joined = " ".join(paragraphs)
@@ -366,26 +367,42 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
                     text[max(0, m.start() - 24):m.end() + 24].strip(),
                     m.group(1)))
 
-    out.extend(_consistency_findings(paragraphs, joined))
+    out.extend(_consistency_findings(paragraphs, joined, lang_type))
     return out
 
 
-def _consistency_findings(paragraphs: List[str], joined: str) -> List[ProofFinding]:
+def _consistency_findings(paragraphs: List[str], joined: str,
+                          lang_type: str = "") -> List[ProofFinding]:
     """Clashes that only exist across the whole manuscript, not in one paragraph."""
     out: List[ProofFinding] = []
     low = joined.lower()
+    wants_british = "british" in (lang_type or "").lower() or "uk" in (
+        lang_type or "").lower()
+    wants_american = "american" in (lang_type or "").lower() or "us" in (
+        lang_type or "").lower().split()
 
     for british, american in SPELLING_PAIRS:
         b = len(re.findall(rf"\b{british}\w*", low))
         a = len(re.findall(rf"\b{american}\w*", low))
         if b and a:
-            keep, drop = (british, american) if b >= a else (american, british)
+            # The configured variant wins over the majority. Deciding by count told a
+            # manuscript submitted as US English to "change the 'behavior' occurrences
+            # to match 'behaviour'" — the tool arguing against the setting the editor
+            # had just chosen, because the author happened to write UK more often.
+            if wants_british:
+                keep, drop = british, american
+            elif wants_american:
+                keep, drop = american, british
+            else:
+                keep, drop = (british, american) if b >= a else (american, british)
+            why = (f"the manuscript is set to {lang_type}"
+                   if (wants_british or wants_american)
+                   else f"the manuscript mostly uses {keep!r}")
             out.append(ProofFinding(
                 "consistency.spelling", "warning", None,
                 f"both {british!r} ({b}x) and {american!r} ({a}x) appear — "
                 f"pick one for the whole manuscript",
-                suggestion=f"the manuscript mostly uses {keep!r}; "
-                           f"change the {drop!r} occurrences to match"))
+                suggestion=f"{why}; change the {drop!r} occurrences to {keep!r}"))
 
     counts = {label: len(re.findall(pattern, joined))
               for label, pattern in LABEL_VARIANTS}
@@ -688,7 +705,7 @@ def proofread(paragraphs: List[str], generate=None,
     exactly-testable primitive — the same split `house_layout` makes between its
     individual checks and `check_all`.
     """
-    findings = collapse_repeats(mechanical_findings(paragraphs))
+    findings = collapse_repeats(mechanical_findings(paragraphs, lang_type))
     if use_llm and generate is not None:
         findings += llm_findings(paragraphs, generate, settings or {},
                                  lang_type=lang_type)

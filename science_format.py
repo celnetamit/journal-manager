@@ -324,3 +324,98 @@ def enforce_formula_subscripts(paras: List[str]) -> List[str]:
     """
     return [_FORMULA_RE.sub(lambda m: FORMULAS[m.group(1)], p) if p else p
             for p in paras]
+
+
+# --------------------------------------------------------------- language variant
+
+#: US -> UK for the forms that are unambiguous. Deliberately narrow, because several
+#: of the obvious-looking pairs are traps:
+#:
+#: * `analyses` is the plural of "analysis" in **both** variants — "the analyses
+#:   showed" is correct US English, and mapping it to "analyzes" turns a noun into a
+#:   verb.
+#: * `program` is correct UK spelling for a computer program; only a broadcast or a
+#:   scheme is a "programme".
+#: * `practice`/`practise` and `licence`/`license` are a noun/verb distinction in UK
+#:   English, not a variant pair.
+#: * `modeling`/`modelling` is safe; `traveled`/`travelled` is safe; `focused` has one
+#:   `s` in both and `focussed` is a UK variant of a UK word, so it is left out.
+_US_TO_UK = {
+    "analyze": "analyse", "analyzed": "analysed", "analyzing": "analysing",
+    "characterize": "characterise", "characterized": "characterised",
+    "characterizing": "characterising", "characterization": "characterisation",
+    "utilize": "utilise", "utilized": "utilised", "utilizing": "utilising",
+    "utilization": "utilisation",
+    "optimize": "optimise", "optimized": "optimised", "optimizing": "optimising",
+    "optimization": "optimisation",
+    "standardize": "standardise", "standardized": "standardised",
+    "sterilize": "sterilise", "sterilized": "sterilised",
+    "organize": "organise", "organized": "organised", "organization": "organisation",
+    "recognize": "recognise", "recognized": "recognised",
+    "minimize": "minimise", "minimized": "minimised",
+    "maximize": "maximise", "maximized": "maximised",
+    "summarize": "summarise", "summarized": "summarised",
+    "emphasize": "emphasise", "emphasized": "emphasised",
+    "stabilize": "stabilise", "stabilized": "stabilised",
+    "polymerization": "polymerisation", "crystallization": "crystallisation",
+    "color": "colour", "colors": "colours", "colored": "coloured",
+    "colorless": "colourless", "behavior": "behaviour", "behaviors": "behaviours",
+    "behavioral": "behavioural", "labor": "labour", "favor": "favour",
+    "favorable": "favourable", "flavor": "flavour", "odor": "odour",
+    "vapor": "vapour", "vapors": "vapours",
+    "center": "centre", "centers": "centres", "centered": "centred",
+    "fiber": "fibre", "fibers": "fibres", "liter": "litre", "liters": "litres",
+    "aluminum": "aluminium", "sulfur": "sulphur", "sulfate": "sulphate",
+    "sulfates": "sulphates", "sulfide": "sulphide", "sulfuric": "sulphuric",
+    "modeling": "modelling", "modeled": "modelled",
+    "labeling": "labelling", "labeled": "labelled", "labels": "labels",
+    "catalog": "catalogue", "catalogs": "catalogues",
+    "gray": "grey", "aging": "ageing",
+}
+_UK_TO_US = {uk: us for us, uk in _US_TO_UK.items() if uk != us}
+
+
+def _match_case(source: str, replacement: str) -> str:
+    """Keep the original capitalisation. `Behaviour` at the start of a sentence must
+    not come back as `behavior`."""
+    if source.isupper():
+        return replacement.upper()
+    if source[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def _variant_map(lang_type: str):
+    low = (lang_type or "").lower()
+    if "british" in low or "uk" in low.split():
+        return _US_TO_UK
+    if "american" in low or "us" in low.split():
+        return _UK_TO_US
+    return None
+
+
+def enforce_language_variant(paras: List[str], lang_type: str) -> List[str]:
+    """Spell the manuscript in the variant the job was set to.
+
+    The copyedit is told the variant and applies it unevenly. On a real job set to US
+    English it converted `analysing` to `analyzing` and left all five occurrences of
+    `behaviour` — one document, both variants, which is what the editorial team
+    reported.
+
+    This is a re-spelling of an author's words, which `proofread`'s own docstring
+    warns against, and it is right here for two reasons the warning does not cover:
+    the editor explicitly chose the variant, and it lands in the redline as a tracked
+    change they can reject. Silent is the part that was forbidden, not automatic.
+    """
+    table = _variant_map(lang_type)
+    if not table:
+        return paras
+    pattern = re.compile(r"\b(" + "|".join(sorted(table, key=len, reverse=True))
+                         + r")\b", re.I)
+
+    def swap(m):
+        word = m.group(0)
+        target = table.get(word.lower())
+        return _match_case(word, target) if target else word
+
+    return [pattern.sub(swap, p) if p else p for p in paras]

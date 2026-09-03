@@ -157,3 +157,41 @@ def test_a_latin_epithet_ending_in_ans_survives_the_english_filter():
     st = _structure("Assays used Caenorhabditis elegans as the model organism.")
     msgs = " ".join(f.message for f in S.check_species_italic(st))
     assert "Caenorhabditis elegans" in msgs
+
+
+# ------------------------------------------------------------- language variant
+
+def test_the_configured_variant_is_applied_throughout():
+    """On a real job set to US English the copyedit converted `analysing` to
+    `analyzing` and left all five occurrences of `behaviour` — one document, both
+    variants, which is what the editorial team reported."""
+    got = S.enforce_language_variant(
+        ["The behaviour of the coloured fibre was analysed at the centre."],
+        "US English")
+    assert got[0] == "The behavior of the colored fiber was analyzed at the center."
+
+
+def test_it_works_the_other_way_too():
+    got = S.enforce_language_variant(
+        ["The behavior of the colored fiber was analyzed."], "British English")
+    assert got[0] == "The behaviour of the coloured fibre was analysed."
+
+
+def test_analyses_is_the_plural_of_analysis_in_both_variants():
+    """`analyses` is the plural noun in US English too — "the analyses showed" is
+    correct — and mapping it to `analyzes` turns a noun into a verb."""
+    got = S.enforce_language_variant(["The analyses showed a clear trend."],
+                                     "US English")
+    assert got[0] == "The analyses showed a clear trend."
+
+
+def test_capitalisation_survives():
+    got = S.enforce_language_variant(["Behaviour was modelled. COLOUR mattered."],
+                                     "US English")
+    assert got[0] == "Behavior was modeled. COLOR mattered."
+
+
+def test_nothing_happens_without_a_variant():
+    text = ["The behaviour of the colour was analysed."]
+    assert S.enforce_language_variant(text, "") == text
+    assert S.enforce_language_variant(text, "Indian English") == text
