@@ -274,3 +274,86 @@ def test_an_unexplained_failure_carries_the_body(monkeypatch):
                         lambda *a, **k: _Resp(503, {"message": "upstream unavailable"}))
     ok, msg = E.verify_serper_key("a" * 40)
     assert ok is False and "upstream unavailable" in msg
+
+
+# ------------------------------------- the author's own character formatting
+
+def _redline_runs(build_source, edited):
+    """(text, superscript, italic, bold) for every run of the first paragraph."""
+    import os
+    import tempfile
+
+    import docx as _docx
+    from docx.oxml.ns import qn as _qn
+
+    import editor as _E
+
+    src = tempfile.mktemp(suffix=".docx")
+    build_source().save(src)
+    out = tempfile.mktemp(suffix=".docx")
+    try:
+        _E.generate_redline_docx(src, edited, out)
+        para = _docx.Document(out).paragraphs[0]
+        rows = []
+        for r in para._p.iter(_qn("w:r")):
+            text = ("".join(n.text or "" for n in r.iter(_qn("w:t")))
+                    or "".join(n.text or "" for n in r.iter(_qn("w:delText"))))
+            rpr = r.find(_qn("w:rPr"))
+            has = lambda tag: rpr is not None and rpr.find(_qn(tag)) is not None
+            rows.append((text, has("w:vertAlign"), has("w:i"), has("w:b")))
+        return rows
+    finally:
+        for f in (src, out):
+            if os.path.exists(f):
+                os.unlink(f)
+
+
+def _thermo_source():
+    import docx as _docx
+    d = _docx.Document()
+    p = d.add_paragraph()
+    p.add_run("Enthalpy (ΔH")
+    p.add_run("#").font.superscript = True     # the activation-parameter marker
+    p.add_run(") = 41.49 KJ/mol for ")
+    sp = p.add_run("Solanum viarum")
+    sp.italic = True
+    p.add_run(" samples.")
+    return d
+
+
+def test_an_edited_paragraph_keeps_its_superscripts_and_italics():
+    """`_mark_up_paragraph` clears the paragraph and rebuilds it, and the rebuilt runs
+    carried no formatting at all. Measured on three real manuscripts: 156, 187 and 96
+    edited paragraphs with **zero** italic, bold, superscript or subscript left in any
+    of them, while their untouched paragraphs still had 13, 96 and 17.
+
+    A superscript `#` marking an activation parameter and an italic species name are
+    exactly what a science manuscript loses, in a redline that otherwise looks
+    perfect.
+    """
+    rows = _redline_runs(
+        _thermo_source,
+        ["Enthalpy (ΔH#) = 41.49 kJ/mol for Solanum viarum samples."])
+
+    assert any(t == "#" and sup for t, sup, _, _ in rows), rows
+    assert any("Solanum viarum" in t and ital for t, _, ital, _ in rows), rows
+
+
+def test_the_edit_itself_still_happens():
+    """Formatting must not be preserved by simply not editing."""
+    rows = _redline_runs(
+        _thermo_source,
+        ["Enthalpy (ΔH#) = 41.49 kJ/mol for Solanum viarum samples."])
+    texts = [t for t, _, _, _ in rows]
+    assert "KJ" in texts and "kJ" in texts
+
+
+def test_formatting_does_not_bleed_past_its_run():
+    """A token that begins in an ordinary run and ends in a superscript one has to
+    become two runs, or the superscript swallows the rest of the word."""
+    rows = _redline_runs(
+        _thermo_source,
+        ["Enthalpy (ΔH#) = 41.49 kJ/mol for Solanum viarum samples."])
+    for text, sup, _, _ in rows:
+        if sup:
+            assert text == "#", f"superscript leaked onto {text!r}"

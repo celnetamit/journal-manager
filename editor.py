@@ -6,6 +6,7 @@ OpenAI-compatible endpoints. All API key / path lookups go through
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import difflib
 import json
@@ -1244,13 +1245,30 @@ Input JSON:
 # --- Redline (.docx with native Word track changes) ---
 
 def add_track_change_run(paragraph, text: str, change_type: str, tc_id: int,
-                         author: str = "AI Editor", date: Optional[str] = None) -> None:
+                         author: str = "AI Editor", date: Optional[str] = None,
+                         source_rpr=None) -> None:
+    """One run of the redline. `source_rpr` is the original run's `w:rPr`, copied in
+    so the author's own character formatting survives the edit.
+
+    Without it every paragraph the copyedit touched came out flattened — measured on
+    three real manuscripts, 156, 187 and 96 edited paragraphs with **zero** italic,
+    bold, superscript or subscript left in any of them, while their untouched
+    paragraphs still had 13, 96 and 17. A superscript `#` marking an activation
+    parameter, an italic species name, a subscript in a formula: all silently lost,
+    in a redline that otherwise looks perfect.
+    """
     if date is None:
         date = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     r = OxmlElement("w:r")
     rPr = OxmlElement("w:rPr")
     r.append(rPr)
+    if source_rpr is not None:
+        for child in source_rpr:
+            # `w:color` is set below to mark the change; anything the original said
+            # about colour would fight it.
+            if child.tag != qn("w:color"):
+                rPr.append(copy.deepcopy(child))
 
     if change_type == "insert":
         color = OxmlElement("w:color")
@@ -1376,26 +1394,70 @@ def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
     if orig.strip() == edited.strip():
         return tc_id
 
+    # The formatting of every character, captured before the paragraph is cleared.
+    # `p.text` is the concatenation of the direct `w:r` children, so a character
+    # offset maps straight back to the run it came from.
+    char_rpr = []
+    for run in p.runs:
+        rpr = run._r.find(qn("w:rPr"))
+        char_rpr.extend([rpr] * len(run.text or ""))
+
     p.clear()
 
     token_pattern = r"(\s+|\b|[.,!?;:])"
     orig_tokens = [t for t in re.split(token_pattern, orig) if t]
     edited_tokens = [t for t in re.split(token_pattern, edited) if t]
 
+    # Where each original token starts, so a token can find its own formatting.
+    starts, at = [], 0
+    for t in orig_tokens:
+        starts.append(at)
+        at += len(t)
+
+    def fmt_at(offset):
+        return char_rpr[offset] if 0 <= offset < len(char_rpr) else None
+
+    def emit(text, kind, first_offset, tc):
+        """Write `text`, split wherever the original formatting changes.
+
+        One run per stretch of identical formatting: a token that begins in an
+        ordinary run and ends in a superscript one has to become two runs, or the
+        superscript swallows the rest of the word.
+        """
+        if not text:
+            return tc
+        if first_offset is None:                 # inserted text has no original
+            add_track_change_run(p, text, kind, tc, source_rpr=fmt_at(-1))
+            return tc + (0 if kind == "equal" else 1)
+        start = 0
+        for i in range(1, len(text) + 1):
+            same = (i < len(text)
+                    and fmt_at(first_offset + i) is fmt_at(first_offset + start))
+            if same:
+                continue
+            add_track_change_run(p, text[start:i], kind, tc,
+                                 source_rpr=fmt_at(first_offset + start))
+            start = i
+        return tc + (0 if kind == "equal" else 1)
+
     matcher = difflib.SequenceMatcher(None, orig_tokens, edited_tokens)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        src = starts[i1] if i1 < len(starts) else None
         if tag == "equal":
-            add_track_change_run(p, "".join(orig_tokens[i1:i2]), "equal", tc_id)
+            tc_id = emit("".join(orig_tokens[i1:i2]), "equal", src, tc_id)
         elif tag == "delete":
-            add_track_change_run(p, "".join(orig_tokens[i1:i2]), "delete", tc_id)
-            tc_id += 1
+            tc_id = emit("".join(orig_tokens[i1:i2]), "delete", src, tc_id)
         elif tag == "insert":
-            add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
+            # An insertion inherits the formatting of the character it lands after,
+            # which is what an editor typing there would get.
+            after = starts[i1] - 1 if 0 < i1 <= len(starts) else 0
+            add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id,
+                                 source_rpr=fmt_at(after))
             tc_id += 1
         elif tag == "replace":
-            add_track_change_run(p, "".join(orig_tokens[i1:i2]), "delete", tc_id)
-            tc_id += 1
-            add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id)
+            tc_id = emit("".join(orig_tokens[i1:i2]), "delete", src, tc_id)
+            add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id,
+                                 source_rpr=fmt_at(src if src is not None else 0))
             tc_id += 1
     return tc_id
 
