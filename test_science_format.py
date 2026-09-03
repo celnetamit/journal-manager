@@ -254,3 +254,37 @@ def test_real_formulas_of_every_shape():
 def test_an_already_subscripted_formula_is_untouched_by_the_general_parser():
     text = ["Starch–Fe₃O₄ nanoblends and H₂O were used."]
     assert S.enforce_all_formula_subscripts(text) == text
+
+
+# ------------------------------------------ symbols no model gets right
+
+def test_the_increment_sign_becomes_a_greek_delta():
+    """`∆` is U+2206 INCREMENT, a mathematical operator; the thermodynamic quantity
+    is `Δ`, U+0394. They look identical and typeset differently.
+
+    A three-model comparison on the same paragraph settled that no model choice fixes
+    this: gemini-2.5-pro corrected `∆s`→`∆S` and left the increment sign,
+    claude-sonnet-4.5 corrected the sign and left `Δs` lowercase, gemini-2.5-flash did
+    neither — and all three had written `ΔS#` correctly one paragraph earlier."""
+    got = S.enforce_science_symbols(
+        ["(∆H#) = 41.49 kJ/mol, (∆s#) = -51.754 J/mol K, (∆G#) = 51.68 kJ/mol."])
+    assert got[0] == ("(ΔH#) = 41.49 kJ/mol, (ΔS#) = -51.754 J/mol K, "
+                      "(ΔG#) = 51.68 kJ/mol.")
+
+
+def test_the_quantity_after_a_delta_takes_its_capital():
+    got = S.enforce_science_symbols(["(ΔH#) is small and (Δs#) is more negative."])
+    assert got[0] == "(ΔH#) is small and (ΔS#) is more negative."
+
+
+def test_an_ordinary_lowercase_delta_term_is_left_alone():
+    """Only where the letter is unambiguously a thermodynamic quantity — right after
+    a delta and right before the activation marker or a closing bracket. `Δs` meaning
+    "a small change in s" keeps its lower case."""
+    text = ["a small change Δs in the signal was noted over Δt seconds"]
+    assert S.enforce_science_symbols(text) == text
+
+
+def test_the_double_dagger_form_is_handled_too():
+    got = S.enforce_science_symbols(["(∆s‡) and (∆g‡) were derived."])
+    assert got[0] == "(ΔS‡) and (ΔG‡) were derived."

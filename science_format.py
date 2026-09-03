@@ -522,3 +522,35 @@ def enforce_all_formula_subscripts(paras: List[str]) -> List[str]:
             lambda m: _subscripted(m.group(1)) if parses_as_formula(m.group(1))
             else m.group(1), text)
     return [fix(p) if p else p for p in paras]
+
+
+# ------------------------------------------------- symbols no model gets right
+
+#: `∆` is U+2206 INCREMENT, a mathematical operator. The thermodynamic quantity is
+#: `Δ`, U+0394 GREEK CAPITAL DELTA. They look identical in most fonts and sort,
+#: search and typeset differently.
+#:
+#: A three-model comparison on the same paragraph settled that this is not a model
+#: problem. On `(∆H#) = 41.49 KJ/mol, (∆s#) = -51.754 J/mol K`:
+#:   gemini-2.5-pro    fixed `∆s`->`∆S`, left the increment sign
+#:   claude-sonnet-4.5 fixed the increment sign, left `Δs` lowercase
+#:   gemini-2.5-flash  fixed neither
+#: Each was also inconsistent with itself between chunks — all three wrote `ΔS#`
+#: correctly one paragraph earlier. No model choice fixes it; a rule does.
+_INCREMENT_SIGN = "\u2206"
+_GREEK_DELTA = "\u0394"
+
+#: Entropy is capital S, enthalpy capital H, Gibbs energy capital G. Only corrected
+#: where the symbol is unambiguously a thermodynamic quantity — directly after a
+#: delta and directly before the activation marker or a closing bracket — so an
+#: ordinary `Δs` meaning "a small change in s" is never touched.
+_THERMO_CASE = re.compile(f"([{_GREEK_DELTA}{_INCREMENT_SIGN}])([shgcfeu])(?=[#\u2021)\u00b0])")
+
+
+def enforce_science_symbols(paras: List[str]) -> List[str]:
+    """`∆s#` -> `ΔS#`. The increment sign becomes a Greek delta, and the quantity
+    after it takes its proper capital."""
+    def fix(text: str) -> str:
+        text = text.replace(_INCREMENT_SIGN, _GREEK_DELTA)
+        return _THERMO_CASE.sub(lambda m: m.group(1) + m.group(2).upper(), text)
+    return [fix(p) if p else p for p in paras]
