@@ -137,3 +137,16 @@ def test_the_paragraph_count_never_changes():
     orig = [f"{i}:{EM}step" for i in range(1, 8)]
     out, _ = G.restore_protected_text(orig, ["step"] * 7)
     assert len(out) == len(orig)
+
+
+def test_a_tab_separated_step_keeps_its_tab():
+    """The separator is captured, not assumed. An intermediate version hard-coded an
+    em-space, so a listing set with tabs came back re-laid-out."""
+    out, _ = G.restore_protected_text(["4.\tIntroduce CNN"], ["Introduce CNN"])
+    assert out[0] == "4.\tIntroduce CNN"
+
+
+def test_the_colon_or_dot_survives():
+    """A version that rebuilt the prefix from the number alone dropped it."""
+    out, _ = G.restore_protected_text([f"10:{EM} End For"], ["End For"])
+    assert out[0] == f"10:{EM}End For"

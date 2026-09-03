@@ -62,6 +62,8 @@ SPECIES_GENERA = frozenset("""
     anopheles aedes culex tribolium spodoptera helicoverpa nilaparvata
     homo pan macaca sus bos capra ovis canis felis oryctolagus
     eragrostis macrotyloma cyperus madhuca ocimum plectranthus centella bacopa
+    datura atropa nicotiana physalis cestrum lycianthes petunia
+    andrographis adhatoda gymnema momordica trigonella eclipta bauhinia
     """.split())
 
 #: The abbreviated form is only trusted for organisms that are near-universally written
@@ -148,6 +150,12 @@ _NOT_AN_EPITHET = frozenset({
     "plant", "plants", "powder", "juice", "pulp", "starch", "biomass", "inoculants",
     "inoculant", "genome", "genomes", "gene", "genes", "protein", "proteins",
     "counts", "count", "colonies", "colony", "biofilm", "infection", "infections",
+    # A pharmacognosy review turned up `Solanum steroid` — the genus followed by the
+    # compound class it yields. Same shape as the plant-part nouns above.
+    "steroid", "steroids", "alkaloid", "alkaloids", "glycoside", "glycosides",
+    "saponin", "saponins", "flavonoid", "flavonoids", "derivative", "derivatives",
+    "compound", "compounds", "content", "family", "fruits", "tuber", "tubers",
+    "nightshade", "extract", "oil", "based", "rich", "like", "such",
 })
 
 #: Endings that make a word English rather than a Latin epithet. `-ans` is absent on

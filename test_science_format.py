@@ -195,3 +195,20 @@ def test_nothing_happens_without_a_variant():
     text = ["The behaviour of the colour was analysed."]
     assert S.enforce_language_variant(text, "") == text
     assert S.enforce_language_variant(text, "Indian English") == text
+
+
+def test_a_genus_with_a_compound_class_is_not_a_binomial():
+    """A pharmacognosy review produced `Solanum steroid` — the genus followed by the
+    compound class it yields, the same shape as the plant-part nouns."""
+    st = _structure("Solanum steroid alkaloids were isolated from the fruit.")
+    assert S.check_species_italic(st) == []
+
+
+def test_solanaceae_genera_are_known():
+    """`Datura stramonium` and `Atropa belladonna` sat beside `Solanum tuberosum` in
+    one paragraph of a real review and only the Solanum was recognised."""
+    st = _structure("Compared with Solanum tuberosum, Capsicum annuum, "
+                    "Atropa belladonna and Datura stramonium samples.")
+    got = {f.suggestion for f in S.check_species_italic(st)}
+    assert got == {"Solanum tuberosum", "Capsicum annuum",
+                   "Atropa belladonna", "Datura stramonium"}

@@ -44,7 +44,7 @@ _MONTH = re.compile(
 #: space — a first version did and it matched `2. Literature Review:` and `4. Proposed
 #: Methodology:`, putting numbers back onto the headings the house rule had just
 #: correctly stripped. Caught by replaying the guard over the real manuscript.
-_ALGORITHM_STEP = re.compile("^\\s*(\\d{1,2})\\s*[:.]([\u2003\u2002\t])")
+_ALGORITHM_STEP = re.compile("^\\s*((\\d{1,2})\\s*[:.])([  \t])")
 
 #: A paragraph that ends with a numbered citation and no terminal punctuation.
 _TRAILING_CITATION = re.compile(
@@ -62,7 +62,7 @@ def _lost_the_step_number(before: str, after: str) -> bool:
     m = _ALGORITHM_STEP.match(before)
     if not m:
         return False
-    return not re.match(rf"^\s*{m.group(1)}\s*[:.]", after)
+    return not re.match(rf"^\s*{m.group(2)}\s*[:.]", after)
 
 
 def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
@@ -92,8 +92,12 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
             })
             continue
         if _lost_the_step_number(before, after):
-            number = _ALGORITHM_STEP.match(before).group(1)
-            restored = f"{number}: {after.lstrip()}"
+            m = _ALGORITHM_STEP.match(before)
+            # The original's own separator, not a hard-coded one: these
+            # listings are set with an em-space or a tab, and putting back the
+            # wrong character re-lays-out the algorithm block while claiming
+            # only to restore its numbering.
+            restored = f"{m.group(1)}{m.group(3)}{after.lstrip()}"
             out.append(restored)
             queries.append({
                 "index": i,
