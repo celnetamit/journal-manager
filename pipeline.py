@@ -26,6 +26,11 @@ from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
 from proofread import proofread as run_proofread
+from edit_guards import (
+    fix_trailing_citations,
+    orphaned_formula_queries,
+    restore_protected_text,
+)
 from science_format import (
     enforce_formula_subscripts,
     enforce_language_variant,
@@ -256,6 +261,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # it will be published. Reporting a clash the enforcement has just resolved
     # would put a finding in the report about text that no longer exists.
     edited_paragraphs = enforce_language_variant(edited_paragraphs, lang_type)
+    edited_paragraphs = fix_trailing_citations(edited_paragraphs)
+
+    # Edits the copyedit is not allowed to make, undone against the original — a date
+    # line that lost its day and month, an algorithm step that lost its number. Each
+    # restoration raises its own query: a guard that quietly overrules the copyedit is
+    # the same failure as a copyedit that quietly overrules the author.
+    edited_paragraphs, guard_queries = restore_protected_text(
+        original_paragraphs, edited_paragraphs)
+    guard_queries += orphaned_formula_queries(
+        original_paragraphs, edited_paragraphs)
+    editor_queries = list(editor_queries) + guard_queries
 
     # The proofreading pass. Deliberately after every edit and enforcement, over the
     # text as it will actually be published — proofreading the author's draft would
