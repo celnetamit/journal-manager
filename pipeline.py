@@ -26,6 +26,7 @@ from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
 from image_check import check_images
+from reference_check import check_references
 from proofread import proofread as run_proofread
 from edit_guards import (
     fix_trailing_citations,
@@ -39,6 +40,7 @@ from science_format import (
 )
 from editor import (
     align_global_citations,
+    fetch_crossref_record,
     build_jats_xml,
     build_journal_report,
     build_plagiarism_report,
@@ -117,6 +119,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     lang_type = opts["lang_type"]
     custom_dict = opts.get("custom_dict", "")
     use_crossref = opts.get("use_crossref", True)
+    use_crossref_refs = use_crossref
     reorder_citations = opts.get("reorder_citations", True)
     enabled_rule_ids = opts.get("enabled_rule_ids")
     custom_rules = opts.get("custom_rules", "")
@@ -157,6 +160,15 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         # DPI at the size it will actually be printed.
         import docx as _docx
         layout_findings += check_images(_docx.Document(input_path))
+        # What a reference is missing. Reported at info level and never rewritten:
+        # a bibliography entry is the author's claim about someone else's work, and a
+        # wrong DOI attached to it propagates into Crossref and the citation graph.
+        # Crossref supplies a complete entry as a *suggestion* where the title matches
+        # confidently, which the editor accepts or ignores.
+        from house_layout import find_references as _find_refs
+        layout_findings += check_references(
+            _find_refs(structure),
+            fetch=fetch_crossref_record if use_crossref_refs else None)
     except Exception as struct_exc:                              # noqa: BLE001
         warnings.append(
             f"House-style layout check was skipped: {skip_reason(struct_exc)}")
