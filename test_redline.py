@@ -404,3 +404,61 @@ def test_a_paragraph_emptied_by_the_edit_does_not_raise():
         return d
 
     _redline_runs(source, [""])
+
+
+# ------------------------------- the bibliography must survive its own re-sort
+
+def _bib(n, drop=None, dup=None):
+    """A tiny numbered bibliography, optionally with an entry lost or repeated."""
+    entries = [f"{i}. Author{i} A. A study of thing {i}. J Test. 200{i % 10}; 1: 1."
+               for i in range(1, n + 1)]
+    if drop is not None:
+        entries.pop(drop - 1)
+    if dup is not None:
+        entries.append(entries[dup - 1])
+    return ["Body text before the list."] + entries
+
+
+def _align(before, after, monkeypatch):
+    """Run align_global_citations with the model returning `after`."""
+    import json as _json
+
+    import editor as _E
+
+    updates = {str(i): t for i, t in enumerate(after) if t != before[i]}
+    monkeypatch.setattr(_E, "_generate_text",
+                        lambda *a, **k: _json.dumps(updates))
+    warnings = []
+    got = _E.align_global_citations(before, {}, "Vancouver", warnings=warnings)
+    return got, warnings
+
+
+def test_a_resort_that_loses_a_reference_is_rejected(monkeypatch):
+    """On a real manuscript the model was handed a 75-entry bibliography to re-sort
+    and returned it with reference 18 — "Sixth Annual Report on Carcinogens" — gone
+    and reference 75 written twice. Nothing checked, so the redline looked perfect: a
+    lost reference is invisible unless you count."""
+    before = _bib(10)
+    after = _bib(10, drop=4, dup=9)             # one lost, one repeated
+    got, warnings = _align(before, after, monkeypatch)
+
+    assert got == before, "the original order must be kept intact"
+    assert warnings and "left in its original order" in warnings[0]
+
+
+def test_a_resort_that_preserves_every_reference_is_applied(monkeypatch):
+    """Narrowed, not disabled: a correct re-sort still goes through."""
+    before = _bib(6)
+    after = list(before)
+    after[1], after[6] = after[6], after[1]     # a genuine reorder
+    got, warnings = _align(before, after, monkeypatch)
+
+    assert got == after
+    assert warnings == []
+
+
+def test_a_manuscript_with_no_bibliography_is_unaffected(monkeypatch):
+    before = ["Just body text.", "And more of it."]
+    after = ["Just body text [1].", "And more of it."]
+    got, warnings = _align(before, after, monkeypatch)
+    assert got == after and warnings == []

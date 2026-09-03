@@ -302,12 +302,51 @@ def test_embedding(text: str, settings: Optional[Dict[str, Any]] = None) -> List
 
 # --- High-level operations ---
 
+#: A numbered bibliography entry: `[12]`, `12.`, `12)`.
+_REF_LINE = re.compile(r"^\s*\[?(\d{1,3})[\].)]\s")
+
+
+def _bibliography_census(paras: List[str]) -> Tuple[int, int]:
+    """(how many numbered entries, how many distinct ones).
+
+    The identity of an entry is its own text with the leading *reference* number
+    stripped — that one legitimately changes, renumbering is the point of this pass —
+    and everything but letters and digits removed, so a reformatted entry still counts
+    as itself.
+
+    The digits have to stay. A first version dropped them, and then every entry in a
+    list of `Author1 ... 2001`, `Author2 ... 2002` fingerprinted identically: the
+    census reported one distinct entry out of ten and the guard could never fire. The
+    year, volume and pages are most of what distinguishes two references by the same
+    author.
+    """
+    bodies = []
+    for p in paras:
+        if p and _REF_LINE.match(p):
+            bodies.append(re.sub(r"[^a-z0-9]", "",
+                                 _REF_LINE.sub("", p).lower())[:60])
+    return len(bodies), len(set(bodies))
+
+
 def align_global_citations(
     paras: List[str], settings: Dict[str, Any], ref_style: str,
     enabled_rule_ids: Optional[List[str]] = None,
+    warnings: Optional[List[str]] = None,
 ) -> List[str]:
     """Second pass: convert in-text citations to sequential [1], [2] and
-    re-sort the bibliography to match."""
+    re-sort the bibliography to match.
+
+    The re-sort is done by the model, which is handed the whole bibliography and asked
+    to write it back by paragraph index. Nothing checked what came back, and on a real
+    manuscript it silently lost one entry and duplicated another: reference 18, "Sixth
+    Annual Report on Carcinogens", vanished from a 75-entry list, and reference 75
+    appeared twice. The redline looked perfect — a lost reference is invisible unless
+    you count.
+
+    So the result is now counted. A re-sort that does not preserve the bibliography is
+    rejected whole and the original order is kept, because a correctly ordered list
+    with a reference missing is worse than a list in the wrong order.
+    """
     indexed_paras = {str(i): p for i, p in enumerate(paras) if p.strip()}
 
     citation_format_block = ""
@@ -350,6 +389,19 @@ Input JSON dictionary (Key = Index, Value = Paragraph Text):
             idx = int(idx_str)
             if 0 <= idx < len(new_paras):
                 new_paras[idx] = new_text
+
+        before_n, before_distinct = _bibliography_census(paras)
+        after_n, after_distinct = _bibliography_census(new_paras)
+        if before_n and (after_n != before_n or after_distinct != before_distinct):
+            msg = (f"The reference list was left in its original order: re-sorting it "
+                   f"would have changed it from {before_n} entries "
+                   f"({before_distinct} distinct) to {after_n} ({after_distinct}), "
+                   f"so an entry was being lost or duplicated. The in-text citations "
+                   f"were not renumbered either — the two have to match.")
+            print(msg)
+            if warnings is not None:
+                warnings.append(msg)
+            return paras
         return new_paras
     except Exception as e:
         print(f"Global citation alignment failed: {e}")

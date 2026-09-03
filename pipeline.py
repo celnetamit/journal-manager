@@ -254,6 +254,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         progress(0.62, "Aligning citations & sorting bibliography...")
         edited_paragraphs = align_global_citations(
             edited_paragraphs, llm_settings, ref_style, enabled_rule_ids,
+            warnings=warnings,
         )
 
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
