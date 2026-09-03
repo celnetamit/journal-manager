@@ -224,6 +224,33 @@ def _unbalanced(text: str, open_c: str, close_c: str) -> Optional[tuple]:
     return (depth, stray_closes) if depth or stray_closes else None
 
 
+#: A comparison, immediately before the stop. `p = .0001`, `p < .05`, `less than .05`
+#: — APA style drops the leading zero from a number that cannot exceed 1, so the stop
+#: opens a number instead of ending a sentence. `\xa0` because these are usually set
+#: with non-breaking spaces.
+_COMPARISON = re.compile(r"(?:[=<>≤≥]|\bthan|\bof|\bp)[\s\xa0]*$", re.I)
+
+
+def _opens_a_statistic(text: str, m: "re.Match") -> bool:
+    """True when the stop begins a p-value rather than ending a sentence.
+
+    The first live run of the tool through its own UI flagged `A p-value less than
+    .05 indicates` as "space before '.'" and offered "." as the fix, which produces
+    "less than.05". Every psychology, medicine and nursing paper we publish writes
+    p-values this way, so this is a domain rather than an edge case.
+
+    Deliberately narrow. The same corpus has `Fig .5`, `Fig .7`, `Fig .9` and
+    `Duncan, .2012` — all real faults, and all of them leading decimals too. What
+    separates them is what comes *before*: a comparison means the number is being
+    compared, an element label means the stop belongs to the abbreviation.
+    """
+    if m.group(1) != ".":
+        return False
+    if not re.match(r"\.\d", text[m.end() - 1:]):
+        return False                        # not a decimal at all
+    return bool(_COMPARISON.search(text[:m.start()]))
+
+
 def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
     """Everything that can be decided by looking, without a model."""
     out: List[ProofFinding] = []
@@ -250,6 +277,8 @@ def mechanical_findings(paragraphs: List[str]) -> List[ProofFinding]:
 
         if not is_ref:
             for m in re.finditer(r"\s+([,.;:!?])", scan):
+                if _opens_a_statistic(text, m):
+                    continue
                 out.append(ProofFinding(
                     "space.before-punctuation", "error", i,
                     f"space before {m.group(1)!r}",

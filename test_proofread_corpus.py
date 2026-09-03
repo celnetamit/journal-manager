@@ -369,3 +369,37 @@ def test_a_consistency_claim_is_not_a_definition_claim():
           "problem": "'IoT' was used previously, but 'IOT' is used here"}],
         _DEFINED_EARLY)
     assert len(findings) == 1
+
+
+# ------------------------------------------- a p-value is not a spacing error
+
+def _before_punct(text):
+    return [f for f in P.mechanical_findings([text])
+            if f.rule == "space.before-punctuation"]
+
+
+def test_an_apa_p_value_is_not_a_space_before_a_full_stop():
+    """The first run of the tool through its own live UI flagged `A p-value less than
+    .05 indicates` and offered "." as the fix — which gives "less than.05". APA drops
+    the leading zero from a number that cannot exceed 1, so every psychology, medicine
+    and nursing paper we publish is written this way."""
+    assert _before_punct("A p-value less than .05 indicates significance.") == []
+    assert _before_punct("No difference within the groups (p = .0001) was seen.") == []
+    assert _before_punct("Correlation was strong (r < .001) across cohorts.") == []
+    # Non-breaking spaces are how these are actually set in Word.
+    assert _before_punct("within the groups (\xa0p\xa0=\xa0.0001\xa0) overall.") == []
+
+
+def test_a_misplaced_stop_after_an_element_label_is_still_found():
+    """`Fig .5`, `Fig .7`, `Fig .9` and `Duncan, .2012` are all leading decimals too,
+    and all four are real faults — the corpus has them. What separates them from a
+    p-value is what comes before: a comparison, or an abbreviation the stop belongs
+    to. A guard that forgave every leading decimal would take these with it."""
+    assert _before_punct("Fig .5 CVD of Parylene Deposit")
+    assert _before_punct("Fig .7 - Assembly of Cast")
+    assert _before_punct("Usman S, Wamatu J, Duncan A, .2012. Characterization")
+
+
+def test_ordinary_space_before_punctuation_is_untouched():
+    assert _before_punct("Table 1 : Dataset Distribution")
+    assert _before_punct("The samples were weighed , dried and stored.")
