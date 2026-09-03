@@ -447,6 +447,55 @@ def fetch_serper_scholar_doi(citation_text: str, api_key: str) -> Optional[str]:
     return None
 
 
+def fetch_crossref_record(citation_text: str) -> Optional[Dict[str, Any]]:
+    """The full Crossref record for a citation, or None.
+
+    `fetch_crossref_doi` asks for `select=DOI,score,type,title` because a DOI is all
+    it needs. Completing a half-written reference needs the rest of the record, so
+    this asks for the rest — same matching discipline, wider selection.
+
+    The title-overlap guard is the whole safety of this: a reference completed from
+    the wrong Crossref record is worse than one left incomplete, because it looks
+    finished and the error travels into the citation graph.
+    """
+    try:
+        r = requests.get(
+            "https://api.crossref.org/works",
+            params={"query.bibliographic": citation_text[:400],
+                    "select": "DOI,score,title,author,container-title,volume,issue,"
+                              "page,issued,type",
+                    "rows": 3},
+            timeout=6)
+        if r.status_code != 200:
+            return None
+        for item in (r.json().get("message") or {}).get("items") or []:
+            titles = item.get("title") or []
+            if not titles:
+                continue
+            clean_title = re.sub(r"[^a-z0-9]", "", titles[0].lower())
+            clean_cit = re.sub(r"[^a-z0-9]", "", citation_text.lower())
+            if clean_title[:40] not in clean_cit and item.get("score", 0) < 90:
+                continue
+            authors = ", ".join(
+                f"{a.get('family', '')} {''.join(p[0] for p in (a.get('given') or '').split() if p)}".strip()
+                for a in (item.get("author") or [])[:6] if a.get("family"))
+            issued = ((item.get("issued") or {}).get("date-parts") or [[None]])[0]
+            container = item.get("container-title") or []
+            return {
+                "doi": item.get("DOI", ""),
+                "title": titles[0],
+                "authors": authors,
+                "journal": container[0] if container else "",
+                "year": str(issued[0]) if issued and issued[0] else "",
+                "volume": item.get("volume", ""),
+                "issue": item.get("issue", ""),
+                "pages": item.get("page", ""),
+            }
+    except Exception:
+        return None
+    return None
+
+
 def fetch_crossref_doi(citation_text: str) -> Optional[str]:
     try:
         url = "https://api.crossref.org/works"
@@ -1482,7 +1531,14 @@ def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
         elif tag == "insert":
             # An insertion inherits the formatting of the character it lands after,
             # which is what an editor typing there would get.
-            after = starts[i1] - 1 if 0 < i1 <= len(starts) else 0
+            #
+            # `i1 == len(starts)` is an insertion at the very end of the paragraph —
+            # the commonest edit there is, a full stop or a citation appended — and
+            # the first version of this guard allowed `i1 <= len(starts)` and then
+            # indexed with it. Four production jobs died on `list index out of range`
+            # before anyone could look.
+            insert_at = starts[i1] if i1 < len(starts) else len(char_rpr)
+            after = max(0, insert_at - 1)
             add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id,
                                  source_rpr=fmt_at(after))
             tc_id += 1

@@ -357,3 +357,50 @@ def test_formatting_does_not_bleed_past_its_run():
     for text, sup, _, _ in rows:
         if sup:
             assert text == "#", f"superscript leaked onto {text!r}"
+
+
+def test_an_insertion_at_the_very_end_of_a_paragraph():
+    """`i1 == len(orig_tokens)` — the commonest edit there is, a full stop or a
+    citation appended to the end of a paragraph.
+
+    The formatting-preservation change guarded this with `0 < i1 <= len(starts)` and
+    then indexed `starts[i1]` with it, so every such edit raised `list index out of
+    range`. Four production jobs failed on it: 34, 35, 36 and 37, all reported as
+    "list index out of range" with nothing to act on.
+    """
+    import docx as _docx
+
+    def source():
+        d = _docx.Document()
+        p = d.add_paragraph()
+        p.add_run("The reaction was complete")
+        return d
+
+    rows = _redline_runs(source, ["The reaction was complete [17]."])
+    texts = "".join(t for t, _, _, _ in rows)
+    assert "[17]." in texts
+
+
+def test_an_insertion_at_the_very_start_of_a_paragraph():
+    """The other end of the same off-by-one."""
+    import docx as _docx
+
+    def source():
+        d = _docx.Document()
+        d.add_paragraph().add_run("reaction was complete.")
+        return d
+
+    rows = _redline_runs(source, ["The reaction was complete."])
+    assert "The" in "".join(t for t, _, _, _ in rows)
+
+
+def test_a_paragraph_emptied_by_the_edit_does_not_raise():
+    """A degenerate case worth pinning: every token deleted, nothing inserted."""
+    import docx as _docx
+
+    def source():
+        d = _docx.Document()
+        d.add_paragraph().add_run("some text that goes away")
+        return d
+
+    _redline_runs(source, [""])
