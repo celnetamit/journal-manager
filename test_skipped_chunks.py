@@ -18,7 +18,7 @@ def _generate(*responses):
     """A stand-in for `_generate_text` that returns each response in turn."""
     calls = {"n": 0}
 
-    def gen(prompt, settings=None, response_mime_type=None):
+    def gen(prompt, settings=None, response_mime_type=None, **kwargs):
         i = min(calls["n"], len(responses) - 1)
         calls["n"] += 1
         out = responses[i]
@@ -79,7 +79,7 @@ def test_a_short_array_is_retried_in_halves(monkeypatch):
     "19 items for 20 paragraphs" — and the old behaviour abandoned all twenty after two
     identical retries. A shorter list is easier to answer correctly, so the chunk is
     halved and retried; here both halves come back right and nothing is lost."""
-    def gen(prompt, settings=None, response_mime_type=None):
+    def gen(prompt, settings=None, response_mime_type=None, **kwargs):
         # Answers with one element, which is wrong for the pair and right for a single.
         return '[{"edited": "edited text"}]'
 
@@ -107,7 +107,7 @@ def test_a_query_from_the_second_half_keeps_its_real_index(monkeypatch):
     """`local_index` is relative to the chunk it was raised in. When a chunk is split,
     the right half's indices have to move up by the length of the left one, or every
     query lands on the wrong paragraph."""
-    def gen(prompt, settings=None, response_mime_type=None):
+    def gen(prompt, settings=None, response_mime_type=None, **kwargs):
         if "A second one." in prompt:
             return '[{"edited": "A second one.", "query": "check this"}]'
         return '[{"edited": "The result was significant."}]'
@@ -146,7 +146,7 @@ def test_the_orchestrator_names_which_paragraphs_were_missed(monkeypatch):
 
 
 def test_a_fully_successful_run_reports_nothing_skipped(monkeypatch):
-    def gen(prompt, settings=None, response_mime_type=None):
+    def gen(prompt, settings=None, response_mime_type=None, **kwargs):
         import json
         # The prompt ends with "Input JSON:\n<array>". Matching the first "[" in the
         # whole prompt instead picks up the "[1]" in the house-rule examples — which
