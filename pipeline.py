@@ -25,6 +25,7 @@ import auth
 from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
+from image_check import check_images
 from proofread import proofread as run_proofread
 from edit_guards import (
     fix_trailing_citations,
@@ -151,6 +152,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         # Species italics and on-the-line sub/superscripts. Same panel:
         # to an editor these are house style, not a separate category.
         layout_findings += science_format_check(structure)
+        # Print resolution. Arithmetic, not a heuristic: Word stores the picture's
+        # pixel size and the frame's size in inches, and their ratio is the effective
+        # DPI at the size it will actually be printed.
+        import docx as _docx
+        layout_findings += check_images(_docx.Document(input_path))
     except Exception as struct_exc:                              # noqa: BLE001
         warnings.append(
             f"House-style layout check was skipped: {skip_reason(struct_exc)}")
