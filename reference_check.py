@@ -231,6 +231,24 @@ def _crossref_entry(text: str, fetch) -> Optional[str]:
     return entry
 
 
+def _why(suggestion, fetch, lookups) -> str:
+    """Why there is, or is not, a suggested replacement.
+
+    Four cases, and an early version collapsed the last two: with Crossref switched
+    off it told the editor "more than 15 references were incomplete, so Crossref was
+    not consulted", which is a true sentence about a cap that never applied and a
+    false explanation of what happened. Caught by reading the live output.
+    """
+    if suggestion:
+        return "; a complete entry from Crossref is suggested"
+    if not fetch:
+        return "; Crossref lookup is switched off for this run"
+    if lookups > _MAX_LOOKUPS:
+        return (f"; more than {_MAX_LOOKUPS} references were incomplete, so Crossref "
+                f"was not consulted for this one")
+    return "; it could not be matched in Crossref, so the author must supply it"
+
+
 def check_references(reference_paragraphs, fetch=None) -> List[RefFinding]:
     """A finding per incomplete reference, with a Crossref-built suggestion when one
     can be had.
@@ -272,10 +290,6 @@ def check_references(reference_paragraphs, fetch=None) -> List[RefFinding]:
         out.append(RefFinding(
             "references.incomplete", "info", p.index,
             "this reference is missing its " + ", ".join(gaps)
-            + ("; a complete entry from Crossref is suggested" if suggestion
-               else ("; it could not be matched in Crossref, so the author must "
-                     "supply it" if fetch and lookups <= _MAX_LOOKUPS
-                     else f"; more than {_MAX_LOOKUPS} references were incomplete, "
-                          "so Crossref was not consulted for this one")),
+            + _why(suggestion, fetch, lookups),
             text[:180], suggestion, gaps))
     return out

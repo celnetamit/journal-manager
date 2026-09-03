@@ -154,3 +154,13 @@ def test_a_crossref_outage_costs_the_suggestion_not_the_run():
     (f,) = R.check_references([P("Smith J. A study of things. J Test. 2001.")], fetch=boom)
     assert f.suggestion is None
     assert "must supply it" in f.message
+
+
+def test_the_reason_for_no_suggestion_is_the_real_one():
+    """With Crossref switched off, an early version said "more than 15 references were
+    incomplete, so Crossref was not consulted" — a true sentence about a cap that
+    never applied, and a false explanation of what happened."""
+    assert "switched off" in R._why(None, None, 0)
+    assert "could not be matched" in R._why(None, lambda t: None, 3)
+    assert "more than 15" in R._why(None, lambda t: None, 16)
+    assert "suggested" in R._why("Smith J. ...", lambda t: {}, 1)
