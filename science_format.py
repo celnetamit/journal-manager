@@ -1,0 +1,326 @@
+"""Character-level science formatting: species italics, formulas, sub/superscripts.
+
+`docxmodel` has always read `italic`, `superscript` and `subscript` for every run — its
+own docstring names species italics as a reason it exists — and until now nothing used
+any of it. Three separate remarks from the editorial team turned out to be this one
+gap: `Musa paradisiaca` not italic, `λmax` with a full-size "max", `FeCl3` with a
+full-size 3.
+
+**Detection is the whole risk, and it is not solvable from text alone.** Three
+approaches were measured against 200 real manuscripts before this file was written:
+
+* bare `Genus species` — 15,688 hits, led by "This study", "Kevlar fiber", "Breast
+  cancer". Unusable at any threshold.
+* a Latin-ending filter on the epithet — precise enough, but it drops `Cassia
+  fistula`, `Glycyrrhiza glabra`, `Foeniculum vulgare`, `C. jejuni`. Under half the
+  real ones survive.
+* document frequency, on the theory that English words are common and epithets rare —
+  fails on medical English: "spondylosis" appears in 0.3% of manuscripts and
+  "paradisiaca" in 0.5%.
+
+So this module does what real tools do: it carries a list. Not all of taxonomy — only
+the genera these journals publish about, which is a few hundred names. Anything outside
+the list is simply not reported, and that is the right way round: a missed species
+costs an editor nothing, and a false "this is not italic" on `(Mild walking)` teaches
+them to ignore the panel.
+
+Nothing here rewrites italics. A wrong italic is worse than a missing one, and the
+redline carries tracked *text* changes, not tracked formatting. Species and markers are
+reported; only formulas are corrected, because a subscript digit is a character and
+travels as text.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import List, Optional
+
+#: Genera these journals actually publish about — microbiology, medicinal and crop
+#: plants, model organisms — plus the ones the corpus itself turned up (Pichia,
+#: Aegilops, Podophyllum, Bryophyllum, Saccharomyces, Aspergillus, Escherichia).
+#: Lowercase; matching is case-insensitive on the genus but the shape is checked.
+SPECIES_GENERA = frozenset("""
+    escherichia salmonella staphylococcus streptococcus pseudomonas klebsiella
+    bacillus lactobacillus clostridium mycobacterium enterococcus acinetobacter
+    campylobacter helicobacter listeria shigella vibrio proteus serratia
+    xanthomonas rhizobium azotobacter agrobacterium erwinia ralstonia
+    saccharomyces candida aspergillus penicillium fusarium trichoderma rhizopus
+    alternaria colletotrichum cryptococcus pichia rhodotorula mucor botrytis
+    chlorella spirulina scenedesmus chlamydomonas nannochloropsis dunaliella
+    arabidopsis oryza triticum zea hordeum sorghum glycine cicer vigna phaseolus
+    pisum lens brassica gossypium helianthus arachis solanum capsicum lycopersicon
+    cucumis cucurbita daucus allium spinacia lactuca aegilops avena secale
+    musa mangifera citrus punica psidium carica ananas vitis malus prunus ficus
+    phoenix cocos elaeis camellia coffea theobroma piper curcuma zingiber
+    azadirachta ocimum withania asparagus tinospora terminalia emblica phyllanthus
+    aloe cassia senna glycyrrhiza foeniculum trigonella coriandrum cuminum
+    boerhavia sida rubia moringa holarrhena randia pluchea podophyllum berberis
+    bryophyllum eichhornia pontederia acacia eucalyptus tectona dalbergia
+    bambusa saccharum jatropha ricinus linum sesamum brassicaceae
+    caenorhabditis drosophila danio mus rattus xenopus gallus bombyx apis
+    anopheles aedes culex tribolium spodoptera helicoverpa nilaparvata
+    homo pan macaca sus bos capra ovis canis felis oryctolagus
+    eragrostis macrotyloma cyperus madhuca ocimum plectranthus centella bacopa
+    """.split())
+
+#: The abbreviated form is only trusted for organisms that are near-universally written
+#: that way. `S. and` and `D. holders` are author initials in a reference list, and the
+#: corpus has 255 abbreviation-shaped hits of which most are exactly that.
+COMMON_ABBREVIATED = frozenset({
+    "e. coli", "s. aureus", "s. cerevisiae", "p. aeruginosa", "b. subtilis",
+    "c. albicans", "k. pneumoniae", "s. typhi", "s. typhimurium", "l. monocytogenes",
+    "h. pylori", "c. difficile", "m. tuberculosis", "a. niger", "a. flavus",
+    "p. falciparum", "c. elegans", "d. melanogaster", "a. thaliana",
+})
+
+#: Formulas worth correcting. Curated rather than pattern-matched: a general
+#: `[A-Z][a-z]?\d` pattern over the corpus returns `D8`, `M4`, `R2` and `M0` —
+#: diffractometer models, an R-squared and a modulus — 950 hits of which most are not
+#: chemistry at all. These are unambiguous.
+_FORMULA_SOURCES = (
+    "H2O", "H2O2", "CO2", "CO", "O2", "N2", "H2", "NH3", "CH4", "SO2", "NO2", "N2O",
+    "H2SO4", "HNO3", "HCl", "H3PO4", "NaOH", "KOH", "NaCl", "KCl", "CaCl2", "MgCl2",
+    "FeCl2", "FeCl3", "AlCl3", "ZnCl2", "CuCl2", "NaHCO3", "Na2CO3", "CaCO3",
+    "NaNO3", "KNO3", "AgNO3", "CuSO4", "ZnSO4", "FeSO4", "MgSO4", "Na2SO4", "K2SO4",
+    "Fe2O3", "Fe3O4", "Al2O3", "TiO2", "SiO2", "ZnO", "MgO", "CuO", "MnO2", "CeO2",
+    "ZrO2", "SnO2", "WO3", "V2O5", "Cr2O3", "NiO", "Co3O4", "CdS", "ZnS",
+    "C6H12O6", "C2H5OH", "CH3OH", "CH3COOH", "NaBH4", "KMnO4", "K2Cr2O7",
+)
+
+_SUBSCRIPT_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def _subscripted(formula: str) -> str:
+    """`FeCl3` -> `FeCl₃`. Only digits move; element letters are untouched."""
+    return "".join(ch.translate(_SUBSCRIPT_DIGITS) if ch.isdigit() else ch
+                   for ch in formula)
+
+
+#: {plain form: subscripted form}, longest first so `Fe3O4` is matched before `Fe3`.
+#: Only formulas that actually contain a digit: `ZnO`, `NiO` and `CO` have nothing to
+#: subscript, and reporting them said "written with full-size digits" about a string
+#: with no digits in it.
+FORMULAS = {f: _subscripted(f) for f in
+            sorted((x for x in _FORMULA_SOURCES if any(c.isdigit() for c in x)),
+                   key=len, reverse=True)}
+
+_FORMULA_RE = re.compile(
+    r"(?<![A-Za-z0-9₀-₉])(" + "|".join(re.escape(f) for f in FORMULAS) +
+    r")(?![A-Za-z0-9₀-₉])")
+
+#: Variables written with the qualifier on the line. An allowlist, not a pattern, and
+#: it took two attempts to accept that. `[CTKEIRV]` plus one letter matched `Is`, `Ca`,
+#: `Ra`, `Km`, `Kg`, `Ed`. Requiring three letters still matched **`Amin`** — a
+#: person's name, and a common one in these manuscripts — plus `Jobs`, an ordinary
+#: word, and `Teff`, which is a grain. Any capital letter followed by a real qualifier
+#: spells an English word or a name often enough that only naming the variables works.
+_SUBSCRIPT_VARIABLES = (
+    "λmax", "λmin", "λem", "λex", "Λmax",
+    "Cmax", "Cmin", "Vmax", "Vmin", "Tmax", "Tmin", "Emax", "Emin",
+    "Imax", "Imin", "Rmax", "Rmin", "Pmax", "Pmin", "Dmax", "Dmin",
+    "qmax", "qexp", "qcalc", "Qmax", "kobs", "Kobs", "tmax", "Ymax",
+)
+_SUBSCRIPT_MARKER = re.compile(
+    r"(?<![A-Za-z])(" + "|".join(sorted(_SUBSCRIPT_VARIABLES, key=len, reverse=True))
+    + r")(?![A-Za-z])")
+
+#: `cm-1`, `mg L-1`, `min-1` — a negative exponent set on the line. The base must be a
+#: real unit: `[a-zA-Z]{1,4}` matched `Fig-3`, `Vol-1`, `HFS-3` and `of -1`.
+_EXPONENT_UNITS = ("cm", "mm", "nm", "µm", "um", "m", "km", "g", "mg", "kg", "µg",
+                   "ng", "L", "mL", "µL", "l", "ml", "ha", "min", "s", "h", "mol",
+                   "mmol", "K", "W", "J", "Pa", "N", "mgg", "gg", "day", "yr")
+_EXPONENT_MARKER = re.compile(
+    r"(?<![A-Za-z0-9-])(" + "|".join(sorted(_EXPONENT_UNITS, key=len, reverse=True))
+    + r")\s?-\s?([123])\b")
+
+
+#: Words that follow a genus without being its epithet. `Rhizobium strain`,
+#: `Aegilops species` and `Triticum and` were 4 of the first 11 findings; a second
+#: pass over the corpus added the plant-part nouns behind `Jatropha oil`,
+#: `Jatropha seeds` and `Rhizobium inoculants`.
+_NOT_AN_EPITHET = frozenset({
+    "species", "spp", "strain", "strains", "genus", "genera", "complex", "isolate",
+    "isolates", "culture", "cultures", "and", "was", "were", "has", "had", "sp",
+    "population", "populations", "group", "groups", "cells", "growth", "extract",
+    "extracts", "oil", "oils", "seed", "seeds", "leaf", "leaves", "root", "roots",
+    "stem", "stems", "bark", "fruit", "fruits", "flower", "flowers", "peel", "peels",
+    "plant", "plants", "powder", "juice", "pulp", "starch", "biomass", "inoculants",
+    "inoculant", "genome", "genomes", "gene", "genes", "protein", "proteins",
+    "counts", "count", "colonies", "colony", "biofilm", "infection", "infections",
+})
+
+#: Endings that make a word English rather than a Latin epithet. `-ans` is absent on
+#: purpose — `Caenorhabditis elegans` and `Thiobacillus denitrificans` end that way.
+_ENGLISH_ENDING = re.compile(
+    r"(?:ed|ing|ant|ants|ent|ents|ive|ness|ment|ments|tion|tions|sion|able|ible)$")
+
+
+@dataclass
+class FormatFinding:
+    """One character-level formatting deviation."""
+    rule: str
+    severity: str
+    paragraph: Optional[int]
+    message: str
+    detail: str = ""
+    suggestion: Optional[str] = None
+
+    def __str__(self) -> str:
+        where = f"¶{self.paragraph + 1}" if self.paragraph is not None else "document"
+        return f"[{self.severity}] {where} {self.rule}: {self.message}"
+
+
+def find_binomials(text: str, known_genera=SPECIES_GENERA) -> List[tuple]:
+    """(start, end, phrase) for every species binomial in `text`.
+
+    Only names whose genus is in the list, plus the abbreviated forms that are
+    near-universally written that way. Everything else is left alone on purpose —
+    see the module docstring for the three detectors that were measured and rejected.
+    """
+    out = []
+    for m in re.finditer(r"\b([A-Z][a-z]{2,})\s+([a-z]{3,})\b", text):
+        if m.group(2) in _NOT_AN_EPITHET or _ENGLISH_ENDING.search(m.group(2)):
+            continue
+        if m.group(1).lower() in known_genera:
+            out.append((m.start(), m.end(), m.group(0)))
+    for m in re.finditer(r"\b([A-Z])\.\s?([a-z]{3,})\b", text):
+        if f"{m.group(1).lower()}. {m.group(2).lower()}" in COMMON_ABBREVIATED:
+            out.append((m.start(), m.end(), m.group(0)))
+    return sorted(set(out))
+
+
+def _spans_are_italic(para, start: int, end: int) -> Optional[bool]:
+    """Is the text between `start` and `end` italic? None when the run cannot be found.
+
+    `Para.text` is the concatenation of its runs, so a character offset can be walked
+    back to the runs covering it. A binomial split across two runs — which is normal,
+    because Word splits runs at every formatting change — must have *both* italic.
+
+    `run.italic is None` counts as **not italic**, and getting that wrong made the
+    whole check silently useless: Word only writes `w:i` onto a run that differs from
+    its style, so a plain body run says None rather than False. The manuscript that
+    raised this had `Musa paradisiaca` at `italic=None` in every one of its fifteen
+    paragraphs, and an earlier version of this function read that as "nothing says"
+    and reported not one of them.
+
+    The cost is a species inside a style that is italic in its own right — a caption
+    style, say — which would be reported wrongly. That is rare, and it is a visible
+    wrong finding rather than an invisible missing one.
+    """
+    pos = 0
+    verdicts = []
+    for run in para.runs:
+        n = len(run.text or "")
+        if pos < end and pos + n > start and (run.text or "").strip():
+            verdicts.append(run.italic)
+        pos += n
+    if not verdicts:
+        return None
+    return all(v is True for v in verdicts)
+
+
+def check_species_italic(structure) -> List[FormatFinding]:
+    """Species binomials that are not italic.
+
+    Reported, never rewritten. Italicising the wrong phrase puts a visible error into
+    the author's manuscript, and the redline carries tracked text changes rather than
+    tracked formatting, so an automatic change here would also be invisible in Word's
+    review pane — a silent edit, which is the one thing this tool must not do.
+    """
+    out: List[FormatFinding] = []
+    seen: set = set()
+    for p in structure.paragraphs:
+        text = p.text
+        if not text.strip():
+            continue
+        for start, end, phrase in find_binomials(text):
+            if _spans_are_italic(p, start, end) is False and phrase not in seen:
+                seen.add(phrase)
+                out.append(FormatFinding(
+                    "format.species-italic", "warning", p.index,
+                    f"{phrase!r} is a species name and is not italic; house sets "
+                    f"binomials in italic",
+                    text[max(0, start - 30):end + 30].strip(),
+                    phrase))
+    return out
+
+
+def check_formula_subscripts(structure) -> List[FormatFinding]:
+    """Chemical formulas whose digits are full-size."""
+    out: List[FormatFinding] = []
+    seen: set = set()
+    for p in structure.paragraphs:
+        for m in _FORMULA_RE.finditer(p.text):
+            plain = m.group(1)
+            if plain in seen:
+                continue
+            seen.add(plain)
+            out.append(FormatFinding(
+                "format.formula-subscript", "info", p.index,
+                f"{plain} is written with full-size digits; house sets formula "
+                f"subscripts",
+                p.text[max(0, m.start() - 30):m.end() + 30].strip(),
+                FORMULAS[plain]))
+    return out
+
+
+def check_subscript_markers(structure) -> List[FormatFinding]:
+    """Qualifiers and exponents set on the line — `λmax`, `cm-1`.
+
+    Reported only. Unicode has subscript digits, which is why formulas can be
+    corrected, but its subscript *letters* (ₘₐₓ) are missing several of the alphabet
+    and render badly in most manuscript fonts. Turning `λmax` into `λₘₐₓ` would look
+    worse than leaving it, so the editor is told and applies real subscript.
+    """
+    out: List[FormatFinding] = []
+    seen: set = set()
+    for p in structure.paragraphs:
+        text = p.text
+        if not text.strip():
+            continue
+        # A run already marked sub/superscript is correctly set; the plain text of the
+        # paragraph cannot show that, so paragraphs that use them are checked run-wise.
+        marked = any(r.subscript or r.superscript for r in p.runs)
+        for rx, rule, what in ((_SUBSCRIPT_MARKER, "format.subscript", "subscript"),
+                               (_EXPONENT_MARKER, "format.superscript", "superscript")):
+            for m in rx.finditer(text):
+                token = m.group(0)
+                if token in seen or (marked and rx is _SUBSCRIPT_MARKER):
+                    continue
+                seen.add(token)
+                tail = m.group(2) if rx.groups > 1 else re.sub(r"^[^a-z]*", "", token)
+                out.append(FormatFinding(
+                    rule, "info", p.index,
+                    f"{token!r} appears to need a {what} on {tail!r}",
+                    text[max(0, m.start() - 30):m.end() + 30].strip()))
+    return out
+
+
+def check_all(structure) -> List[FormatFinding]:
+    """The checks that are *reported*, in report order.
+
+    Formulas are deliberately absent. `enforce_formula_subscripts` corrects them in
+    the edited text, so they arrive in the redline as a tracked change the editor
+    accepts or rejects — and listing them here as well would put "FeCl3 is written
+    with full-size digits" in the House Style panel beside a redline where it already
+    reads FeCl₃. Report what is not fixed; fix what is not reported.
+    `check_formula_subscripts` stays available for tests and for measuring the corpus.
+    """
+    return check_species_italic(structure) + check_subscript_markers(structure)
+
+
+def enforce_formula_subscripts(paras: List[str]) -> List[str]:
+    """`FeCl3` -> `FeCl₃`, on the edited text, so it lands in the redline.
+
+    Safe as a text change in a way the other two are not: a subscript digit is a
+    character, and the manuscripts already use them — the paper that raised this had
+    `Fe₃O₄` correctly subscripted in its abstract and `FeCl3` and `Fe3O4` plain in the
+    methods, one document with both conventions.
+
+    Only the curated list is touched. A general `[A-Z][a-z]?\\d` pattern over the
+    corpus returns 950 hits led by `D8`, `M4` and `R2` — a diffractometer, a modulus
+    and an R-squared.
+    """
+    return [_FORMULA_RE.sub(lambda m: FORMULAS[m.group(1)], p) if p else p
+            for p in paras]

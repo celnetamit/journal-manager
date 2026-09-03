@@ -24,7 +24,9 @@ import config as app_config
 import auth
 from docxmodel import read_structure
 from house_layout import check_all as house_check
+from science_format import check_all as science_format_check
 from proofread import proofread as run_proofread
+from science_format import enforce_formula_subscripts
 from editor import (
     align_global_citations,
     build_jats_xml,
@@ -137,6 +139,9 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     try:
         structure = read_structure(input_path)
         layout_findings = house_check(structure)
+        # Species italics and on-the-line sub/superscripts. Same panel:
+        # to an editor these are house style, not a separate category.
+        layout_findings += science_format_check(structure)
     except Exception as struct_exc:                              # noqa: BLE001
         warnings.append(
             f"House-style layout check was skipped: {skip_reason(struct_exc)}")
@@ -243,6 +248,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs = enforce_element_citation_brackets(
         edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_temperature_spacing(edited_paragraphs)
+    edited_paragraphs = enforce_formula_subscripts(edited_paragraphs)
 
     # The proofreading pass. Deliberately after every edit and enforcement, over the
     # text as it will actually be published — proofreading the author's draft would
