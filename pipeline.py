@@ -32,7 +32,7 @@ from edit_guards import (
     restore_protected_text,
 )
 from science_format import (
-    enforce_formula_subscripts,
+    enforce_all_formula_subscripts,
     enforce_language_variant,
 )
 from editor import (
@@ -256,7 +256,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs = enforce_element_citation_brackets(
         edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_temperature_spacing(edited_paragraphs)
-    edited_paragraphs = enforce_formula_subscripts(edited_paragraphs)
+    edited_paragraphs = enforce_all_formula_subscripts(edited_paragraphs)
     # Before `run_proofread`, so the spelling-consistency check sees the text as
     # it will be published. Reporting a clash the enforcement has just resolved
     # would put a finding in the report about text that no longer exists.

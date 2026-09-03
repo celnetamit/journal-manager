@@ -212,3 +212,45 @@ def test_solanaceae_genera_are_known():
     got = {f.suggestion for f in S.check_species_italic(st)}
     assert got == {"Solanum tuberosum", "Capsicum annuum",
                    "Atropa belladonna", "Datura stramonium"}
+
+
+# ------------------------------------------- formulas beyond the curated sixty
+
+def test_a_formula_outside_the_list_is_still_subscripted():
+    """A manuscript on the catalytic oxidation of thiourea is made of the formulas the
+    curated list does not have. Its reaction scheme came through untouched and nothing
+    said so."""
+    got = S.enforce_all_formula_subscripts([
+        "Thiourea (NH2CSNH2) was oxidised with K2S2O8 in H2SO4.",
+        "Cr (IV)+ H  N2CSNH2Cr (III) + H  N2CH   N2SSCNH2NH2",
+    ])
+    assert got[0] == "Thiourea (NH₂CSNH₂) was oxidised with K₂S₂O₈ in H₂SO₄."
+    assert "N₂CSNH₂" in got[1]
+
+
+def test_equipment_and_statistics_survive_the_general_parser():
+    """Why the general pattern was rejected the first time: over the corpus it
+    returned 950 hits led by `D8`, `M4`, `R2` and `M0`. None of `D`, `M` or `R` is an
+    element symbol, so insisting every symbol be real throws all four out."""
+    text = ["A Bruker D8 gave R2 = 0.98 for the M4 and M0 samples over I2C."]
+    assert S.enforce_all_formula_subscripts(text) == text
+
+
+def test_the_confusables_the_corpus_named():
+    """Every one of these parses cleanly as element symbols and none is chemistry.
+    `OV2640` is a camera sensor, `BF00581071` a reference number, `SCF70` a specimen
+    code, `SSW1` another, `B12` the vitamin, `V11NU02` a part number."""
+    for token in ("OV2640", "BF00581071", "SCF70", "SSW1", "SSW2", "B12", "K3",
+                  "V11NU02", "PI3K", "V2I", "HV3", "T2", "CD4"):
+        assert not S.parses_as_formula(token), token
+
+
+def test_real_formulas_of_every_shape():
+    for token in ("H2O", "CO2", "FeCl3", "Fe3O4", "C6H12O6", "NH2CONH2", "K2S2O8",
+                  "Ti6Al4V", "MgAl2O4", "CH3COOH", "N2", "O2", "I2"):
+        assert S.parses_as_formula(token), token
+
+
+def test_an_already_subscripted_formula_is_untouched_by_the_general_parser():
+    text = ["Starch–Fe₃O₄ nanoblends and H₂O were used."]
+    assert S.enforce_all_formula_subscripts(text) == text

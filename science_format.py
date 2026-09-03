@@ -427,3 +427,98 @@ def enforce_language_variant(paras: List[str], lang_type: str) -> List[str]:
         return _match_case(word, target) if target else word
 
     return [pattern.sub(swap, p) if p else p for p in paras]
+
+# ------------------------------------------------- formulas beyond the curated list
+
+#: Every element symbol. This is what separates a formula from a sample label, and it
+#: is why the general `[A-Z][a-z]?\d` pattern was rejected earlier: over the corpus it
+#: returned 950 hits led by `D8`, `M4`, `R2` and `M0` — a diffractometer, a modulus and
+#: an R-squared. None of `D`, `M` or `R` is an element symbol, so a parser that insists
+#: every symbol be real throws all four out without needing a list of exceptions.
+_ELEMENTS = frozenset("""
+    H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn
+    Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La
+    Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po
+    At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr Rf Db Sg Bh Hs Mt Ds Rg
+    Cn Nh Fl Mc Lv Ts Og
+    """.split())
+
+#: A single element with a count is a formula only for the diatomics. Without this,
+#: `B12` (the vitamin) and `K3` (half of a hexacyanoferrate written across brackets)
+#: would be subscripted, and neither should be.
+_DIATOMIC = frozenset({"H2", "N2", "O2", "F2", "Cl2", "Br2", "I2", "O3"})
+
+#: No element in a real formula carries a count this large. The corpus supplied the
+#: reason: `OV2640` is a camera sensor, `FB1035` a specimen code and `BF00581071` a
+#: reference number, and all three parse cleanly as element symbols. `C6H12O6` needs
+#: 12, so that is the ceiling.
+_MAX_COUNT = 12
+
+#: Tokens that parse as chemistry and are not. Kept deliberately tiny — one entry,
+#: earned by measurement. `I2C` is the two-wire bus, written I²C with a *super*script
+#: when it is written properly at all, and it appeared 15 times across the corpus.
+#: Every entry was found by running the parser over 298 real manuscripts and reading
+#: all 89 tokens it proposed to change. These five are structurally indistinguishable
+#: from formulas — `HV3` has the shape of `NO3` — so no rule can separate them and
+#: naming them is the honest option. `I2C` is the two-wire bus (written I²C, with a
+#: *super*script), `V2I` is vehicle-to-infrastructure, `PI3K` and `P2Y12` are proteins,
+#: `HV3` is a Vickers hardness.
+_NOT_A_FORMULA = frozenset({"I2C", "SI6", "PI3K", "V2I", "P2Y12", "HV3", "HN6", "UP2"})
+
+_FORMULA_TOKEN = re.compile(r"(?<![A-Za-z0-9₀-₉.])([A-Z][A-Za-z0-9]{1,14})(?![A-Za-z0-9₀-₉])")
+_SYMBOL_RUN = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+
+def parses_as_formula(token: str) -> bool:
+    """Does `token` read end to end as element symbols with counts?
+
+    `FeCl3` -> Fe, Cl3. `M4` -> `M` is not an element, so no. The digit requirement
+    keeps ordinary words out: `Bacon` happens to spell Ba-C-O-N and is rejected because
+    nothing in it is a count.
+    """
+    if not any(ch.isdigit() for ch in token) or token in _NOT_A_FORMULA:
+        return False
+    pos, symbols, counts = 0, [], []
+    for m in _SYMBOL_RUN.finditer(token):
+        if m.start() != pos:
+            return False                      # a gap means something did not parse
+        if m.group(1) not in _ELEMENTS:
+            return False
+        if m.group(2) and (int(m.group(2)) > _MAX_COUNT
+                           or m.group(2).startswith("0")):
+            return False    # no formula writes a leading zero; `V11NU02` is a code
+        symbols.append(m.group(1))
+        counts.append(m.group(2))
+        pos = m.end()
+    if pos != len(token) or not symbols:
+        return False
+    # A count of 1 is never written in chemistry — H2O, not H2O1 — so a token that
+    # carries one is a label. `SSW1` was in the corpus.
+    if any(c == "1" for c in counts):
+        return False
+    # Three or more single-letter symbols with the only count on the last is the shape
+    # of a specimen code (`SSW2`, `SCF70`), not of a formula: real ones carry their
+    # counts inside (`H2SO4`), and the short ones have fewer than three symbols
+    # (`CO2`).
+    if (len(symbols) >= 3 and all(len(x) == 1 for x in symbols)
+            and not any(counts[:-1]) and counts[-1]):
+        return False
+    # One element and a count is only a formula for the diatomics; `B12` and `K3` are
+    # a vitamin and a fragment.
+    return len(set(symbols)) >= 2 or token in _DIATOMIC
+
+
+def enforce_all_formula_subscripts(paras: List[str]) -> List[str]:
+    """`NH2CSNH2` -> `NH₂CSNH₂`, for any formula, not only the curated ones.
+
+    The curated list covers the sixty formulas that turn up constantly; a manuscript
+    on the catalytic oxidation of thiourea is made of the ones it does not. Every
+    token is parsed against the periodic table instead, so `D8`, `M4` and `R2` are
+    rejected because `D`, `M` and `R` are not element symbols — which is the same
+    result the curated list gave, reached by a rule rather than by enumeration.
+    """
+    def fix(text: str) -> str:
+        return _FORMULA_TOKEN.sub(
+            lambda m: _subscripted(m.group(1)) if parses_as_formula(m.group(1))
+            else m.group(1), text)
+    return [fix(p) if p else p for p in paras]
