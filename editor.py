@@ -962,6 +962,61 @@ def _format_keywords_line(line: str) -> str:
     return label + ", ".join(items)
 
 
+#: An in-text element citation wrapped in square brackets. The house sets these in
+#: parentheses — `(Figure 2)`, `(Table 1)` — and square brackets are reserved for the
+#: numbered reference markers, so `[Figure 2]` reads as reference 'Figure 2'.
+#:
+#: Found by reading the redline of a real job: the copyedit expanded `[Fig. 2]` to
+#: `[Figure 2]`, applying the element-label rule and leaving the bracket it had just
+#: edited around. The same manuscript came out with five `[Figure N]` and two
+#: `(Figure N)`. Deterministic here rather than another line in the prompt, because
+#: the model had already been told the house form and still produced both.
+_BRACKETED_ELEMENT = re.compile(
+    # The plural matters: `[Figures 8 and 9]` is the same fault and the singular-only
+    # pattern walked straight past it.
+    r"\[\s*((?:Figures?|Figs?\.?|Tables?|Tabs?\.?|Equations?|Eqs?\.?"
+    r"|Schemes?|Plates?)"
+    r"\s*\d+[A-Za-z]?(?:\s*\([a-z]\))?(?:\s*(?:and|,|[-\u2013])\s*\d+[A-Za-z]?)*)\s*\]"
+)
+
+
+def enforce_element_citation_brackets(
+    paras: List[str], enabled_rule_ids: Optional[List[str]] = None,
+) -> List[str]:
+    """`[Figure 2]` -> `(Figure 2)`. Runs after the LLM edit, like the other
+    enforcements, so the change lands in the redline as a tracked change rather than
+    as a comment the editor has to apply by hand.
+
+    Reference markers are left alone: `[12]`, `[1-3]` and `[4, 5]` carry no element
+    word, so the pattern cannot reach them."""
+    if enabled_rule_ids is not None and "tables_figures" not in enabled_rule_ids:
+        return paras
+    return [_BRACKETED_ELEMENT.sub(r"(\1)", p) if p else p for p in paras]
+
+
+#: House sets temperatures closed up — `550°C`, not `550 °C`. This is deliberately
+#: against SI and CMOS, both of which put a space before the degree sign; it is a
+#: house decision, recorded here so nobody "corrects" it back later.
+#:
+#: The manuscript that exposed it came out with `550 °C` and `80-90 °C` alongside
+#: `4°C` and `105°C` — the copyedit added spaces to some and not others, so the file
+#: was inconsistent whichever convention you hold it to.
+_TEMPERATURE_SPACED = re.compile(r"(\d)\s+(°\s?[CFK]\b)")
+
+
+def enforce_temperature_spacing(paras: List[str]) -> List[str]:
+    """`550 °C` -> `550°C`, and `550 ° C` -> `550°C`.
+
+    Ungated, unlike the other enforcements: temperature spacing is not one of the
+    eleven publisher rule groups an editor can switch off, it is house typography.
+    Inventing a rule id for it here would put a toggle in the report that does not
+    exist anywhere in the settings.
+    """
+    return [_TEMPERATURE_SPACED.sub(lambda m: m.group(1) + m.group(2).replace(" ", ""), p)
+            if p else p
+            for p in paras]
+
+
 def enforce_keywords_format(
     paras: List[str], enabled_rule_ids: Optional[List[str]] = None,
 ) -> List[str]:

@@ -453,3 +453,67 @@ def test_a_correct_keywords_line_is_silent():
     assert "front.keywords-colon" not in found
     assert "front.keywords-label" not in found
     assert "front.keywords-missing" not in found
+
+
+# ---------------------------------- element citations and temperatures, in the redline
+
+def test_a_bracketed_figure_citation_becomes_parenthesised():
+    """Found in the redline of a real job: the copyedit expanded `[Fig. 2]` to
+    `[Figure 2]` — applying the element-label rule — and left the square bracket it
+    had just edited around. The same manuscript came out with five `[Figure N]` and
+    two `(Figure N)`."""
+    import editor as E
+
+    got = E.enforce_element_citation_brackets([
+        "a starch–iodine complex [Figure 2].",
+        "polysaccharide structures [Fig. 4] and [Table 1].",
+        "the peak [Figure 3(b)] and the range [Figures 8 and 9].",
+    ])
+    assert got[0] == "a starch–iodine complex (Figure 2)."
+    assert got[1] == "polysaccharide structures (Fig. 4) and (Table 1)."
+    assert got[2] == "the peak (Figure 3(b)) and the range (Figures 8 and 9)."
+
+
+def test_reference_markers_keep_their_square_brackets():
+    """`[12]` is a numbered reference marker and square brackets are correct there.
+    A rule that reached them would rewrite every citation in the manuscript."""
+    import editor as E
+
+    text = ["as reported earlier [1], and later [4, 5] and [7-9] confirmed it."]
+    assert E.enforce_element_citation_brackets(text) == text
+
+
+def test_the_rule_group_toggle_is_honoured():
+    import editor as E
+
+    text = ["see [Figure 2]."]
+    assert E.enforce_element_citation_brackets(text, ["heading"]) == text
+    assert E.enforce_element_citation_brackets(text, ["tables_figures"]) == \
+        ["see (Figure 2)."]
+
+
+def test_temperatures_are_closed_up():
+    """House sets `550°C`, deliberately against SI and CMOS, which both put a space
+    before the degree sign. The manuscript that exposed this came out with `550 °C`
+    and `80–90 °C` beside `4°C` and `105°C` — inconsistent under either convention."""
+    import editor as E
+
+    got = E.enforce_temperature_spacing([
+        "in a muffle furnace at 550 °C until constant weight.",
+        "heated at 80–90 °C for 2 hours.",
+        "stored at 4°C overnight.",
+        "held at 100 ° F throughout.",
+    ])
+    assert got[0] == "in a muffle furnace at 550°C until constant weight."
+    assert got[1] == "heated at 80–90°C for 2 hours."
+    assert got[2] == "stored at 4°C overnight."          # already correct, untouched
+    assert got[3] == "held at 100°F throughout."
+
+
+def test_other_spaced_units_are_not_closed_up():
+    """Only the degree sign. `550 mg` and `12 V` take their space — closing those
+    would be wrong and would undo the unit.spacing rule's own advice."""
+    import editor as E
+
+    text = ["a 550 mg dose at 12 V across 30 min."]
+    assert E.enforce_temperature_spacing(text) == text

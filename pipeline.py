@@ -33,8 +33,10 @@ from editor import (
     collect_table_texts,
     enforce_author_limit,
     enforce_drop_redundant_paren_citation,
+    enforce_element_citation_brackets,
     enforce_keywords_format,
     enforce_reference_year_only,
+    enforce_temperature_spacing,
     generate_ai_review,
     generate_cover_letter,
     generate_report,
@@ -238,6 +240,9 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs = enforce_reference_year_only(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_drop_redundant_paren_citation(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_keywords_format(edited_paragraphs, enabled_rule_ids)
+    edited_paragraphs = enforce_element_citation_brackets(
+        edited_paragraphs, enabled_rule_ids)
+    edited_paragraphs = enforce_temperature_spacing(edited_paragraphs)
 
     # The proofreading pass. Deliberately after every edit and enforcement, over the
     # text as it will actually be published — proofreading the author's draft would
