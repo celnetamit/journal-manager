@@ -21,6 +21,7 @@ from docx.opc.exceptions import PackageNotFoundError
 from typing import Any, Callable, Dict, Optional
 
 import config as app_config
+import usage as _usage
 import auth
 from docxmodel import read_structure
 from house_layout import check_all as house_check
@@ -105,7 +106,8 @@ def skip_reason(exc: BaseException) -> str:
 
 def run_pipeline(opts: Dict[str, Any], input_path: str,
                  progress_cb: Optional[Callable[[float, str], None]] = None,
-                 job_id: Optional[Any] = None) -> Dict[str, Any]:
+                 job_id: Optional[Any] = None,
+                 meter: Optional[_usage.Meter] = None) -> Dict[str, Any]:
     """Run the full manuscript pipeline. `opts` carries non-secret options;
     LLM settings (incl. the API key) are resolved server-side, never stored on
     the job. Returns a JSON-serializable result dict."""
@@ -113,7 +115,16 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         if progress_cb:
             progress_cb(min(max(frac, 0.0), 1.0), stage)
 
-    llm_settings = app_config.get_llm_settings()
+    # One meter per job. It rides in the settings dict — which is built fresh here
+    # and already threaded through every call — because three jobs can run at once
+    # and a module-level counter would blend them into one confident wrong number.
+    # The caller may own the meter. A job that fails still spent its tokens — often
+    # more than one that succeeds, because a chunk that burns its whole budget
+    # reasoning and returns nothing is a common failure — and a meter created here
+    # dies with the exception. Then failed jobs record zero, and a user could exhaust
+    # the budget on jobs that never count against their quota.
+    meter = meter if meter is not None else _usage.Meter()
+    llm_settings = _usage.attach(app_config.get_llm_settings(), meter)
     edit_style = opts["edit_style"]
     ref_style = opts["ref_style"]
     lang_type = opts["lang_type"]
@@ -419,6 +430,9 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
 
     progress(1.0, "Complete")
     return {
+        # What the job actually spent. `cost_usd` is None when the provider did not
+        # report one; that must render as "not reported", never as zero.
+        "usage": meter.snapshot(),
         "redline_path": str(redline_path),
         "journal_report_path": str(journal_report_path),
         "review_report_path": str(review_report_path),
@@ -484,8 +498,9 @@ def _process_job(job: Dict[str, Any]) -> None:
             raise JobCancelled()
         auth.update_job_progress(job_id, frac, stage)
 
+    meter = _usage.Meter()
     try:
-        result = run_pipeline(opts, job["input_path"], cb, job_id=job_id)
+        result = run_pipeline(opts, job["input_path"], cb, job_id=job_id, meter=meter)
         auth.complete_job(job_id, json.dumps(result))
     except JobCancelled:
         print(f"[worker] job {job_id} cancelled; stopping work")
@@ -508,6 +523,12 @@ def _process_job(job: Dict[str, Any]) -> None:
             pass
         auth.fail_job(job_id, reason)
     finally:
+        # Recorded on every path, including cancellation and failure. Whatever the
+        # provider was asked to do, it was paid for.
+        try:
+            auth.record_job_usage(job_id, meter.snapshot())
+        except Exception:
+            traceback.print_exc()
         # The uploaded input file is no longer needed once the job is done.
         path = job.get("input_path")
         try:

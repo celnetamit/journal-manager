@@ -74,6 +74,7 @@ CookieManager, COOKIE_MANAGER_AVAILABLE = _load_cookie_manager()
 
 import auth
 import config as app_config
+import usage as _usage
 import pipeline
 from editor import (
     JATS_MIME,
@@ -871,6 +872,23 @@ def _render_result(result: dict, kp: str) -> None:
             st.warning("JATS structural issues:\n- " + "\n- ".join(result["jats_issues"]))
 
 
+def _render_job_usage(job: dict) -> None:
+    """One line: what this job spent. Shown on failures too — a job that fell over
+    still burned its tokens, and hiding that is how a bill becomes a surprise."""
+    calls = int(job.get("llm_calls") or 0)
+    if not calls:
+        return
+    prompt = int(job.get("prompt_tokens") or 0)
+    completion = int(job.get("completion_tokens") or 0)
+    cached = int(job.get("cached_tokens") or 0)
+    parts = [f"{calls} model calls",
+             f"{prompt + completion:,} tokens ({prompt:,} in, {completion:,} out)"]
+    if cached:
+        parts.append(f"{cached:,} reused from cache")
+    parts.append(_usage.format_cost(job.get("cost_usd")))
+    st.caption(" · ".join(parts))
+
+
 def _render_job(job: dict) -> None:
     """Render a job's live status (auto-refreshing) or its final result."""
     status = job["status"]
@@ -882,9 +900,11 @@ def _render_job(job: dict) -> None:
         st.rerun()
     elif status == "error":
         st.error(f"Processing failed for **{job['filename']}**: {job.get('error_message')}")
+        _render_job_usage(job)
     elif status == "done":
         result = json.loads(job.get("result_json") or "{}")
         st.success(f"✅ Completed in {result.get('duration', '?')}s — {job['filename']}")
+        _render_job_usage(job)
         _render_result(result, kp=str(job["id"]))
 
 
@@ -921,6 +941,15 @@ with tab_editor:
             st.error("Please enter an embedding model in the sidebar to continue.")
             st.stop()
 
+        # The quota gate, before the upload is written and before a job row exists.
+        # `st.stop()` on its own line, not folded into a helper that returns a
+        # message: a gate whose refusal is only a returned value is a gate that can
+        # be walked past when a caller forgets to check it.
+        _quota = auth.quota_check(st.session_state.user_id)
+        if not _quota["allowed"]:
+            st.error(_quota["message"])
+            st.stop()
+
         out_dir = app_config.output_dir()
         # Unique token (not int(time.time()), which only has 1s resolution) so a
         # double-click or concurrent upload never overwrites another job's input.
@@ -951,6 +980,21 @@ with tab_editor:
         st.rerun()
 
     st.divider()
+    # Where the user stands this month, shown before they hit the wall rather than
+    # only at the moment they are refused.
+    _month = auth.month_usage(st.session_state.user_id)
+    _cap = auth.token_cap_for(st.session_state.user_id)
+    _spent = f"{_month['jobs']} jobs · {_month['total_tokens']:,} tokens"
+    if _month["cached_tokens"]:
+        _spent += f" ({_month['cached_tokens']:,} reused from cache)"
+    if _month["cost_usd"] is not None:
+        _spent += f" · {_usage.format_cost(_month['cost_usd'])}"
+    if _cap:
+        _left = max(0, _cap - _month["total_tokens"])
+        st.caption(f"This month: {_spent} — {_left:,} of {_cap:,} tokens left.")
+    else:
+        st.caption(f"This month: {_spent}.")
+
     _jobs = auth.fetch_user_jobs(st.session_state.user_id, limit=15)
     if not _jobs:
         st.info(
@@ -1285,12 +1329,48 @@ if tab_superadmin is not None:
                                 "id": u["id"], "username": u.get("username"),
                                 "email": u.get("email"), "role": u.get("role") or "member",
                                 "auth": u.get("auth_provider"), "jobs": u.get("job_count", 0),
+                                "tokens this month": f"{auth.month_usage(u['id'])['total_tokens']:,}",
+                                "cap": (lambda c: "no limit" if c == 0 else f"{c:,}")(
+                                    auth.token_cap_for(u["id"])),
                                 "last_active": u.get("last_active") or "—",
                             }
                             for u in users
                         ]),
                         width="stretch", hide_index=True,
                     )
+
+                    st.markdown("**Set a user's monthly token allowance**")
+                    st.caption(
+                        "Blank restores the deployment default "
+                        f"({auth.default_token_cap():,} tokens, 0 meaning no limit). "
+                        "Enter 0 to exempt someone. Admins are never capped."
+                    )
+                    _cap_by_label = {
+                        f'{u["username"]} (id {u["id"]})': u for u in users
+                    }
+                    with st.form("sa_cap_form"):
+                        _cap_sel = st.selectbox("User ", list(_cap_by_label.keys()),
+                                                key="sa_cap_user")
+                        _cap_val = st.text_input("Monthly token cap", value="",
+                                                 placeholder="leave blank for the default")
+                        _cap_go = st.form_submit_button("Apply allowance")
+                    if _cap_go:
+                        _target = _cap_by_label[_cap_sel]
+                        _raw = _cap_val.strip().replace(",", "")
+                        if not _raw:
+                            auth.set_token_cap(_target["id"], None)
+                            st.success(f'{_target["username"]} now uses the deployment default.')
+                        elif _raw.isdigit():
+                            auth.set_token_cap(_target["id"], int(_raw))
+                            st.success(
+                                f'{_target["username"]}: '
+                                + ("no limit." if int(_raw) == 0
+                                   else f"{int(_raw):,} tokens a month.")
+                            )
+                        else:
+                            # Named rather than silently ignored: a cap that looks
+                            # applied but was not is the worst of the three outcomes.
+                            st.error(f"'{_cap_val}' is not a number. Nothing was changed.")
 
                     st.markdown("**Change a user's role**")
                     by_label = {

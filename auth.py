@@ -12,6 +12,7 @@ Password hashing:
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import re
 import sqlite3
@@ -73,6 +74,9 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         ("email", "TEXT"),
         ("role", "TEXT DEFAULT 'member'"),
         ("auth_provider", "TEXT DEFAULT 'password'"),
+        # NULL means "use the deployment default". 0 means "no limit" — an explicit
+        # exemption, distinguishable from "nobody has set this yet".
+        ("monthly_token_cap", "INTEGER"),
     ):
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
@@ -151,6 +155,20 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
             finished_at TEXT
         )"""
     )
+    for col, decl in (
+        ("prompt_tokens", "INTEGER DEFAULT 0"),
+        ("completion_tokens", "INTEGER DEFAULT 0"),
+        ("cached_tokens", "INTEGER DEFAULT 0"),
+        ("llm_calls", "INTEGER DEFAULT 0"),
+        # REAL and nullable. NULL means the provider did not price the call, which
+        # is not the same as zero and must never be shown as "free".
+        ("cost_usd", "REAL"),
+        ("usage_json", "TEXT"),
+    ):
+        try:
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError:
+            pass
 
 
 def _ensure_schema_pg(cur: Any) -> None:
@@ -167,6 +185,8 @@ def _ensure_schema_pg(cur: Any) -> None:
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'member'")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'password'")
+    # NULL = use the deployment default; 0 = explicitly unlimited.
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_token_cap INTEGER")
     cur.execute(
         """CREATE TABLE IF NOT EXISTS process_logs (
             id SERIAL PRIMARY KEY,
@@ -233,6 +253,16 @@ def _ensure_schema_pg(cur: Any) -> None:
             finished_at TIMESTAMPTZ
         )"""
     )
+    for col, decl in (
+        ("prompt_tokens", "INTEGER DEFAULT 0"),
+        ("completion_tokens", "INTEGER DEFAULT 0"),
+        ("cached_tokens", "INTEGER DEFAULT 0"),
+        ("llm_calls", "INTEGER DEFAULT 0"),
+        # Nullable on purpose: NULL is "the provider reported no cost", not zero.
+        ("cost_usd", "DOUBLE PRECISION"),
+        ("usage_json", "TEXT"),
+    ):
+        cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {decl}")
 
 
 # --- Password hashing ---
@@ -818,6 +848,74 @@ def fail_job(job_id: int, error_message: str) -> None:
         conn.commit()
 
 
+def record_job_usage(job_id: int, snapshot: Dict[str, Any]) -> None:
+    """Store what a job spent. Called on every path — done, failed or cancelled.
+
+    Not guarded on status, unlike `complete_job` and `fail_job`: those two guard on
+    `running` so a cancelled job is not resurrected, but a cancelled job still spent
+    whatever it spent before it stopped, and that has to be on the record.
+    """
+    if not snapshot:
+        return
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE jobs SET prompt_tokens={ph}, completion_tokens={ph},
+                cached_tokens={ph}, llm_calls={ph}, cost_usd={ph}, usage_json={ph}
+                WHERE id={ph}""",
+            (int(snapshot.get("prompt_tokens") or 0),
+             int(snapshot.get("completion_tokens") or 0),
+             int(snapshot.get("cached_tokens") or 0),
+             int(snapshot.get("calls") or 0),
+             snapshot.get("cost_usd"),           # None stays None, never 0
+             json.dumps(snapshot),
+             job_id),
+        )
+        conn.commit()
+
+
+def month_usage(user_id: int, month: Optional[str] = None) -> Dict[str, Any]:
+    """This user's totals for a calendar month (default: the current one).
+
+    Counts every job the user started that month, whatever its status. A job that
+    failed still spent its tokens, and a quota that only counted successes could be
+    walked straight past by submitting work that fails.
+    """
+    ph = "%s" if _is_postgres() else "?"
+    if month is None:
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+    with _connect() as conn:
+        cur = conn.cursor()
+        if _is_postgres():
+            where = f"user_id={ph} AND to_char(created_at, 'YYYY-MM')={ph}"
+        else:
+            where = f"user_id={ph} AND substr(created_at, 1, 7)={ph}"
+        cur.execute(
+            f"""SELECT COUNT(*) AS jobs,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+                       SUM(cost_usd) AS cost_usd
+                FROM jobs WHERE {where}""",
+            (user_id, month),
+        )
+        row = cur.fetchone() or {}
+        row = dict(row)
+    prompt = int(row.get("prompt_tokens") or 0)
+    completion = int(row.get("completion_tokens") or 0)
+    return {
+        "month": month,
+        "jobs": int(row.get("jobs") or 0),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "cached_tokens": int(row.get("cached_tokens") or 0),
+        "total_tokens": prompt + completion,
+        # SUM over all-NULL is NULL, which is the honest answer: nothing was priced.
+        "cost_usd": row.get("cost_usd"),
+    }
+
+
 def get_job(job_id: int) -> Optional[dict]:
     ph = "%s" if _is_postgres() else "?"
     with _connect() as conn:
@@ -1148,3 +1246,75 @@ def db_table_counts() -> Dict[str, int]:
             except Exception:
                 out[table] = -1
     return out
+
+
+# --- Monthly usage quota -------------------------------------------------------
+#
+# Named as the launch blocker: nothing stopped one user submitting a 500-page file
+# twenty times. The cap is measured in tokens, not in money, because tokens are always
+# reported and a cost is not — a limit that silently stops being enforced whenever the
+# provider omits a price is not a limit.
+
+def default_token_cap() -> int:
+    """Deployment-wide monthly cap. 0 disables the quota entirely."""
+    try:
+        return max(0, int(os.getenv("MONTHLY_TOKEN_CAP", "0")))
+    except (TypeError, ValueError):
+        return 0
+
+
+def token_cap_for(user_id: Optional[int]) -> int:
+    """This user's monthly cap. 0 means no limit.
+
+    Admins are exempt. That is 3.4 of the plan and not a convenience: the person who
+    has to clear a stuck queue at midnight must never be the person locked out by
+    their own quota.
+    """
+    if user_id is None:
+        return 0
+    if is_admin(user_id) or is_superadmin(user_id):
+        return 0
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT monthly_token_cap FROM users WHERE id={ph}", (user_id,))
+        row = cur.fetchone()
+    if row is not None:
+        value = dict(row).get("monthly_token_cap")
+        if value is not None:              # 0 here is a deliberate exemption
+            return max(0, int(value))
+    return default_token_cap()
+
+
+def set_token_cap(user_id: int, cap: Optional[int]) -> None:
+    """Set or clear one user's cap. `None` restores the deployment default."""
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE users SET monthly_token_cap={ph} WHERE id={ph}",
+                    (None if cap is None else max(0, int(cap)), user_id))
+        conn.commit()
+
+
+def quota_check(user_id: Optional[int]) -> Dict[str, Any]:
+    """Whether this user may start another job, and the numbers behind the answer.
+
+    Returns `allowed`, plus `used`, `cap` and a `message`. The message is the point:
+    a refusal that just says no leaves the user with nothing to do about it, so it
+    names the number, the limit and when it resets.
+    """
+    cap = token_cap_for(user_id)
+    used = month_usage(user_id)["total_tokens"] if user_id is not None else 0
+    if cap <= 0:
+        return {"allowed": True, "used": used, "cap": 0, "message": ""}
+    if used < cap:
+        return {"allowed": True, "used": used, "cap": cap, "message": ""}
+    now = datetime.now(timezone.utc)
+    resets = f"{now.year + (now.month == 12)}-{(now.month % 12) + 1:02d}-01"
+    return {
+        "allowed": False, "used": used, "cap": cap,
+        "message": (
+            f"You have used {used:,} of your {cap:,} tokens for {now.strftime('%B')}. "
+            f"The allowance resets on {resets}. Ask an administrator if you need more."
+        ),
+    }

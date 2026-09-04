@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import docx
 import docxmodel as _docxmodel
+import usage as _usage
 import hyperlinks as _hyperlinks
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -189,6 +190,9 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
             resp = client.models.generate_content(
                 model=cfg["text_model"], contents=prompt, **kwargs,
             )
+            meter = _usage.meter_from(settings)
+            if meter is not None:
+                meter.record(_usage.from_gemini(resp), cfg["text_model"])
             time.sleep(1)
             return (resp.text or "").strip()
 
@@ -213,6 +217,10 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
                 "model": cfg["text_model"],
                 "messages": messages,
                 "temperature": _llm_temperature(),
+                # Ask the provider for the real charge. The alternative is a price
+                # table in our code, which is correct on the day it is written and
+                # confidently wrong the first time a model or a price changes.
+                "usage": {"include": True},
             }
             if response_mime_type == "application/json":
                 payload["response_format"] = {"type": "json_object"}
@@ -226,6 +234,12 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
             if cfg["api_key"]:
                 headers["Authorization"] = f"Bearer {cfg['api_key']}"
             data = _post_json(f"{base}/chat/completions", payload, headers=headers)
+            # Recorded before anything can raise. A call that came back unusable still
+            # spent the tokens and still appears on the invoice, so a total that only
+            # counts the successes understates what the job cost.
+            meter = _usage.meter_from(settings)
+            if meter is not None:
+                meter.record(data.get("usage"), cfg["text_model"])
             try:
                 choice = data["choices"][0]
                 text = choice["message"]["content"]
