@@ -175,3 +175,32 @@ def test_findings_convert_to_the_query_shape_the_redline_expects():
     # read `q["index"]`, and the wrong key makes the finding vanish without an error.
     assert set(q) == {"index", "snippet", "query", "suggestion"}
     assert q["index"] == 0
+
+
+# --- House panel: routine vs notable findings ---------------------------------
+
+def test_routine_split_keeps_manuscript_specific_findings_visible():
+    """The point of the split. `heading.case` fires on 39.5% of manuscripts and is
+    about this one; `page.geometry` fires on 99.3% and is about all of them."""
+    import house_layout
+    routine, notable = house_layout.split_routine([
+        {"rule": "page.geometry"}, {"rule": "heading.case"},
+        {"rule": "body.first-line-indent"}, {"rule": "table.not-cited"},
+    ])
+    assert [f["rule"] for f in notable] == ["heading.case", "table.not-cited"]
+    assert len(routine) == 2
+
+
+def test_routine_split_drops_nothing():
+    import house_layout
+    items = [{"rule": r} for r in
+             ["page.geometry", "heading.case", "unknown.rule", "table.size"]]
+    routine, notable = house_layout.split_routine(items)
+    assert len(routine) + len(notable) == len(items)
+
+
+def test_an_unrecognised_rule_is_treated_as_notable():
+    """A new rule must show up, not disappear into the collapsed group."""
+    import house_layout
+    routine, notable = house_layout.split_routine([{"rule": "brand.new.rule"}])
+    assert notable and not routine

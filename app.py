@@ -74,6 +74,7 @@ CookieManager, COOKIE_MANAGER_AVAILABLE = _load_cookie_manager()
 
 import auth
 import config as app_config
+import house_layout
 import usage as _usage
 import pipeline
 from editor import (
@@ -753,24 +754,42 @@ def _render_house_panel(result: dict, kp: str) -> None:
             "is not part of the document body, so until now nothing had ever read it."
         )
 
+    def _render_findings(items):
+        ordered = sorted(items, key=lambda f: (_SEVERITY_ORDER.get(f.get("severity"), 3),
+                                               f.get("rule", "")))
+        for f in ordered:
+            icon = _SEVERITY_ICON.get(f.get("severity"), "•")
+            where = (f"¶{f['paragraph'] + 1}" if isinstance(f.get("paragraph"), int)
+                     else "document")
+            st.markdown(f"{icon} **{where}** · `{f.get('rule', '')}` — "
+                        f"{f.get('message', '')}")
+            detail = (f.get("detail") or "").strip()
+            if detail:
+                st.caption(f"> {detail[:160]}")
+            suggestion = (f.get("suggestion") or "").strip()
+            if suggestion:
+                st.caption(f"Suggested: {suggestion[:160]}")
+
     for title, items in (("Layout and house style", house), ("Proofreading", proof)):
         if not items:
             continue
-        ordered = sorted(items, key=lambda f: (_SEVERITY_ORDER.get(f.get("severity"), 3),
-                                               f.get("rule", "")))
+        # In summary mode the fourteen findings that are true of nearly every author
+        # submission move one expander deeper, so what is specific to *this*
+        # manuscript is not buried under what is true of all of them. Nothing is
+        # dropped; an editor checking house compliance still needs the list.
+        routine, notable = ([], items)
+        if title.startswith("Layout") and _house_panel_summary():
+            routine, notable = house_layout.split_routine(items)
         with st.expander(f"{title} — {len(items)} item(s)", expanded=bool(errors)):
-            for f in ordered:
-                icon = _SEVERITY_ICON.get(f.get("severity"), "•")
-                where = (f"¶{f['paragraph'] + 1}" if isinstance(f.get("paragraph"), int)
-                         else "document")
-                st.markdown(f"{icon} **{where}** · `{f.get('rule', '')}` — "
-                            f"{f.get('message', '')}")
-                detail = (f.get("detail") or "").strip()
-                if detail:
-                    st.caption(f"> {detail[:160]}")
-                suggestion = (f.get("suggestion") or "").strip()
-                if suggestion:
-                    st.caption(f"Suggested: {suggestion[:160]}")
+            _render_findings(notable)
+            if routine:
+                st.caption(
+                    f"{len(routine)} further item(s) are the usual layout differences "
+                    "for an author submission — measured on 1,606 manuscripts, each of "
+                    "these appears in more than half of them."
+                )
+                with st.expander(f"Show the routine layout items — {len(routine)}"):
+                    _render_findings(routine)
 
     if table_queries:
         with st.expander(f"Questions about table content — {len(table_queries)}"):
@@ -870,6 +889,16 @@ def _render_result(result: dict, kp: str) -> None:
             st.caption("✓ Structurally valid JATS")
         elif result.get("jats_issues"):
             st.warning("JATS structural issues:\n- " + "\n- ".join(result["jats_issues"]))
+
+
+def _house_panel_summary() -> bool:
+    """Whether to collapse the routine layout findings.
+
+    Defaults to today's behaviour. Amit had not decided between leaving the panel and
+    collapsing it, so this ships as a switch rather than as another rewrite: set
+    HOUSE_PANEL_MODE=summary to try it, unset it to go back.
+    """
+    return os.getenv("HOUSE_PANEL_MODE", "full").strip().lower() == "summary"
 
 
 def _render_job_usage(job: dict) -> None:

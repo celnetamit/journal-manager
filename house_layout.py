@@ -828,3 +828,51 @@ def summarise(findings: List[Finding]) -> Dict[str, Any]:
         by_rule[f.rule] = by_rule.get(f.rule, 0) + 1
         by_sev[f.severity] = by_sev.get(f.severity, 0) + 1
     return {"total": len(findings), "by_severity": by_sev, "by_rule": by_rule}
+
+
+# --- Which findings are worth reading -----------------------------------------
+#
+# The panel said the same fourteen true things about almost every manuscript. They
+# are true — these are author submissions, and authors do not typeset to a house
+# sheet — but a line that appears every time carries no information, and it buries
+# the ones that do.
+#
+# Measured over 1,606 manuscripts (sweep-213339). There is a real gap in the
+# distribution: `references.hanging-indent` at 59.1%, then `references.size` at
+# 48.6% and nothing in between. The 55% cutoff sits in that valley rather than being
+# picked to look tidy.
+#
+# This is a fixed list, not a threshold computed at runtime: one manuscript cannot
+# know what is universal across the corpus, and a rule that quietly reclassified
+# itself as the corpus drifted would change what an editor sees without telling
+# anyone. Re-measure and edit the list deliberately.
+ROUTINE_RULES = frozenset({
+    "page.geometry",             # 99.3% of manuscripts
+    "body.first-line-indent",    # 98.1%
+    "title.size",                # 86.4%
+    "title.font",                # 83.2%
+    "body.size",                 # 81.4%
+    "authors.font",              # 80.4%
+    "abstract.size",             # 78.0%
+    "abstract-heading.size",     # 71.3%
+    "table.size",                # 68.7%
+    "title.alignment",           # 66.1%
+    "keywords.size",             # 65.7%
+    "authors.alignment",         # 61.5%
+    "table.border",              # 60.8%
+    "references.hanging-indent", # 59.1%
+})
+
+
+def split_routine(findings):
+    """(routine, notable). Routine means "true of nearly every submission".
+
+    Nothing is dropped. The collapsed group is still rendered, one expander deeper,
+    because an editor checking house compliance genuinely needs the list — the
+    complaint was that it drowned everything else, not that it was wrong.
+    """
+    routine, notable = [], []
+    for f in findings:
+        rule = f.get("rule") if isinstance(f, dict) else getattr(f, "rule", None)
+        (routine if rule in ROUTINE_RULES else notable).append(f)
+    return routine, notable
