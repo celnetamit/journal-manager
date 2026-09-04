@@ -221,6 +221,12 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
                 # table in our code, which is correct on the day it is written and
                 # confidently wrong the first time a model or a price changes.
                 "usage": {"include": True},
+                # Explicit, because "no `stream` key" is not the same as
+                # `stream: false` everywhere. OpenRouter defaults to non-streaming,
+                # but a self-hosted OpenAI-compatible gateway may not — one of them
+                # streams by default, and `_post_json` then fails with a bare
+                # JSONDecodeError that says nothing about the real cause.
+                "stream": False,
             }
             if response_mime_type == "application/json":
                 payload["response_format"] = {"type": "json_object"}
