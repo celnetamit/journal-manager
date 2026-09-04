@@ -1213,10 +1213,20 @@ def _lost_content(original: str, edited: str) -> bool:
     array length and the type of `edited`, so a truncated paragraph is accepted in
     silence and reaches the redline looking like a deliberate cut.
     """
-    if len(original.strip()) < _GUARD_MIN_CHARS:
-        return False
+    # Emptying is checked first and for every length. The short-paragraph exemption
+    # below exists because a large *proportional* cut is often a correct edit on a
+    # heading — "2.2 Material characteristics" -> "Material characteristics" — but
+    # that reasoning never applied to deleting the paragraph outright.
+    #
+    # Measured 2026-09-04: a real sentence with a citation, "real-time, flagging
+    # unusual behavior and preventing unauthorized access attempts [6].", came back
+    # empty and reached the redline in silence — 85 characters, so the exemption
+    # skipped it. Nothing else in the pipeline looks at whether the author's text
+    # survived, so it was reported as a clean run with zero skipped chunks.
     if not edited.strip():
         return True
+    if len(original.strip()) < _GUARD_MIN_CHARS:
+        return False
     return len(edited) < len(original) * _MIN_KEPT
 
 

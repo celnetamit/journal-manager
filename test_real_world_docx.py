@@ -398,3 +398,23 @@ def test_a_short_heading_may_lose_its_number(monkeypatch):
         ["2.2 Material characteristics"], {}, "CMOS", "Vancouver", "US English", "", False)
     assert edited == ["Material characteristics"]
     assert queries == []
+
+
+def test_an_emptied_paragraph_is_caught_at_any_length():
+    """The short-paragraph exemption is about *proportional* cuts on headings. It was
+    never meant to allow deleting a paragraph outright, and on 2026-09-04 it did: an
+    85-character sentence carrying a citation came back empty and reached the redline
+    with nothing reported — no error, no skipped chunk, no warning."""
+    import editor
+    short_sentence = ("real-time, flagging unusual behavior and preventing "
+                      "unauthorized access attempts [6].")
+    assert len(short_sentence) < editor._GUARD_MIN_CHARS
+    assert editor._lost_content(short_sentence, "") is True
+    assert editor._lost_content(short_sentence, "   ") is True
+
+
+def test_a_heading_may_still_lose_its_number():
+    """The exemption must keep working for what it was for."""
+    import editor
+    assert editor._lost_content("2.2 Material characteristics",
+                                "Material characteristics") is False
