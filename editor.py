@@ -12,6 +12,7 @@ import difflib
 import json
 import os
 import re
+import sys as _sys
 import threading
 import time
 import concurrent.futures
@@ -20,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import docx
 import docxmodel as _docxmodel
+import hyperlinks as _hyperlinks
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import numpy as np
@@ -1655,6 +1657,17 @@ def generate_redline_docx(
                     anchor, text="\n".join(notes),
                     author="AI Editor", initials="AE",
                 )
+
+    # Make DOIs, URLs and e-mail addresses clickable. Last, so it sees the finished
+    # document, and it only wraps runs that already exist — it never touches the
+    # paragraph list the tracked changes are aligned to.
+    try:
+        _hyperlinks.linkify_document(doc)
+    except Exception as exc:
+        # A redline without links is still a usable redline; a lost redline is not.
+        # Loud on stderr, though — a link failure that leaves no trace is how this
+        # would quietly stop working for every manuscript and nobody would know.
+        print(f"redline: hyperlinking failed, links omitted: {exc!r}", file=_sys.stderr)
 
     doc.save(output_path)
 
