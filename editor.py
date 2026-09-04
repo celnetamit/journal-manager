@@ -231,7 +231,12 @@ def _generate_text(prompt: str, settings: Optional[Dict[str, Any]] = None,
             if response_mime_type == "application/json":
                 payload["response_format"] = {"type": "json_object"}
             cap = _reasoning_max_tokens()
-            if cap:
+            # OpenRouter's own knob, and only OpenRouter's. Sending it to another
+            # OpenAI-compatible endpoint gets a 400 "Unknown parameter:
+            # 'reasoning.max_tokens'" — which a gateway in front of it may relay as a
+            # 503, so the failure arrives looking like the backend is down rather than
+            # like a request it could not accept.
+            if cap and provider == "openrouter":
                 # OpenRouter's own knob. `effort: "low"` and `enabled: false` were
                 # both tried against this model and returned an error and an HTTP
                 # 400 respectively; an explicit token cap is the form it accepts.
