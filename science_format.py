@@ -554,3 +554,57 @@ def enforce_science_symbols(paras: List[str]) -> List[str]:
         text = text.replace(_INCREMENT_SIGN, _GREEK_DELTA)
         return _THERMO_CASE.sub(lambda m: m.group(1) + m.group(2).upper(), text)
     return [fix(p) if p else p for p in paras]
+
+
+# --- SI unit capitalisation ----------------------------------------------------
+
+#: Unit symbols whose miscapitalisation has no valid alternative reading, so they can
+#: be corrected without asking. `kilo` is always a lowercase `k`, and `pascal` always
+#: a capital `P`.
+_UNIT_CASE = {
+    "KJ": "kJ", "Kj": "kJ",
+    "KG": "kg", "Kg": "kg",
+    "KM": "km", "Km": "km",
+    "KHZ": "kHz", "KHz": "kHz", "Khz": "kHz",
+    "MHZ": "MHz", "Mhz": "MHz",
+    "GHZ": "GHz", "Ghz": "GHz",
+    "HZ": "Hz",
+    "Kpa": "kPa", "KPA": "kPa",
+    "Mpa": "MPa", "MPA": "MPa",
+    "Gpa": "GPa", "GPA": "GPa",
+}
+
+#: **Do not add these.** Every one of them is a valid SI symbol in its own right, and
+#: "correcting" it changes the quantity by a factor of a billion:
+#:
+#:   Mg  megagram   — not milligram
+#:   ML  megalitre  — not millilitre
+#:   Nm  newton-metre — not nanometre
+#:   Mm  megametre  — not millimetre
+#:
+#: This list exists so that nobody later completes the table above from a style guide
+#: and silently rewrites `4.2 Nm` of torque into `4.2 nm`. A wrong unit that *looks*
+#: plausible is worse than one that looks odd, because nothing downstream will query
+#: it. If these ever need handling, they get a query for a human, never a rewrite.
+_AMBIGUOUS_UNITS = ("Mg", "ML", "Nm", "Mm", "Min", "Cm", "Dm")
+
+#: Only in a measurement context — a number, optional space, then the symbol. Without
+#: this, `KG` inside an initialism and `Hz` in a surname both get rewritten.
+_UNIT_CASE_RE = re.compile(
+    r"(?<=\d)(\s*)(" + "|".join(sorted(_UNIT_CASE, key=len, reverse=True)) + r")\b"
+)
+
+
+def enforce_unit_case(paras: List[str]) -> List[str]:
+    """`5 KJ` -> `5 kJ`. Only where the symbol follows a number, and only for symbols
+    that cannot mean anything else.
+
+    Measured across 396 corpus manuscripts before building it: wrong unit case appears
+    10 times in 10 manuscripts, so this is a small rule by design. It exists because it
+    was the one consistency check where a cheaper model measurably lagged, and a thing
+    a machine can guarantee should not be left to one.
+    """
+    def fix(text: str) -> str:
+        return _UNIT_CASE_RE.sub(
+            lambda m: m.group(1) + _UNIT_CASE[m.group(2)], text)
+    return [fix(p) if p else p for p in paras]

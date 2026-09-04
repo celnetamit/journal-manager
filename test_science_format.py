@@ -288,3 +288,51 @@ def test_an_ordinary_lowercase_delta_term_is_left_alone():
 def test_the_double_dagger_form_is_handled_too():
     got = S.enforce_science_symbols(["(∆s‡) and (∆g‡) were derived."])
     assert got[0] == "(ΔS‡) and (ΔG‡) were derived."
+
+
+# --- SI unit capitalisation ----------------------------------------------------
+
+import pytest
+
+
+@pytest.mark.parametrize("before, after", [
+    ("Enthalpy was 42 KJ per mole.", "Enthalpy was 42 kJ per mole."),
+    ("A 5 KG sample.", "A 5 kg sample."),
+    ("Pellets pressed at 200 Mpa.", "Pellets pressed at 200 MPa."),
+    ("45.06 MPA in an asymmetric case", "45.06 MPa in an asymmetric case"),
+    ("sampling frequency of 700 HZ", "sampling frequency of 700 Hz"),
+    ("avance neo 500Mhz with solvent", "avance neo 500MHz with solvent"),
+    ("at a frequency of 50 KHz", "at a frequency of 50 kHz"),
+    ("emisión de CO2 de 59.4Kg y", "emisión de CO2 de 59.4kg y"),
+])
+def test_unambiguous_unit_case_is_corrected(before, after):
+    assert S.enforce_unit_case([before]) == [after]
+
+
+@pytest.mark.parametrize("text", [
+    "a torque of 4.2 Nm was applied",      # newton-metre, NOT nanometre
+    "10 Mg of soil was collected",         # megagram, NOT milligram
+    "a reservoir of 25 ML",                # megalitre, NOT millilitre
+    "a distance of 3 Mm",                  # megametre, NOT millimetre
+])
+def test_ambiguous_units_are_never_rewritten(text):
+    """Every one of these is a valid SI symbol. 'Correcting' it changes the quantity
+    by a factor of a billion, and the result looks plausible enough that nothing
+    downstream would ever query it."""
+    assert S.enforce_unit_case([text]) == [text]
+
+
+def test_only_corrects_in_a_measurement_context():
+    """Without the preceding number, `KG` is an initialism and `Hz` is a surname."""
+    for text in ("The KG index is unrelated.", "Reported by Hz and colleagues.",
+                 "the KJV translation"):
+        assert S.enforce_unit_case([text]) == [text]
+
+
+def test_already_correct_text_is_untouched():
+    text = "run at 100 kJ, 50 Hz and 2.4 GHz"
+    assert S.enforce_unit_case([text]) == [text]
+
+
+def test_empty_and_none_paragraphs_survive():
+    assert S.enforce_unit_case(["", None, "5 KJ"]) == ["", None, "5 kJ"]
