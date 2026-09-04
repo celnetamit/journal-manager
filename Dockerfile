@@ -56,8 +56,25 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl --fail --silent http://localhost:8501/_stcore/health || exit 1
 
-CMD ["sh", "-c", "streamlit run app.py \
-    --server.port=${PORT} \
-    --server.address=0.0.0.0 \
-    --server.headless=true \
-    --browser.gatherUsageStats=false"]
+# Two processes: the web app and the job worker.
+#
+# The worker used to live inside the Streamlit script, which Streamlit runs per browser
+# session rather than at boot — so after every deploy the queue stood still until
+# somebody opened the page, while the app kept telling users they could close the tab
+# and come back. Measured 2026-09-04: three jobs sat queued for twenty minutes after a
+# restart with `GET /` answering 200 throughout.
+#
+# `wait -n` is the point of using bash here: the container exits as soon as *either*
+# process does, so a dead worker restarts the container instead of leaving a web app
+# that accepts jobs and never runs them. That state looks completely healthy from
+# outside, which is why it must not be possible.
+CMD ["bash", "-c", "python worker.py & WORKER=$!; \
+    streamlit run app.py \
+      --server.port=${PORT} \
+      --server.address=0.0.0.0 \
+      --server.headless=true \
+      --browser.gatherUsageStats=false & APP=$!; \
+    wait -n; \
+    echo 'one of the app/worker processes exited; stopping the container' >&2; \
+    kill $WORKER $APP 2>/dev/null; \
+    exit 1"]
