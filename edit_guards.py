@@ -172,3 +172,108 @@ def orphaned_formula_queries(originals: List[str],
                 "suggestion": "",
             })
     return queries
+
+
+# --- table cells: is this edit even for this cell? -----------------------------
+
+#: How much of a cell's own wording must survive for the result to be an edit of it.
+#: A copyedit rephrases; it does not replace. Below this, the text belongs elsewhere.
+_MIN_CELL_OVERLAP = 0.5
+
+_CELL_NORM = re.compile(r"[^a-z0-9]+")
+
+
+def _norm_cell(text: str) -> str:
+    return _CELL_NORM.sub(" ", (text or "").lower()).strip()
+
+
+def _is_title_casing(before: str, after: str) -> bool:
+    """Did the edit only put capitals on words that were lowercase?
+
+    `pH` corrected from `ph` is a real fix and must pass. `Improved adaptive
+    detection` -> `Improved Adaptive Detection` is a heading rule reaching text that
+    is not a heading, so two or more words gaining a capital is the signature.
+    """
+    wb, wa = before.split(), after.split()
+    if len(wb) != len(wa):
+        return False
+    promoted = sum(
+        1 for b, a in zip(wb, wa)
+        if b != a and b.lower() == a.lower() and b[:1].islower() and a[:1].isupper()
+    )
+    return promoted >= 2
+
+
+def verify_cell_edits(
+    originals: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Accept a table cell's edit only if it is plausibly an edit *of that cell*.
+
+    Table cells are sent to the model as a bare array and written back by position.
+    That contract holds for body paragraphs, which are long and distinct. It does not
+    hold for table cells: they are short, similar, and on job 46 the model returned a
+    three-row table's cells **in a different order**. The five strings all came back —
+    none was lost — but each landed in the wrong cell, and in the redline that reads as
+    a deliberate edit rather than as corruption. A reviewer has no way to tell.
+
+    So position is no longer trusted on its own. Three refusals, each aimed at a
+    failure that was observed rather than imagined:
+
+    * the text now sitting here is, word for word, some *other* cell's text — the
+      permutation signature, and by itself enough to reject the cell;
+    * too little of this cell's own wording survived. A copyedit rephrases a cell; one
+      that keeps under half of its words is describing something else;
+    * the only change is capital letters on two or more words — the heading rules
+      reaching table body text, which was the second complaint on the same job.
+
+    A refused cell keeps the author's text and raises a query. Silently keeping it
+    would hide that the model is returning unusable output for tables, which is a
+    thing the editor needs to know.
+    """
+    normed = [_norm_cell(o) for o in originals]
+    positions: Dict[str, List[int]] = {}
+    for i, n in enumerate(normed):
+        positions.setdefault(n, []).append(i)
+
+    out: List[str] = []
+    queries: List[Dict[str, object]] = []
+
+    def refuse(index: int, why: str) -> None:
+        out.append(originals[index])
+        queries.append({
+            "index": index,
+            "query": f"The copyedit for this cell was not applied: {why} The "
+                     f"author's text was kept.",
+            "suggestion": None,
+        })
+
+    for i, (before, after) in enumerate(zip(originals, edited)):
+        if not after or after.strip() == (before or "").strip():
+            out.append(before)
+            continue
+
+        n_after, n_before = _norm_cell(after), normed[i]
+
+        # Only when it matches ANOTHER cell. Matching nothing is what a normal
+        # copyedit looks like; the first version refused on that and would have
+        # thrown away almost every legitimate table edit.
+        if n_after != n_before and n_after in positions and i not in positions[n_after]:
+            refuse(i, "it returned the contents of a different cell in the same "
+                      "table, so the cells had been reordered.")
+            continue
+
+        words_before = set(n_before.split())
+        kept = len(words_before & set(n_after.split()))
+        if words_before and kept / len(words_before) < _MIN_CELL_OVERLAP:
+            refuse(i, f"only {kept} of its {len(words_before)} words survived, which "
+                      f"is a replacement rather than a copyedit.")
+            continue
+
+        if _is_title_casing(before.strip(), after.strip()):
+            refuse(i, "it only added capital letters. Table body text is not a "
+                      "heading and keeps the author's sentence case.")
+            continue
+
+        out.append(after)
+
+    return out, queries

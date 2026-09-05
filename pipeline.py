@@ -34,6 +34,7 @@ from edit_guards import (
     fix_trailing_citations,
     orphaned_formula_queries,
     restore_protected_text,
+    verify_cell_edits,
 )
 from science_format import (
     collapse_duplicated_symbols,
@@ -258,11 +259,22 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
                     custom_dict, use_crossref, lambda _f: None, enabled_rule_ids,
                     custom_rules, use_serper=use_serper, serper_key=serper_key,
                 )
+                # Position alone is not proof the edit belongs to this cell. On job 46
+                # the model returned a table's cells in a different order; every string
+                # came back and every one landed in the wrong place.
+                edited_cells, alignment_queries = verify_cell_edits(
+                    originals, edited_cells)
                 table_cell_addresses = list(addresses)
                 table_cell_originals = list(originals)
                 for addr, before, after in zip(addresses, originals, edited_cells):
                     if after and after.strip() != before.strip():
                         table_edits[addr] = after
+                for q in alignment_queries:
+                    t, r, c, _ = addresses[q["index"]]
+                    table_queries.append(dict(
+                        q, index=None,
+                        query=f"[Table {t + 1}, row {r + 1}, column {c + 1}] "
+                              f"{q['query']}"))
                 # Deliberately NOT merged into `editor_queries`. Their `index` counts
                 # into the table list, and `generate_redline_docx` reads `index` as a
                 # body paragraph — merging them would anchor every table query onto an

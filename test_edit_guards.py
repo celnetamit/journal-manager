@@ -150,3 +150,94 @@ def test_the_colon_or_dot_survives():
     """A version that rebuilt the prefix from the number alone dropped it."""
     out, _ = G.restore_protected_text([f"10:{EM} End For"], ["End For"])
     assert out[0] == f"10:{EM}End For"
+
+
+# --- table cells landing in the wrong cell --------------------------------------
+#
+# Job 46, reported by the editorial team. A three-row table came back with its cells
+# permuted: all five strings returned, each in a different cell. Nothing was lost, and
+# that is what makes it dangerous — in the redline it reads as a deliberate edit, so a
+# reviewer has no way to tell the copyeditor scrambled the table.
+#
+# Cause: table cells are sent as a bare array and written back by position. That
+# contract is safe for body paragraphs, which are long and distinct. Table cells are
+# short and similar, and the model reordered them.
+
+from edit_guards import verify_cell_edits
+
+_JOB46_ORIGINAL = [
+    "Filament-wound CFRP; multiaxial fatigue",
+    "AE and fatigue history",
+    "Training, validation, internal test",
+    "CFRP laminate; compression after impact",
+    "Independent external validation",
+]
+_JOB46_RETURNED = [
+    "AE and fatigue history",
+    "CFRP laminate; compression after impact",
+    "Filament-wound CFRP; multiaxial fatigue",
+    "Independent external validation",
+    "Training, validation, internal test",
+]
+
+
+def test_the_job_46_scramble_is_refused_entirely():
+    out, queries = verify_cell_edits(_JOB46_ORIGINAL, list(_JOB46_RETURNED))
+    assert out == _JOB46_ORIGINAL, "every cell must keep the author's text"
+    assert len(queries) == 5
+    assert "reordered" in queries[0]["query"]
+
+
+def test_two_cells_swapping_is_refused():
+    out, queries = verify_cell_edits(
+        ["Alpha value here", "Beta value here"],
+        ["Beta value here", "Alpha value here"])
+    assert out == ["Alpha value here", "Beta value here"]
+    assert len(queries) == 2
+
+
+def test_ordinary_table_edits_still_go_through():
+    """The guard's first version refused whenever the new text matched no original —
+    which is what a normal copyedit looks like — and would have discarded almost every
+    legitimate table edit. It must refuse only on a match with a *different* cell."""
+    before = ["3D carbon-fibre grid", "SHM adoption is limited", "ph of the solution"]
+    after = ["3D carbon-fiber grid",
+             "structural health monitoring (SHM) adoption is limited",
+             "pH of the solution"]
+    out, queries = verify_cell_edits(before, list(after))
+    assert out == after
+    assert queries == []
+
+
+def test_a_replacement_rather_than_an_edit_is_refused():
+    """Even when the new text matches no other cell, a cell that keeps under half its
+    own words is describing something else."""
+    out, queries = verify_cell_edits(
+        ["Filament-wound CFRP; multiaxial fatigue"], ["Steel beam; static loading"])
+    assert out == ["Filament-wound CFRP; multiaxial fatigue"]
+    assert "survived" in queries[0]["query"]
+
+
+def test_title_casing_table_body_text_is_refused():
+    """The second complaint on the same job: the heading rules reaching cells that are
+    not headings. Seventeen of 26 changed cells on job 45 were capitals only."""
+    out, queries = verify_cell_edits(
+        ["Improved adaptive detection", "Limited predictive capability"],
+        ["Improved Adaptive Detection", "Limited Predictive Capability"])
+    assert out == ["Improved adaptive detection", "Limited predictive capability"]
+    assert all("not a heading" in q["query"] for q in queries)
+
+
+def test_a_single_word_case_fix_is_not_title_casing():
+    """`ph` -> `pH` is a real correction. Only two or more words gaining a capital is
+    the heading rule leaking."""
+    out, queries = verify_cell_edits(["ph of the solution"], ["pH of the solution"])
+    assert out == ["pH of the solution"]
+    assert queries == []
+
+
+def test_an_unchanged_cell_raises_nothing():
+    out, queries = verify_cell_edits(["Dataset", "AE, load, displacement"],
+                                     ["Dataset", "AE, load, displacement"])
+    assert out == ["Dataset", "AE, load, displacement"]
+    assert queries == []
