@@ -142,6 +142,14 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     enabled_rule_ids = opts.get("enabled_rule_ids")
     custom_rules = opts.get("custom_rules", "")
     ai_review_enabled = opts.get("ai_review_enabled", True)
+    # Each is one model call. Measured: journals 11.6s, cover letter 8.9s, polish
+    # 12.4s — together about a third of a minute and ~5% of a job's cost, so these
+    # are switches for time and clutter rather than for money. `polish_enabled`
+    # defaults to False because its output is a REWRITE that will not match the
+    # redline, and an editor comparing the two took it for the copyedit.
+    journals_enabled = opts.get("journals_enabled", True)
+    cover_letter_enabled = opts.get("cover_letter_enabled", True)
+    polish_enabled = opts.get("polish_enabled", False)
     user_id = opts["user_id"]
     filename = opts.get("filename", "manuscript.docx")
 
@@ -460,15 +468,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     )
     report += _house_style_section(layout_findings, proof_findings)
 
-    progress(0.78, "Recommending journals...")
     proxy_abstract = " ".join(original_paragraphs[:15])[:1500]
-    recommended = recommend_journals(proxy_abstract, llm_settings, warnings=warnings)
-    journal_report_md = build_journal_report(recommended)
+    recommended = []
+    journal_report_path = ""
+    if journals_enabled:
+        progress(0.78, "Recommending journals...")
+        recommended = recommend_journals(proxy_abstract, llm_settings, warnings=warnings)
+        journal_report_path = out_dir / f"user_{user_id}_{ts}_journals.docx"
+        markdown_to_docx(build_journal_report(recommended), str(journal_report_path))
 
     review_report_path = out_dir / f"user_{user_id}_{ts}_review.docx"
-    journal_report_path = out_dir / f"user_{user_id}_{ts}_journals.docx"
     markdown_to_docx(report, str(review_report_path))
-    markdown_to_docx(journal_report_md, str(journal_report_path))
 
     # Standalone, detailed originality report — only written when the scan ran.
     plagiarism_report_path = ""
@@ -508,12 +518,16 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         ai_review_path = out_dir / f"user_{user_id}_{ts}_aireview.docx"
         markdown_to_docx(ai_review_md, str(ai_review_path))
 
-    progress(0.92, "Generating cover letter...")
     best_journal = recommended[0]["name"] if recommended else "the journal"
-    cover_letter = generate_cover_letter(proxy_abstract, best_journal, llm_settings)
+    cover_letter = ""
+    if cover_letter_enabled:
+        progress(0.92, "Generating cover letter...")
+        cover_letter = generate_cover_letter(proxy_abstract, best_journal, llm_settings)
 
-    progress(0.96, "Polishing abstract & titles...")
-    polished_titles = generate_title_abstract_polish(proxy_abstract, llm_settings)
+    polished_titles = ""
+    if polish_enabled:
+        progress(0.96, "Polishing abstract & titles...")
+        polished_titles = generate_title_abstract_polish(proxy_abstract, llm_settings)
 
     duration = time.time() - start_time
     auth.log_job(

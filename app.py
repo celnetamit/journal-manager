@@ -538,6 +538,28 @@ if is_authenticated:
                  "peer-review report (strengths, concerns, and an accept/revise/reject "
                  "recommendation).",
         )
+        # Measured on a real manuscript, one model call each: journals 11.6s/$0.014,
+        # cover letter 8.9s/$0.008, polish 12.4s/$0.010. Together ~33 seconds and about
+        # 5% of a job's cost — so these are switches for time and clutter, not for
+        # money. Journals and the cover letter stay on because they are the usual
+        # reason people run this.
+        journals_enabled = st.checkbox(
+            "Journal Recommendations", value=True,
+            help="Ranks candidate journals by scope similarity to your abstract, and "
+                 "writes the recommendations report. Adds about 12 seconds.",
+        )
+        cover_letter_enabled = st.checkbox(
+            "Submission Cover Letter", value=True,
+            help="Drafts a cover letter addressed to the best-matching journal. "
+                 "Adds about 9 seconds.",
+        )
+        polish_enabled = st.checkbox(
+            "Title & Abstract Polish", value=False,
+            help="Suggests alternative titles and a rewritten abstract. This is a "
+                 "REWRITE, not a copyedit — it will not match the redline, and an "
+                 "editor comparing the two has been confused by exactly that. Off by "
+                 "default; turn it on when you want fresh wording to choose from.",
+        )
         custom_dict = st.text_area(
             "Custom Dictionary / Acronyms",
             placeholder="e.g. mTOR, mRNA, do not change capitalization of ABC.",
@@ -800,23 +822,66 @@ def _render_house_panel(result: dict, kp: str) -> None:
                     st.caption(f"Suggested: {q['suggestion'][:160]}")
 
 
+def _render_downloads(result: dict, kp: str) -> None:
+    """The finished documents, laid across the top of the results.
+
+    They used to sit in the right-hand column below the house-style panel, which on a
+    real job is 48 layout findings and 43 proofreading ones — so the thing the user
+    came for was several screens down, or reachable only by collapsing panels they had
+    to know were collapsible. The redline is the product; it goes first.
+    """
+    stem = _safe_stem(result.get("filename", ""))
+    downloads = [
+        ("redline_path", "📝 Redline Manuscript", f"{stem}_redline.docx", _DOCX_MIME, "primary"),
+        ("review_report_path", "📑 Review Report", f"{stem}_editorial_report.docx", _DOCX_MIME, "secondary"),
+        ("ai_review_path", "🧑‍⚖️ AI Peer Review", f"{stem}_ai_peer_review.docx", _DOCX_MIME, "secondary"),
+        ("journal_report_path", "📚 Journal Recommendations", f"{stem}_journal_recommendations.docx", _DOCX_MIME, "secondary"),
+        ("plagiarism_report_path", "🔎 Originality (preliminary)", f"{stem}_originality_report.docx", _DOCX_MIME, "secondary"),
+        ("jats_path", "🏷️ JATS/XML (production)", f"{stem}_jats.xml", JATS_MIME, "secondary"),
+    ]
+    available = [d for d in downloads
+                 if (result.get(d[0]) or "") and os.path.exists(result[d[0]])]
+    if not available:
+        return
+
+    st.subheader("📥 Download Results")
+    st.caption("Your redline document features native Word Track Changes.")
+    # Three to a row: six buttons across one row squeezes every label to an ellipsis
+    # on a laptop screen, which defeats the point of surfacing them.
+    for start in range(0, len(available), 3):
+        row = available[start:start + 3]
+        for col, (key, label, fname, mime, btype) in zip(st.columns(3), row):
+            with open(result[key], "rb") as fh:
+                col.download_button(
+                    label=label, data=fh, file_name=fname, mime=mime,
+                    type=btype, key=f"dl_{key}_{kp}", width="stretch",
+                )
+    if result.get("jats_ok"):
+        st.caption("✓ Structurally valid JATS")
+    elif result.get("jats_issues"):
+        st.warning("JATS structural issues:\n- " + "\n- ".join(result["jats_issues"]))
+    st.divider()
+
+
 def _render_result(result: dict, kp: str) -> None:
     """Render a completed job's reports and downloads. `kp` keys the widgets."""
     for _w in result.get("warnings") or []:
         st.warning(_w)
+    _render_downloads(result, kp)
     _render_house_panel(result, kp)
 
-    res_col1, res_col2 = st.columns([1.5, 1])
-    with res_col1:
-        st.subheader("📊 Editorial Report")
-        st.markdown(result.get("report_md", ""))
+    st.subheader("📊 Editorial Report")
+    st.markdown(result.get("report_md", ""))
 
-        ai_md = result.get("ai_review_md")
-        if ai_md:
-            st.subheader("🧑‍⚖️ AI Peer Review")
-            with st.expander("Read the AI reviewer's report", expanded=True):
-                st.markdown(ai_md)
+    ai_md = result.get("ai_review_md")
+    if ai_md:
+        st.subheader("🧑‍⚖️ AI Peer Review")
+        with st.expander("Read the AI reviewer's report", expanded=True):
+            st.markdown(ai_md)
 
+    if result.get("recommended"):
+        # Switched off for this job. An empty heading and a caption with
+        # nothing under them read as a failure rather than as a choice.
         st.subheader("📚 Journal Recommendations")
         st.caption(
             "A semantic score (vector-embedding similarity to each journal's scope) "
@@ -859,37 +924,19 @@ def _render_result(result: dict, kp: str) -> None:
                 if risks:
                     st.warning("**Cautions:** " + " ".join(risks))
 
+    if result.get("cover_letter"):
         with st.expander("✉️ Auto-Generated Submission Cover Letter", expanded=False):
             st.info(f"Custom tailored for: **{result.get('best_journal', 'the journal')}**")
-            st.markdown(result.get("cover_letter", ""))
+            st.markdown(result["cover_letter"])
 
-        with st.expander("💡 Title & Abstract Polish", expanded=False):
-            st.markdown(result.get("polished_titles", ""))
-
-    with res_col2:
-        st.subheader("📥 Download Results")
-        st.info("Your redline document features native Word Track Changes.")
-        stem = _safe_stem(result.get("filename", ""))
-        downloads = [
-            ("redline_path", "Download Redline Manuscript", f"{stem}_redline.docx", _DOCX_MIME, "primary"),
-            ("journal_report_path", "📚 Download Journal Recommendations", f"{stem}_journal_recommendations.docx", _DOCX_MIME, "secondary"),
-            ("review_report_path", "📑 Download Review Report", f"{stem}_editorial_report.docx", _DOCX_MIME, "secondary"),
-            ("ai_review_path", "🧑‍⚖️ Download AI Peer Review", f"{stem}_ai_peer_review.docx", _DOCX_MIME, "secondary"),
-            ("plagiarism_report_path", "🔎 Download Originality Report (preliminary)", f"{stem}_originality_report.docx", _DOCX_MIME, "secondary"),
-            ("jats_path", "🏷️ Download JATS/XML (production)", f"{stem}_jats.xml", JATS_MIME, "secondary"),
-        ]
-        for key, label, fname, mime, btype in downloads:
-            path = result.get(key) or ""
-            if path and os.path.exists(path):
-                with open(path, "rb") as fh:
-                    st.download_button(
-                        label=label, data=fh, file_name=fname, mime=mime,
-                        type=btype, key=f"dl_{key}_{kp}",
-                    )
-        if result.get("jats_ok"):
-            st.caption("✓ Structurally valid JATS")
-        elif result.get("jats_issues"):
-            st.warning("JATS structural issues:\n- " + "\n- ".join(result["jats_issues"]))
+    if result.get("polished_titles"):
+        with st.expander("💡 Title & Abstract Polish (a rewrite, not the copyedit)",
+                         expanded=False):
+            st.caption(
+                "These are fresh suggestions written from your abstract. They will "
+                "not match the redline, and they are not what the copyedit produced."
+            )
+            st.markdown(result["polished_titles"])
 
 
 def _house_panel_summary() -> bool:
@@ -999,6 +1046,9 @@ with tab_editor:
             "enabled_rule_ids": enabled_rule_ids,
             "custom_rules": custom_rules,
             "ai_review_enabled": ai_review_enabled,
+            "journals_enabled": journals_enabled,
+            "cover_letter_enabled": cover_letter_enabled,
+            "polish_enabled": polish_enabled,
         }
         job_id = auth.create_job(
             st.session_state.user_id, uploaded_file.name, str(input_path),
