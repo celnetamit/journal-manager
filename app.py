@@ -13,6 +13,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -1534,6 +1535,65 @@ if tab_superadmin is not None:
                     if detail and detail.get("error_message"):
                         with st.expander(f"Error detail for job {job_id}"):
                             st.code(detail["error_message"])
+
+                    # The editorial report and every output, for any user's job. A
+                    # superadmin reviewing a complaint had the audit row — file, user,
+                    # style — and no way to see what the tool actually produced, which
+                    # is the only thing that answers "is this right?".
+                    if detail:
+                        try:
+                            _res = json.loads(detail.get("result_json") or "{}")
+                        except (TypeError, ValueError):
+                            _res = {}
+                        _report = _res.get("report_md")
+                        if _report:
+                            with st.expander(
+                                    f"📑 Editorial report — job {job_id}", expanded=True):
+                                st.markdown(_report)
+
+                        # Paths come from our own result_json, but this is a privileged
+                        # surface: serve nothing from outside the output directory, so a
+                        # bad row can never turn into "read any file on the host".
+                        _out_dir = app_config.output_dir()
+
+                        def _servable(p: str) -> bool:
+                            if not p:
+                                return False
+                            try:
+                                resolved = Path(p).resolve()
+                                return (resolved.is_file()
+                                        and resolved.is_relative_to(_out_dir))
+                            except (OSError, ValueError):
+                                return False
+
+                        _mime = ("application/vnd.openxmlformats-officedocument"
+                                 ".wordprocessingml.document")
+                        _outputs = [
+                            ("redline_path", "📝 Redline", "redline.docx", _mime),
+                            ("review_report_path", "📑 Review", "editorial_report.docx", _mime),
+                            ("ai_review_path", "🧑‍⚖️ AI Review", "ai_peer_review.docx", _mime),
+                            ("journal_report_path", "📚 Journals", "journals.docx", _mime),
+                            ("plagiarism_report_path", "🔎 Originality", "originality.docx", _mime),
+                            ("jats_path", "🏷️ JATS", "jats.xml", JATS_MIME),
+                        ]
+                        _available = [o for o in _outputs if _servable(_res.get(o[0]))]
+                        if _available:
+                            st.markdown(f"**Outputs for job {job_id}**")
+                            _stem = _safe_stem(detail.get("filename") or f"job{job_id}")
+                            for _col, (_key, _label, _suffix, _mt) in zip(
+                                    st.columns(len(_available)), _available):
+                                with open(_res[_key], "rb") as _fh:
+                                    _col.download_button(
+                                        _label, data=_fh,
+                                        file_name=f"{_stem}_{_suffix}", mime=_mt,
+                                        key=f"sa_dl_{_key}_{job_id}",
+                                    )
+                        elif detail.get("status") == "done":
+                            st.caption(
+                                "This job produced no downloadable files — they are "
+                                "removed when the container is rebuilt, so older jobs "
+                                "keep their report but not their documents."
+                            )
             except Exception as e:
                 st.error(f"Could not load jobs: {e}")
 
