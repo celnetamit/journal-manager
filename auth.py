@@ -77,6 +77,8 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         # NULL means "use the deployment default". 0 means "no limit" — an explicit
         # exemption, distinguishable from "nobody has set this yet".
         ("monthly_token_cap", "INTEGER"),
+        # The allowance people actually reason in. Same NULL/0 convention.
+        ("monthly_job_cap", "INTEGER"),
     ):
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
@@ -187,6 +189,7 @@ def _ensure_schema_pg(cur: Any) -> None:
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'password'")
     # NULL = use the deployment default; 0 = explicitly unlimited.
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_token_cap INTEGER")
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_job_cap INTEGER")
     cur.execute(
         """CREATE TABLE IF NOT EXISTS process_logs (
             id SERIAL PRIMARY KEY,
@@ -1296,25 +1299,111 @@ def set_token_cap(user_id: int, cap: Optional[int]) -> None:
         conn.commit()
 
 
+#: Manuscripts a new account may process per month before an administrator raises it.
+#: Three is the product decision, not a derived number.
+DEFAULT_MANUSCRIPT_CAP = 3
+
+
+def default_job_cap() -> int:
+    """Deployment-wide monthly manuscript allowance. 0 disables the limit.
+
+    Unlike `default_token_cap`, an unset environment variable does **not** mean
+    unlimited: it means `DEFAULT_MANUSCRIPT_CAP`. That asymmetry is deliberate. The
+    token cap is a safety net a deployment opts into; this is the allowance the
+    product promises, and a new deployment that forgets to set it should be closed,
+    not wide open. `MONTHLY_MANUSCRIPT_CAP=0` still opts out explicitly.
+    """
+    raw = os.getenv("MONTHLY_MANUSCRIPT_CAP", "").strip()
+    if not raw:
+        return DEFAULT_MANUSCRIPT_CAP
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MANUSCRIPT_CAP
+
+
+def job_cap_for(user_id: Optional[int]) -> int:
+    """This user's monthly manuscript allowance. 0 means no limit."""
+    if user_id is None:
+        return 0
+    if is_admin(user_id) or is_superadmin(user_id):
+        return 0
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT monthly_job_cap FROM users WHERE id={ph}", (user_id,))
+        row = cur.fetchone()
+    if row is not None:
+        value = dict(row).get("monthly_job_cap")
+        if value is not None:              # 0 here is a deliberate exemption
+            return max(0, int(value))
+    return default_job_cap()
+
+
+def set_job_cap(user_id: int, cap: Optional[int]) -> None:
+    """Set or clear one user's manuscript allowance. `None` restores the default."""
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE users SET monthly_job_cap={ph} WHERE id={ph}",
+                    (None if cap is None else max(0, int(cap)), user_id))
+        conn.commit()
+
+
+def month_job_count(user_id: int, month: Optional[str] = None) -> int:
+    """Manuscripts this user started in a calendar month, whatever their status.
+
+    Counts failures for the same reason `month_usage` does: a failed job still spent
+    real money, and an allowance that only counted successes could be walked past by
+    submitting work that fails.
+    """
+    return int(month_usage(user_id, month).get("jobs") or 0)
+
+
+def _resets_on() -> str:
+    now = datetime.now(timezone.utc)
+    return f"{now.year + (now.month == 12)}-{(now.month % 12) + 1:02d}-01"
+
+
 def quota_check(user_id: Optional[int]) -> Dict[str, Any]:
     """Whether this user may start another job, and the numbers behind the answer.
 
-    Returns `allowed`, plus `used`, `cap` and a `message`. The message is the point:
-    a refusal that just says no leaves the user with nothing to do about it, so it
-    names the number, the limit and when it resets.
+    Two limits are enforced, and the manuscript allowance is checked first because it
+    is the one users and administrators reason in. Tokens are the safety net: measured
+    over real jobs, a manuscript ranges from 102k to 926k tokens — a ninefold spread —
+    so a token figure cannot be translated into "three manuscripts" honestly, and a
+    single very large document should not silently consume someone's whole month.
+
+    Returns `allowed`, plus `used`, `cap` and a `message`, and the same three for jobs.
+    The message is the point: a refusal that just says no leaves the user with nothing
+    to do about it, so it names the number, the limit and when it resets.
     """
-    cap = token_cap_for(user_id)
+    jobs_used = month_job_count(user_id) if user_id is not None else 0
+    jobs_cap = job_cap_for(user_id)
     used = month_usage(user_id)["total_tokens"] if user_id is not None else 0
-    if cap <= 0:
-        return {"allowed": True, "used": used, "cap": 0, "message": ""}
-    if used < cap:
-        return {"allowed": True, "used": used, "cap": cap, "message": ""}
-    now = datetime.now(timezone.utc)
-    resets = f"{now.year + (now.month == 12)}-{(now.month % 12) + 1:02d}-01"
-    return {
-        "allowed": False, "used": used, "cap": cap,
-        "message": (
-            f"You have used {used:,} of your {cap:,} tokens for {now.strftime('%B')}. "
-            f"The allowance resets on {resets}. Ask an administrator if you need more."
-        ),
-    }
+    cap = token_cap_for(user_id)
+    base = {"used": used, "cap": cap, "jobs_used": jobs_used, "jobs_cap": jobs_cap}
+
+    if 0 < jobs_cap <= jobs_used:
+        now = datetime.now(timezone.utc)
+        return {
+            **base, "allowed": False,
+            "message": (
+                f"You have processed {jobs_used} of your {jobs_cap} manuscripts for "
+                f"{now.strftime('%B')}. The allowance resets on {_resets_on()}. "
+                f"Ask an administrator if you need more."
+            ),
+        }
+
+    if 0 < cap <= used:
+        now = datetime.now(timezone.utc)
+        return {
+            **base, "allowed": False,
+            "message": (
+                f"You have used {used:,} of your {cap:,} tokens for "
+                f"{now.strftime('%B')}. The allowance resets on {_resets_on()}. "
+                f"Ask an administrator if you need more."
+            ),
+        }
+
+    return {**base, "allowed": True, "message": ""}

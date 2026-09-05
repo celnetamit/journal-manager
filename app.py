@@ -1358,8 +1358,12 @@ if tab_superadmin is not None:
                                 "id": u["id"], "username": u.get("username"),
                                 "email": u.get("email"), "role": u.get("role") or "member",
                                 "auth": u.get("auth_provider"), "jobs": u.get("job_count", 0),
+                                "manuscripts this month": (
+                                    lambda used, cap: f"{used} / "
+                                    + ("unlimited" if cap == 0 else str(cap))
+                                )(auth.month_job_count(u["id"]), auth.job_cap_for(u["id"])),
                                 "tokens this month": f"{auth.month_usage(u['id'])['total_tokens']:,}",
-                                "cap": (lambda c: "no limit" if c == 0 else f"{c:,}")(
+                                "token cap": (lambda c: "no limit" if c == 0 else f"{c:,}")(
                                     auth.token_cap_for(u["id"])),
                                 "last_active": u.get("last_active") or "—",
                             }
@@ -1368,38 +1372,86 @@ if tab_superadmin is not None:
                         width="stretch", hide_index=True,
                     )
 
-                    st.markdown("**Set a user's monthly token allowance**")
+                    st.markdown("**Set a user's monthly manuscript allowance**")
                     st.caption(
-                        "Blank restores the deployment default "
-                        f"({auth.default_token_cap():,} tokens, 0 meaning no limit). "
-                        "Enter 0 to exempt someone. Admins are never capped."
+                        f"New accounts get {auth.default_job_cap()} manuscripts a month. "
+                        "Raise it for a particular user, or grant unlimited access. "
+                        "Admins and superadmins are never capped."
                     )
                     _cap_by_label = {
                         f'{u["username"]} (id {u["id"]})': u for u in users
                     }
-                    with st.form("sa_cap_form"):
+                    # Three named choices rather than a bare number field. 0 means
+                    # "unlimited" in the database, and asking an administrator to type
+                    # 0 to *remove* a limit is the kind of interface that eventually
+                    # blocks someone by accident.
+                    _CHOICE_DEFAULT = f"Deployment default ({auth.default_job_cap()} a month)"
+                    _CHOICE_SET = "A set number of manuscripts"
+                    _CHOICE_UNLIMITED = "Unlimited"
+                    with st.form("sa_job_cap_form"):
                         _cap_sel = st.selectbox("User ", list(_cap_by_label.keys()),
                                                 key="sa_cap_user")
-                        _cap_val = st.text_input("Monthly token cap", value="",
-                                                 placeholder="leave blank for the default")
+                        _cap_mode = st.radio(
+                            "Allowance",
+                            [_CHOICE_DEFAULT, _CHOICE_SET, _CHOICE_UNLIMITED],
+                            key="sa_cap_mode",
+                        )
+                        _cap_n = st.number_input(
+                            "Manuscripts a month", min_value=1, max_value=10000,
+                            value=auth.default_job_cap(), step=1, key="sa_cap_n",
+                            help=f"Used only with '{_CHOICE_SET}'.",
+                        )
                         _cap_go = st.form_submit_button("Apply allowance")
                     if _cap_go:
                         _target = _cap_by_label[_cap_sel]
-                        _raw = _cap_val.strip().replace(",", "")
-                        if not _raw:
-                            auth.set_token_cap(_target["id"], None)
-                            st.success(f'{_target["username"]} now uses the deployment default.')
-                        elif _raw.isdigit():
-                            auth.set_token_cap(_target["id"], int(_raw))
+                        if _cap_mode == _CHOICE_DEFAULT:
+                            auth.set_job_cap(_target["id"], None)
                             st.success(
-                                f'{_target["username"]}: '
-                                + ("no limit." if int(_raw) == 0
-                                   else f"{int(_raw):,} tokens a month.")
+                                f'{_target["username"]} now uses the deployment default '
+                                f"({auth.default_job_cap()} manuscripts a month)."
                             )
+                        elif _cap_mode == _CHOICE_UNLIMITED:
+                            auth.set_job_cap(_target["id"], 0)
+                            st.success(f'{_target["username"]}: unlimited manuscripts.')
                         else:
-                            # Named rather than silently ignored: a cap that looks
-                            # applied but was not is the worst of the three outcomes.
-                            st.error(f"'{_cap_val}' is not a number. Nothing was changed.")
+                            auth.set_job_cap(_target["id"], int(_cap_n))
+                            st.success(
+                                f'{_target["username"]}: {int(_cap_n)} manuscripts a month.'
+                            )
+
+                    with st.expander("Monthly token cap (safety net)"):
+                        st.caption(
+                            "Separate from the manuscript allowance and rarely needed. A "
+                            "manuscript has ranged from 102k to 926k tokens across real "
+                            "jobs, so this guards against one very large document rather "
+                            "than counting work. Blank restores the deployment default "
+                            f"({auth.default_token_cap():,}; 0 means no limit)."
+                        )
+                        with st.form("sa_cap_form"):
+                            _tok_sel = st.selectbox("User", list(_cap_by_label.keys()),
+                                                    key="sa_tok_user")
+                            _cap_val = st.text_input(
+                                "Monthly token cap", value="",
+                                placeholder="leave blank for the default")
+                            _tok_go = st.form_submit_button("Apply token cap")
+                        if _tok_go:
+                            _target = _cap_by_label[_tok_sel]
+                            _raw = _cap_val.strip().replace(",", "")
+                            if not _raw:
+                                auth.set_token_cap(_target["id"], None)
+                                st.success(
+                                    f'{_target["username"]} now uses the deployment default.')
+                            elif _raw.isdigit():
+                                auth.set_token_cap(_target["id"], int(_raw))
+                                st.success(
+                                    f'{_target["username"]}: '
+                                    + ("no limit." if int(_raw) == 0
+                                       else f"{int(_raw):,} tokens a month.")
+                                )
+                            else:
+                                # Named rather than silently ignored: a cap that looks
+                                # applied but was not is the worst of the three outcomes.
+                                st.error(f"'{_cap_val}' is not a number. Nothing was changed.")
 
                     st.markdown("**Change a user's role**")
                     by_label = {
