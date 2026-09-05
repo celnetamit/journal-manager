@@ -34,6 +34,7 @@ from edit_guards import (
     fix_trailing_citations,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
+    preserve_author_hyphenation,
     restore_front_matter_names,
     restore_protected_text,
     restore_reference_numbering,
@@ -41,6 +42,7 @@ from edit_guards import (
 )
 from science_format import (
     collapse_duplicated_symbols,
+    detect_language_variant,
     enforce_all_formula_subscripts,
     enforce_language_variant,
     enforce_science_symbols,
@@ -135,6 +137,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edit_style = opts["edit_style"]
     ref_style = opts["ref_style"]
     lang_type = opts["lang_type"]
+    lang_auto = "auto" in (lang_type or "").lower()
     custom_dict = opts.get("custom_dict", "")
     use_crossref = opts.get("use_crossref", True)
     use_crossref_refs = use_crossref
@@ -169,6 +172,25 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
             "copy, then upload that."
         ) from open_exc
     paras_count = len(original_paragraphs)
+
+    if lang_auto:
+        # The editorial team's rule: follow what the author mostly wrote, counted over
+        # the whole manuscript rather than sampled from the abstract — which is the one
+        # section most likely to have been rewritten by someone else.
+        detected, _counts = detect_language_variant(original_paragraphs)
+        if detected:
+            lang_type = detected
+            warnings.append(
+                f"Language was set to follow the manuscript: {detected} "
+                f"({_counts['uk']} UK-only, {_counts['us']} US-only spellings found).")
+        else:
+            # Not enough evidence, or a genuinely mixed manuscript. Enforcing a side on
+            # one word's margin would rewrite half the paper on the strength of it.
+            lang_type = ""
+            warnings.append(
+                f"Language variant was left alone: the manuscript does not clearly "
+                f"follow one ({_counts['uk']} UK-only, {_counts['us']} US-only "
+                f"spellings). Choose US or UK explicitly to enforce one.")
 
     # Everything the plain text reader drops — formatting, headings, list markers,
     # tables, page geometry. Parsed once here and reused; a failure to parse the
@@ -338,6 +360,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         original_paragraphs, edited_paragraphs)
     guard_queries += orphaned_formula_queries(
         original_paragraphs, edited_paragraphs)
+
+    # Runs after the language-variant pass, so a re-spelling cannot re-close a hyphen
+    # this just kept, and after `guard_queries` exists — inserting it beside the
+    # variant pass put an `.extend` seven lines above the list it extends.
+    edited_paragraphs, _hyphen_queries = preserve_author_hyphenation(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_hyphen_queries)
 
     # Body and table cells in ONE call, deliberately. The rule renders a superscript
     # only where the document gives evidence for it, and that evidence is document-wide:

@@ -720,3 +720,41 @@ def collapse_duplicated_symbols(
         out.append(fixed)
 
     return out, queries
+
+
+def detect_language_variant(paras: List[str]) -> Tuple[Optional[str], Dict[str, int]]:
+    """Which variant the author actually wrote in, from the whole manuscript.
+
+    The editorial team's rule, and it is the right one: the variant should follow what
+    the author mostly used, not a dropdown someone set before reading the paper. A
+    manuscript written throughout in British English and processed as US English comes
+    back with every `behaviour` rewritten — dozens of tracked changes that are not
+    corrections, burying the ones that are.
+
+    Counting is the whole method: how many words appear in their UK-only spelling
+    against their US-only spelling, across every paragraph. Deciding this by eye on the
+    abstract alone would be sampling the one section most likely to have been rewritten
+    by someone else.
+
+    Returns `(None, counts)` when there is not enough evidence — under five variant
+    words, or a margin under 60% — so the caller keeps whatever was chosen explicitly.
+    A near-even split is a genuinely mixed manuscript, and picking a side by one word
+    would rewrite half of it on the strength of that word.
+    """
+    text = "\n".join(p or "" for p in paras)
+    uk = us = 0
+    for word in re.findall(r"[A-Za-z]{3,}", text):
+        low = word.lower()
+        if low in _UK_TO_US:
+            uk += 1
+        elif low in _US_TO_UK:
+            us += 1
+
+    counts = {"uk": uk, "us": us}
+    total = uk + us
+    if total < 5:
+        return None, counts
+    share = max(uk, us) / total
+    if share < 0.6:
+        return None, counts
+    return ("UK English" if uk > us else "US English"), counts

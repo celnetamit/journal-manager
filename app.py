@@ -499,7 +499,16 @@ if is_authenticated:
             "Reference Style",
             ["Vancouver", "Harvard", "APA", "Chicago", "IEEE"],
         )
-        lang_type = st.selectbox("Language", ["US English", "UK English", "Australian English"])
+        lang_type = st.selectbox(
+            "Language",
+            ["Auto — follow the manuscript", "US English", "UK English",
+             "Australian English"],
+            help="Auto counts the UK-only and US-only spellings across the whole "
+                 "manuscript and follows whichever the author mostly used. A paper "
+                 "written in British English but processed as US English comes back "
+                 "with every 'behaviour' rewritten — dozens of tracked changes that "
+                 "are not corrections, burying the ones that are.",
+        )
 
         st.divider()
         st.header("🚀 Advanced Features")

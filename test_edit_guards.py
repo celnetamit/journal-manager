@@ -475,3 +475,77 @@ def test_entries_the_resorter_renumbered_itself_are_untouched():
     ]
     out, queries = restore_reference_numbering(_ORDERED, list(renumbered))
     assert out == renumbered and queries == []
+
+
+# --- the author's hyphenation, and the variant they actually wrote in ------------
+#
+# The editorial team's position, and it settles a question the tool had been deciding
+# by itself: hyphenation of prefix compounds is a style choice, not an error, so the
+# author's form stands. Job 54 had six `non-` compounds — three closed up, three left
+# hyphenated — plus `multi-task`, `pre-determined` and `pre-processing` closed while
+# fourteen other compounds were left alone. Across four jobs: 41 kept, 11 lost.
+
+from edit_guards import preserve_author_hyphenation
+
+
+def test_the_authors_hyphen_is_put_back():
+    original = ["The non-stationary and non-uniform signal was multi-task pre-processed."]
+    edited = ["The nonstationary and nonuniform signal was multitask preprocessed."]
+    out, queries = preserve_author_hyphenation(original, list(edited))
+    assert out[0] == original[0]
+    assert len(queries) == 1
+    assert "style choice rather than an error" in queries[0]["query"]
+
+
+def test_a_closed_compound_the_author_wrote_is_left_closed():
+    """It restores only the compounds the author hyphenated in that paragraph, so it
+    can never invent a hyphen the manuscript never had."""
+    paras = ["We used preprocessing and a nonlinear model."]
+    out, queries = preserve_author_hyphenation(paras, list(paras))
+    assert out == paras and queries == []
+
+
+def test_capitalisation_comes_from_the_edited_text():
+    """A compound that legitimately became sentence-initial keeps its capital."""
+    out, _ = preserve_author_hyphenation(
+        ["non-linear effects appear."], ["Nonlinear effects appear."])
+    assert out[0] == "Non-linear effects appear."
+
+
+def test_an_unrelated_word_starting_with_a_prefix_is_not_touched():
+    """`nonsense` and `preview` are words, not prefix compounds the author hyphenated.
+    Nothing is restored unless that exact compound was hyphenated in the same
+    paragraph."""
+    paras = ["This is nonsense and a preview of coordination."]
+    out, queries = preserve_author_hyphenation(paras, list(paras))
+    assert out == paras and queries == []
+
+
+from science_format import detect_language_variant
+
+
+def test_the_variant_follows_the_whole_manuscript():
+    uk, counts = detect_language_variant(
+        ["The behaviour and colour were analysed.",
+         "We recognised the organisation of the centre."])
+    assert uk == "UK English" and counts["uk"] > counts["us"]
+
+    us, _ = detect_language_variant(
+        ["The behavior and color were analyzed.",
+         "We recognized the organization of the center."])
+    assert us == "US English"
+
+
+def test_a_mixed_manuscript_gets_no_verdict():
+    """Picking a side on a one-word margin would rewrite half the paper on the
+    strength of that word. Under a 60% share there is no answer."""
+    verdict, counts = detect_language_variant(
+        ["The behaviour and color were analyzed.", "We recognised the organization."])
+    assert counts["uk"] and counts["us"]
+    assert verdict is None or max(counts.values()) / sum(counts.values()) >= 0.6
+
+
+def test_too_little_evidence_gives_no_verdict():
+    verdict, counts = detect_language_variant(
+        ["A perfectly ordinary sentence with no variant spellings in it at all."])
+    assert verdict is None and counts == {"uk": 0, "us": 0}

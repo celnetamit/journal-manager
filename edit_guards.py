@@ -565,3 +565,81 @@ def restore_reference_numbering(
             f"restored from the original."),
         "suggestion": None,
     }]
+
+
+# --- the author's own hyphenation ------------------------------------------------
+
+#: Prefixes that attach to a following word, where both the hyphenated and the closed
+#: form are defensible English and the choice is the author's. Measured across four
+#: real jobs: 41 such compounds kept their hyphen and 11 lost it — in the same
+#: documents, so the manuscript ends up spelling the same construction two ways.
+_PREFIXES = (
+    "non", "pre", "post", "multi", "sub", "semi", "anti", "inter", "intra",
+    "over", "under", "micro", "macro", "nano", "co", "self", "cross", "re",
+)
+
+_HYPHENATED = re.compile(
+    r"\b(" + "|".join(_PREFIXES) + r")-([A-Za-z]{3,})\b", re.I)
+
+
+def preserve_author_hyphenation(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Leave `non-stationary` as `non-stationary` if that is how it was written.
+
+    Job 54: six `non-` compounds, three closed up and three left hyphenated — one
+    document, two conventions. The same run also closed `multi-task`,
+    `pre-determined` and `pre-processing` while leaving fourteen others alone. There
+    is no rule for this anywhere in the pipeline, so the model decides afresh in every
+    chunk and cannot be consistent by construction.
+
+    Chicago would close most of these, and `nonstationary` is defensible. But the
+    editorial team's position is the right one: hyphenation here is not an error, it
+    is a house-or-author choice, and a tool should be silent about things that are not
+    wrong. Changing it buys nothing and costs a reviewer's question.
+
+    Applied per paragraph and only to the exact compounds the author used there, so
+    it can never invent a hyphen the manuscript never had. Case is taken from the
+    edited text, so a compound that legitimately became sentence-initial stays
+    capitalised.
+    """
+    out = list(edited)
+    changed: List[str] = []
+
+    for i in range(min(len(original), len(out))):
+        before, after = original[i] or "", out[i] or ""
+        if not before or not after or before == after:
+            continue
+        forms = {m.group(0).lower().replace("-", ""): m.group(0)
+                 for m in _HYPHENATED.finditer(before)}
+        if not forms:
+            continue
+
+        def restore(m: "re.Match[str]") -> str:
+            author = forms.get(m.group(0).lower())
+            if not author:
+                return m.group(0)
+            # Keep the edited text's capitalisation, not the original's.
+            if m.group(0)[:1].isupper():
+                author = author[:1].upper() + author[1:]
+            changed.append(author)
+            return author
+
+        new = re.sub(r"\b(" + "|".join(_PREFIXES) + r")([A-Za-z]{3,})\b",
+                     restore, after, flags=re.I)
+        if new != after:
+            out[i] = new
+
+    if not changed:
+        return out, []
+    unique = sorted(set(c.lower() for c in changed))
+    return out, [{
+        "index": 0,
+        "snippet": "",
+        "query": (
+            f"The copyedit closed up {len(unique)} hyphenated compound(s) the author "
+            f"had hyphenated ({', '.join(unique[:5])}"
+            f"{'…' if len(unique) > 5 else ''}). Hyphenation of these prefixes is a "
+            f"style choice rather than an error, so the author's form was kept."),
+        "suggestion": None,
+    }]
