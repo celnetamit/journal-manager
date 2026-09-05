@@ -277,3 +277,116 @@ def verify_cell_edits(
         out.append(after)
 
     return out, queries
+
+
+# --- abbreviations: full form once, short form after ----------------------------
+
+#: `Expansion (ABBR)` as the author themselves wrote it. Learning the pair from the
+#: author's own definition is the whole safety argument: guessing that two words
+#: starting A and E mean `AE` would eventually rewrite "an experiment" as "AE".
+_DEFINITION = re.compile(
+    r"([A-Za-z][A-Za-z\-‐-― ]{3,70}?)\s*\(([A-Z][A-Za-z]{1,7})\)")
+
+
+def _initials(phrase: str) -> str:
+    return "".join(w[0] for w in re.split(r"[\s\-‐-―]+", phrase) if w)
+
+
+def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
+    """`{ABBR: expansion}` for every pair the author defined in their own text.
+
+    The initials must actually spell the abbreviation, so `(Fig. 2)` and `(2025)`
+    and an aside in brackets are all rejected. Where an author defines the same
+    abbreviation twice, the first definition wins — that is the one at first use.
+    """
+    pairs: Dict[str, str] = {}
+    for m in _DEFINITION.finditer("\n".join(p or "" for p in paragraphs)):
+        phrase, abbr = m.group(1).strip(), m.group(2)
+        words = re.split(r"[\s\-‐-―]+", phrase)
+        # Try the shortest tail of the phrase whose initials spell the abbreviation:
+        # "employing publicly available acoustic-emission (AE)" defines "AE" as
+        # "acoustic-emission", not as the whole clause.
+        for n in range(len(abbr), min(len(words), len(abbr) + 3) + 1):
+            tail = words[-n:]
+            if _initials(" ".join(tail)).upper() == abbr.upper():
+                pairs.setdefault(abbr, " ".join(tail))
+                break
+    return pairs
+
+
+def enforce_abbreviation_first_use(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Full form with the short form in brackets once, the short form thereafter.
+
+    The in-house rule says exactly this, and on job 46 the model broke it in both
+    directions at once: it expanded `IoT` to "Internet of Things" without ever writing
+    "(IoT)", and it went on spelling out "acoustic emission" sixteen times instead of
+    using `AE` after the first. Across eight abbreviations the expansion appeared 34
+    times and carried its abbreviation 4 times.
+
+    A rule this mechanical should not depend on a model remembering it across 84
+    separate calls, none of which can see what the others did. Only the whole document
+    knows which occurrence is the first, so only a pass over the whole document can
+    enforce it.
+
+    Pairs come from `learn_abbreviations`, i.e. from the author's own definitions —
+    never inferred from initials alone.
+    """
+    pairs = learn_abbreviations(original)
+    if not pairs:
+        return edited, []
+
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+
+    for abbr, expansion in pairs.items():
+        # Match the expansion however it is hyphenated or spaced, but not when it is
+        # already followed by its own bracketed abbreviation.
+        body = r"[\s\-‐-―]+".join(
+            re.escape(w) for w in expansion.split() if w)
+        rx = re.compile(rf"\b{body}\b(?!\s*\({re.escape(abbr)}\))", re.I)
+        # If the author already defined it, that definition stands and no second one
+        # is invented — every stray expansion simply becomes the short form. Adding
+        # our own earlier definition would leave the paper defining the same term
+        # twice, and would move the author's chosen first mention.
+        seen_definition = bool(re.search(
+            rf"\b{body}\b\s*\(\s*{re.escape(abbr)}\s*\)",
+            "\n".join(p or "" for p in original), re.I))
+        first_index: Optional[int] = None
+
+        for i, para in enumerate(out):
+            if not para:
+                continue
+            if re.search(rf"\b{body}\b\s*\(\s*{re.escape(abbr)}\s*\)", para, re.I):
+                seen_definition = True                      # already defined here
+                continue
+            if not rx.search(para):
+                continue
+
+            def replace(m: "re.Match[str]") -> str:
+                nonlocal seen_definition
+                if not seen_definition:
+                    seen_definition = True
+                    return f"{m.group(0)} ({abbr})"
+                return abbr
+
+            new = rx.sub(replace, para)
+            if new != para:
+                out[i] = new
+                if first_index is None:
+                    first_index = i
+
+        if first_index is not None:
+            queries.append({
+                "index": first_index,
+                "query": (
+                    f"'{expansion}' was spelled out where the author had used "
+                    f"'{abbr}'. The house rule gives the full form once, with "
+                    f"'({abbr})' after it, and the short form from then on — that has "
+                    f"been restored across the document. Please confirm the first "
+                    f"mention is where you want the definition."),
+                "suggestion": None,
+            })
+
+    return out, queries

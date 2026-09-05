@@ -241,3 +241,78 @@ def test_an_unchanged_cell_raises_nothing():
                                      ["Dataset", "AE, load, displacement"])
     assert out == ["Dataset", "AE, load, displacement"]
     assert queries == []
+
+
+# --- abbreviations: full form once, short form after -----------------------------
+#
+# Job 46, the team's first complaint. The rule is explicit — spell out at first use
+# with the short form in brackets, then use the short form — and the model broke it in
+# both directions: it wrote "Internet of Things" with no "(IoT)" anywhere, and went on
+# spelling out "acoustic emission" 22 times instead of using AE. Across eight
+# abbreviations the expansion appeared 34 times and carried its abbreviation 4 times.
+#
+# Only a whole-document pass knows which mention is the first. The 84 separate model
+# calls cannot see each other, so this cannot be a prompt instruction.
+
+from edit_guards import enforce_abbreviation_first_use, learn_abbreviations
+
+
+def test_pairs_come_from_the_author_not_from_initials():
+    """Guessing that two words starting A and E mean AE would eventually rewrite
+    'an experiment' as 'AE'. Only the author's own '(ABBR)' defines a pair."""
+    pairs = learn_abbreviations([
+        "We use acoustic-emission (AE) sensors on carbon-fibre-reinforced polymer "
+        "(CFRP) plates.",
+        "An experiment was run in 2025 (see Table 2).",
+    ])
+    assert pairs == {"AE": "acoustic emission",
+                     "CFRP": "carbon fibre reinforced polymer"}
+
+
+def test_the_definition_takes_only_the_words_the_initials_spell():
+    """'employing publicly available acoustic-emission (AE)' defines AE as
+    'acoustic emission', not as the whole clause."""
+    pairs = learn_abbreviations(
+        ["employing publicly available acoustic-emission (AE) data"])
+    assert pairs["AE"] == "acoustic emission"
+
+
+def test_a_stray_expansion_becomes_the_short_form():
+    original = ["Using acoustic-emission (AE) data.", "The AE signals were noisy.",
+                "Further AE analysis followed."]
+    edited = ["Using acoustic-emission (AE) data.",
+              "The acoustic emission signals were noisy.",
+              "Further acoustic emission analysis followed."]
+    out, queries = enforce_abbreviation_first_use(original, list(edited))
+    assert out[1] == "The AE signals were noisy."
+    assert out[2] == "Further AE analysis followed."
+    assert len(queries) == 1
+
+
+def test_the_author_s_own_definition_is_never_duplicated():
+    """If the author defined it, that definition stands and no second one is invented
+    — otherwise the paper defines the same term twice and the author's chosen first
+    mention moves."""
+    original = ["Intro paragraph mentioning AE.",
+                "Later, acoustic-emission (AE) is defined here."]
+    edited = ["Intro paragraph mentioning acoustic emission.",
+              "Later, acoustic-emission (AE) is defined here."]
+    out, _ = enforce_abbreviation_first_use(original, list(edited))
+    assert out[0] == "Intro paragraph mentioning AE."
+    assert out[1] == edited[1], "the author's definition is left exactly alone"
+
+
+def test_an_undefined_abbreviation_is_left_alone():
+    """No definition from the author means no pair, and nothing is touched. Inventing
+    one would be guessing at the author's meaning."""
+    original = ["The IoT layer streams data.", "More IoT discussion."]
+    edited = ["The Internet of Things layer streams data.",
+              "More Internet of Things discussion."]
+    out, queries = enforce_abbreviation_first_use(original, list(edited))
+    assert out == edited and queries == []
+
+
+def test_text_with_no_abbreviations_is_untouched():
+    paras = ["A perfectly ordinary sentence.", "Another one."]
+    out, queries = enforce_abbreviation_first_use(paras, list(paras))
+    assert out == paras and queries == []

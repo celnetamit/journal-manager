@@ -33,6 +33,7 @@ from proofread import proofread as run_proofread
 from edit_guards import (
     fix_trailing_citations,
     orphaned_formula_queries,
+    enforce_abbreviation_first_use,
     restore_protected_text,
     verify_cell_edits,
 )
@@ -342,6 +343,15 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
                                  _repaired[_n_body:]):
         if _now != table_edits.get(_addr, _was):
             table_edits[_addr] = _now
+    # Full form once with the short form in brackets, the short form after. Only a
+    # whole-document pass knows which mention is the first; the 84 separate model
+    # calls cannot, and on job 46 the expansion appeared 34 times carrying its
+    # abbreviation 4 times. Pairs are learned from the author's own definitions.
+    edited_paragraphs, _abbr_queries = enforce_abbreviation_first_use(
+        original_paragraphs, edited_paragraphs)
+    for _q in _abbr_queries:
+        guard_queries.append(dict(_q, snippet=edited_paragraphs[_q["index"]][:200]))
+
     for _q in _dup_queries:
         _i = _q["index"]
         if _i < _n_body:
