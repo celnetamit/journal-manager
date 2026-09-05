@@ -21,6 +21,7 @@ from docx.opc.exceptions import PackageNotFoundError
 from typing import Any, Callable, Dict, Optional
 
 import config as app_config
+import losscheck as _losscheck
 import usage as _usage
 import auth
 from docxmodel import read_structure
@@ -305,6 +306,25 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         original_paragraphs, edited_paragraphs)
     guard_queries += orphaned_formula_queries(
         original_paragraphs, edited_paragraphs)
+
+    # Did the copyedit lose something the author wrote? Only the two checks that
+    # survived measurement: a paragraph returned empty, and a negation dropped — the one
+    # that can reverse a claim while reading perfectly. A third check on lost numbers was
+    # written, measured on 182 real paragraphs, and removed: 26 of its 27 findings were
+    # correct edits (citations renumbering, Vancouver conversion, figure numbering), and
+    # a guard that fires on correct work hides the one case that is not.
+    _loss = _losscheck.check_document(original_paragraphs, edited_paragraphs)
+    for _hit in _loss:
+        i = _hit["index"]
+        edited_paragraphs[i] = original_paragraphs[i]      # keep the author's text
+        guard_queries.append({
+            "index": i,
+            "snippet": original_paragraphs[i][:200],
+            "query": f"The copyedit was not applied to this paragraph: {_hit['detail']} "
+                     f"The original was kept. Please edit it by hand.",
+            "suggestion": None,
+        })
+
     editor_queries = list(editor_queries) + guard_queries
 
     # The proofreading pass. Deliberately after every edit and enforcement, over the
