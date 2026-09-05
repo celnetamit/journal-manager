@@ -3092,15 +3092,38 @@ def generate_cover_letter(abstract: str, journal_name: str, settings: Dict[str, 
         return "Error generating cover letter."
 
 
+#: A conversational opener the model puts in front of the thing that was asked for:
+#: "Here are the optimized titles and the polished abstract, formatted beautifully in
+#: Markdown:". It reached an editorial report on job 51. Short, ends in a colon, and
+#: announces what follows — all three are required, so a real heading or a sentence
+#: that happens to end in a colon is left alone.
+_PREAMBLE = re.compile(
+    r"\A\s*(?:here (?:are|is)|below (?:are|is)|the following|sure[,!]|certainly[,!])"
+    r"[^\n:]{0,160}:\s*\n+(?:-{3,}\s*\n+)?", re.I)
+
+
+def strip_model_preamble(text: str) -> str:
+    """Drop the model's announcement of its own answer.
+
+    The prompt asked for the output "formatted beautifully in Markdown" and the model
+    said so back, in the report. Fixing the prompt is the cause and is done too, but a
+    prompt is a request rather than a guarantee — this is the part that holds.
+    """
+    return _PREAMBLE.sub("", text or "", count=1).lstrip()
+
+
 def generate_title_abstract_polish(abstract: str, settings: Dict[str, Any]) -> str:
     prompt = (
         "Based on this draft abstract, generate 3 highly optimized, impactful "
         "title options and 1 fully polished, compelling abstract that maximizes "
-        "chances of journal acceptance. Format it beautifully in Markdown.\n\n"
+        "chances of journal acceptance. Use Markdown.\n\n"
+        "Output ONLY the titles and the abstract. Do not introduce them, do not "
+        "describe your formatting, and do not add any sentence before or after "
+        "them.\n\n"
         f"Text:\n{abstract}"
     )
     try:
-        return _generate_text(prompt, settings=settings)
+        return strip_model_preamble(_generate_text(prompt, settings=settings))
     except Exception as e:
         print(f"Title/abstract polish error: {e}")
         return "Error generating polish."

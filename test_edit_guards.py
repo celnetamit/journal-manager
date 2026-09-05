@@ -549,3 +549,41 @@ def test_too_little_evidence_gives_no_verdict():
     verdict, counts = detect_language_variant(
         ["A perfectly ordinary sentence with no variant spellings in it at all."])
     assert verdict is None and counts == {"uk": 0, "us": 0}
+
+
+# --- the model announcing its own answer -----------------------------------------
+#
+# Job 51's report opened with "Here are the optimized titles and the polished
+# abstract, formatted beautifully in Markdown:" — the model echoing the prompt, which
+# had asked for the output "formatted beautifully in Markdown". The prompt is fixed
+# too, but a prompt is a request; this is the part that holds.
+
+from editor import strip_model_preamble
+
+
+def test_the_job_51_preamble_is_removed():
+    text = ("Here are the optimized titles and the polished abstract, formatted "
+            "beautifully in Markdown:\n\n---\n\n### Optimized Title Options\n\n1. **A**")
+    assert strip_model_preamble(text).startswith("### Optimized Title Options")
+
+
+def test_other_openers_go_too():
+    for opener in ("Sure! Below is the polished version:",
+                   "Certainly! The following are your titles:",
+                   "Here is the abstract:"):
+        out = strip_model_preamble(f"{opener}\n\n**Abstract**\n\nText.")
+        assert out.startswith("**Abstract**"), opener
+
+
+def test_real_content_is_never_touched():
+    """All three signals are required — an opener word, under 160 characters, and a
+    colon — so a heading or an ordinary sentence ending in a colon survives."""
+    for text in ("### Optimized Title Options\n\n1. **Real content**",
+                 "The results were as follows: the yield rose to 87%.",
+                 "**Abstract**\n\nThe kinetic study was carried out."):
+        assert strip_model_preamble(text) == text.lstrip()
+
+
+def test_empty_input_is_safe():
+    assert strip_model_preamble("") == ""
+    assert strip_model_preamble(None) == ""
