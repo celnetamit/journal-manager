@@ -316,3 +316,107 @@ def test_text_with_no_abbreviations_is_untouched():
     paras = ["A perfectly ordinary sentence.", "Another one."]
     out, queries = enforce_abbreviation_first_use(paras, list(paras))
     assert out == paras and queries == []
+
+
+# --- the author byline and the bibliography's numbering -------------------------
+#
+# Job 51, and the reason it matters: the SAME manuscript ran correctly on the previous
+# model on 3 Sep and wrongly today, after the model was changed. Both of these were
+# right before and wrong after, so neither can be left to the model.
+#
+#   byline      Adaikkalam Kumar1*, Ashok kumar Aachimuthu2
+#     was       Adaikkalam Kumar¹*, Ashok Kumar Aachimuthu²      (correct, old model)
+#     became    Kumar A1*, Aachimuthu A2                          (reference style)
+#
+#   reference   1. Ruiz.T.P, Lozano.V,(1995), Talanta,42, 391.
+#     was       1. Ruiz TP, Lozano V. Talanta. 1995; 42: 391p.    (correct, old model)
+#     became    Ruiz TP, Lozano V. Talanta. 1995; 42: 391p.       (number gone)
+
+from edit_guards import restore_front_matter_names, restore_reference_numbering
+
+_FRONT = [
+    "International Journal of Advance in Molecular Engineering",
+    "Compatative Catalytic Study of Oxidation of Thiourea",
+    "Adaikkalam Kumar1*, Ashok kumar Aachimuthu2",
+    "*1Senior Scale Lecturer, Government Polytechnic College, Tiruchirappalli, India",
+    "ABSTRACT",
+]
+
+
+def test_a_byline_may_not_lose_a_given_name():
+    edited = list(_FRONT)
+    edited[2] = "Kumar A1*, Aachimuthu A2"
+    out, queries = restore_front_matter_names(_FRONT, edited)
+    assert out[2] == _FRONT[2]
+    assert "adaikkalam" in queries[0]["query"] and "ashok" in queries[0]["query"]
+
+
+def test_a_byline_may_still_be_recapitalised():
+    """`Ashok kumar` -> `Ashok Kumar` is the correct edit and must go through. The
+    comparison is on lowercased words precisely so that case fixes pass."""
+    edited = list(_FRONT)
+    edited[2] = "Adaikkalam Kumar1*, Ashok Kumar Aachimuthu2"
+    out, queries = restore_front_matter_names(_FRONT, edited)
+    assert out[2] == edited[2]
+    assert queries == []
+
+
+def test_the_corresponding_author_asterisk_is_put_back():
+    """It marks who a reader writes to. Both models dropped it — this one was never
+    right, so it is not a regression, it is a hole."""
+    edited = list(_FRONT)
+    edited[3] = "1Senior Scale Lecturer, Government Polytechnic College, India"
+    out, queries = restore_front_matter_names(_FRONT, edited)
+    assert out[3].startswith("*1Senior")
+    assert "corresponding author" in queries[0]["query"]
+
+
+def test_a_title_spelling_fix_in_the_same_front_matter_survives():
+    """The guard is scoped to lines carrying an affiliation digit. The title sits in
+    the same front matter and `Compatative` -> `Comparative` is exactly the kind of
+    correct edit this must never undo."""
+    edited = list(_FRONT)
+    edited[1] = "Comparative Catalytic Study of Oxidation of Thiourea"
+    out, queries = restore_front_matter_names(_FRONT, edited)
+    assert out[1] == "Comparative Catalytic Study of Oxidation of Thiourea"
+    assert queries == []
+
+
+_REFS = [
+    "References",
+    "1. Ruiz.T.P, Lozano.V,(1995), Talanta,42, 391.",
+    "             2. Smyth.M.R,(1977), Anal.Chem, 49, 2310.",
+]
+
+
+def test_bibliography_entry_numbers_are_restored():
+    edited = ["References",
+              "Ruiz TP, Lozano V. Talanta. 1995; 42: 391p.",
+              "Smyth MR. Anal Chem. 1977; 49: 2310p."]
+    out, queries = restore_reference_numbering(_REFS, edited)
+    assert out[1].startswith("1. ") and out[2].startswith("2. ")
+    assert "in-text citations point at" in queries[0]["query"]
+
+
+def test_the_original_number_is_restored_not_a_renumbering():
+    """A bibliography's order is the author's. Re-sorting it is a separate decision
+    the pipeline makes explicitly, and this guard must not quietly make it."""
+    original = ["References", "7. Third entry here.", "3. First entry here."]
+    edited = ["References", "Third entry here.", "First entry here."]
+    out, _ = restore_reference_numbering(original, edited)
+    assert out[1].startswith("7. ") and out[2].startswith("3. ")
+
+
+def test_an_entry_that_kept_its_number_is_untouched():
+    edited = ["References", "1. Ruiz TP. Talanta. 1995; 42: 391p.", "2. Smyth MR."]
+    out, queries = restore_reference_numbering(_REFS, edited)
+    assert out == edited and queries == []
+
+
+def test_numbers_outside_the_references_section_are_left_alone():
+    """The heading rule strips leading numbers on purpose everywhere else. Without the
+    References heading there is nothing to restore."""
+    original = ["2.1 Materials and methods", "1. Some numbered heading"]
+    edited = ["Materials and Methods", "Some numbered heading"]
+    out, queries = restore_reference_numbering(original, edited)
+    assert out == edited and queries == []

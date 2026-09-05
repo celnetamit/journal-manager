@@ -34,7 +34,9 @@ from edit_guards import (
     fix_trailing_citations,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
+    restore_front_matter_names,
     restore_protected_text,
+    restore_reference_numbering,
     verify_cell_edits,
 )
 from science_format import (
@@ -347,6 +349,16 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # whole-document pass knows which mention is the first; the 84 separate model
     # calls cannot, and on job 46 the expansion appeared 34 times carrying its
     # abbreviation 4 times. Pairs are learned from the author's own definitions.
+    # The authors' names, and the numbers the in-text citations point at. Both were
+    # correct on the previous model and wrong on this one, so neither can rest on the
+    # model getting it right.
+    edited_paragraphs, _name_queries = restore_front_matter_names(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_name_queries)
+    edited_paragraphs, _refnum_queries = restore_reference_numbering(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_refnum_queries)
+
     edited_paragraphs, _abbr_queries = enforce_abbreviation_first_use(
         original_paragraphs, edited_paragraphs)
     for _q in _abbr_queries:

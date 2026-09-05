@@ -390,3 +390,146 @@ def enforce_abbreviation_first_use(
             })
 
     return out, queries
+
+
+# --- front matter and the bibliography's own numbering --------------------------
+
+#: `1.` or `1)` at the head of a bibliography entry — the entry's number, which the
+#: in-text `[1]` points at. Not a heading number, though it looks like one.
+_ENTRY_NUMBER = re.compile(r"^\s*(\d{1,3})\s*[.)]\s+")
+
+#: A byline: two or more names each carrying its affiliation digit, as in
+#: `Adaikkalam Kumar1*, Ashok kumar Aachimuthu2`. Requiring the digit is what keeps
+#: this away from the title and the journal line, where an ordinary copyedit — and a
+#: spelling fix like `Compatative` -> `Comparative` — must go through untouched.
+_BYLINE_NAME = re.compile(r"[A-Za-z]{2,}\s*\d\s*\*?")
+
+#: An affiliation line whose corresponding-author asterisk comes before its number.
+_AFFIL_STAR = re.compile(r"^\s*\*\s*\d")
+
+_ABSTRACT_HEAD = re.compile(r"(?i)^\s*(abstract|summary)\b")
+
+
+def _front_matter_end(paragraphs: List[str]) -> int:
+    for i, p in enumerate(paragraphs):
+        if _ABSTRACT_HEAD.match(p or ""):
+            return i
+    return min(len(paragraphs), 15)
+
+
+def _words(text: str) -> set:
+    return set(re.findall(r"[A-Za-z]{2,}", (text or "").lower()))
+
+
+def restore_front_matter_names(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Keep the authors' names as the authors wrote them.
+
+    On job 51 the byline `Adaikkalam Kumar1*, Ashok kumar Aachimuthu2` came back as
+    `Kumar A1*, Aachimuthu A2` — surname-first with the given name reduced to an
+    initial, which is a *reference* style applied to a byline. The same manuscript on
+    the previous model returned `Adaikkalam Kumar¹*, Ashok Kumar Aachimuthu²`, correct.
+
+    The house rule invites this: it says "initial(s) + full surname" and then gives
+    "Saniya Jose, Susan Kumar" as its example. Those are different instructions, and a
+    prompt cannot be relied on to resolve its own contradiction — so the byline is
+    protected here instead.
+
+    Two protections, both narrow:
+
+    * a byline may be recapitalised (`Ashok kumar` -> `Ashok Kumar`) but may not LOSE a
+      name. Comparison is on lowercased words, so case fixes pass and a dropped given
+      name does not;
+    * the corresponding-author asterisk is put back if it went. It marks who a reader
+      writes to, and both models dropped it — this one is not a regression, it has been
+      wrong all along.
+
+    Deliberately scoped to lines carrying an affiliation digit. The title sits in the
+    same front matter, and `Compatative` -> `Comparative` there is exactly the kind of
+    correct edit this must never undo.
+    """
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    end = _front_matter_end(original)
+
+    for i in range(min(end, len(out))):
+        before, after = original[i] or "", out[i] or ""
+        if not before.strip() or before == after:
+            continue
+
+        is_byline = len(_BYLINE_NAME.findall(before)) >= 2
+        if is_byline and (_words(before) - _words(after)):
+            missing = sorted(_words(before) - _words(after))
+            out[i] = before
+            queries.append({
+                "index": i, "snippet": before[:120],
+                "query": (
+                    f"The author line lost {', '.join(missing[:4])}. Author names are "
+                    f"kept as submitted — only their capitalisation is corrected — so "
+                    f"the original line has been restored."),
+                "suggestion": before,
+            })
+            continue
+
+        if _AFFIL_STAR.match(before) and not after.lstrip().startswith("*"):
+            out[i] = "*" + after.lstrip()
+            queries.append({
+                "index": i, "snippet": before[:120],
+                "query": ("The asterisk marking the corresponding author was removed "
+                          "from this affiliation line and has been put back."),
+                "suggestion": out[i],
+            })
+
+    return out, queries
+
+
+def restore_reference_numbering(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Put back the number at the head of each bibliography entry.
+
+    On job 51 every entry lost it: `1. Ruiz.T.P, ... (1995), Talanta, 42, 391.` came
+    back as `Ruiz TP, ... Talanta. 1995; 42: 391p.` — the Vancouver reformatting is
+    right and the entry number is gone, so the in-text `[1]` now points at nothing. The
+    previous model kept the numbers on the same manuscript.
+
+    The cause is a house rule doing its job in the wrong place: headings carry no
+    leading number, and a bibliography entry opens with something that looks exactly
+    like one. It is not one. It is the target of every citation in the paper.
+
+    Only paragraphs after a `References` heading are considered, so the heading rule
+    keeps working everywhere else. The original's own number is restored — never a
+    renumbering, because a bibliography's order is the author's and re-sorting it is a
+    separate decision the pipeline makes explicitly elsewhere.
+    """
+    start = None
+    for i, p in enumerate(original):
+        if re.fullmatch(r"(?i)\s*references?\s*", (p or "").strip()):
+            start = i
+            break
+    if start is None:
+        return edited, []
+
+    out = list(edited)
+    restored: List[str] = []
+    for i in range(start + 1, min(len(original), len(out))):
+        m = _ENTRY_NUMBER.match(original[i] or "")
+        after = out[i] or ""
+        if not m or not after.strip() or _ENTRY_NUMBER.match(after):
+            continue
+        out[i] = f"{m.group(1)}. {after.lstrip()}"
+        restored.append(m.group(1))
+
+    if not restored:
+        return out, []
+    return out, [{
+        "index": start + 1,
+        "snippet": (out[start + 1] or "")[:120],
+        "query": (
+            f"{len(restored)} bibliography entries came back without their numbers "
+            f"({', '.join(restored[:5])}{'…' if len(restored) > 5 else ''}). The "
+            f"numbers are what the in-text citations point at, so they have been "
+            f"restored from the original."),
+        "suggestion": None,
+    }]
