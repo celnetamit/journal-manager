@@ -398,6 +398,11 @@ def enforce_abbreviation_first_use(
 #: in-text `[1]` points at. Not a heading number, though it looks like one.
 _ENTRY_NUMBER = re.compile(r"^\s*(\d{1,3})\s*[.)]\s+")
 
+#: How much of an entry's own wording must survive for it to still be that entry.
+#: Below this the bibliography has been re-ordered and its numbers are not ours to
+#: restore.
+_REF_SAME_ENTRY = 0.4
+
 #: A byline: two or more names each carrying its affiliation digit, as in
 #: `Adaikkalam Kumar1*, Ashok kumar Aachimuthu2`. Requiring the digit is what keeps
 #: this away from the title and the journal line, where an ordinary copyedit — and a
@@ -513,13 +518,40 @@ def restore_reference_numbering(
 
     out = list(edited)
     restored: List[str] = []
+    moved = 0
     for i in range(start + 1, min(len(original), len(out))):
         m = _ENTRY_NUMBER.match(original[i] or "")
         after = out[i] or ""
         if not m or not after.strip() or _ENTRY_NUMBER.match(after):
             continue
+
+        # Is this still the same entry? `align_global_citations` runs earlier and may
+        # re-sort the bibliography, after which paragraph i holds a DIFFERENT work.
+        # Stamping the original positional number onto it would be worse than the bug
+        # this guard exists to fix: the entry would carry another reference's number
+        # and disagree with the in-text citations that were just renumbered to match.
+        # Reference entries are full of distinctive surnames and journal names, so a
+        # word overlap separates "reformatted in place" from "something else is here".
+        words = _words(original[i]) - {"and", "the", "of", "in"}
+        if words and len(words & _words(after)) / len(words) < _REF_SAME_ENTRY:
+            moved += 1
+            continue
+
         out[i] = f"{m.group(1)}. {after.lstrip()}"
         restored.append(m.group(1))
+
+    if moved:
+        return out, [{
+            "index": start + 1,
+            "snippet": (out[start + 1] or "")[:120],
+            "query": (
+                f"{moved} bibliography entries came back unnumbered AND no longer "
+                f"match the entry that was in their place, so the list appears to have "
+                f"been re-ordered. Numbers were NOT restored for those — putting the "
+                f"old number on a different work would be worse. Please check the "
+                f"bibliography numbering against the in-text citations by hand."),
+            "suggestion": None,
+        }]
 
     if not restored:
         return out, []

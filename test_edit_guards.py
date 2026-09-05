@@ -420,3 +420,58 @@ def test_numbers_outside_the_references_section_are_left_alone():
     edited = ["Materials and Methods", "Some numbered heading"]
     out, queries = restore_reference_numbering(original, edited)
     assert out == edited and queries == []
+
+
+# --- the guard must not fight the citation re-sorter ----------------------------
+#
+# Raised by Amit before this shipped, and it was a real hole. `align_global_citations`
+# runs EARLIER in the pipeline and may re-sort the whole bibliography and renumber the
+# in-text citations to match. This guard runs after it. Stamping the original
+# positional number onto a re-sorted list would put another work's number on an entry
+# and contradict the citations that were just aligned — worse than the bug being fixed.
+
+_ORDERED = [
+    "References",
+    "1. Ruiz TP, Lozano V. Talanta. 1995; 42: 391.",
+    "2. Smyth MR, Osteryoung JG. Anal Chem. 1977; 49: 2310.",
+    "3. De Oliveira AN, Zaia CTBV. Food Compos Anal. 2004; 17: 165.",
+]
+
+
+def test_numbers_are_restored_when_the_entries_stayed_put():
+    reformatted = [
+        "References",
+        "Ruiz TP, Lozano V. Talanta. 1995; 42: 391p.",
+        "Smyth MR, Osteryoung JG. Anal Chem. 1977; 49: 2310p.",
+        "De Oliveira AN, Zaia CTBV. Food Compos Anal. 2004; 17: 165p.",
+    ]
+    out, _ = restore_reference_numbering(_ORDERED, reformatted)
+    assert [p.split(".")[0] for p in out[1:]] == ["1", "2", "3"]
+
+
+def test_a_resorted_bibliography_keeps_its_hands_off():
+    """Each slot now holds a different work. The old number must not follow the slot."""
+    resorted = [
+        "References",
+        "De Oliveira AN, Zaia CTBV. Food Compos Anal. 2004; 17: 165p.",
+        "Ruiz TP, Lozano V. Talanta. 1995; 42: 391p.",
+        "Smyth MR, Osteryoung JG. Anal Chem. 1977; 49: 2310p.",
+    ]
+    out, queries = restore_reference_numbering(_ORDERED, list(resorted))
+    assert out == resorted, "not one number may be applied to a moved entry"
+    assert len(queries) == 1
+    assert "re-ordered" in queries[0]["query"]
+    assert "by hand" in queries[0]["query"]
+
+
+def test_entries_the_resorter_renumbered_itself_are_untouched():
+    """When the re-sort succeeds it writes its own numbers. Those are the correct
+    ones and this guard has nothing to do."""
+    renumbered = [
+        "References",
+        "1. De Oliveira AN, Zaia CTBV. Food Compos Anal. 2004; 17: 165p.",
+        "2. Ruiz TP, Lozano V. Talanta. 1995; 42: 391p.",
+        "3. Smyth MR, Osteryoung JG. Anal Chem. 1977; 49: 2310p.",
+    ]
+    out, queries = restore_reference_numbering(_ORDERED, list(renumbered))
+    assert out == renumbered and queries == []
