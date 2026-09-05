@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 #: Genera these journals actually publish about — microbiology, medicinal and crop
 #: plants, model organisms — plus the ones the corpus itself turned up (Pichia,
@@ -608,3 +608,115 @@ def enforce_unit_case(paras: List[str]) -> List[str]:
         return _UNIT_CASE_RE.sub(
             lambda m: m.group(1) + _UNIT_CASE[m.group(2)], text)
     return [fix(p) if p else p for p in paras]
+
+
+# --- duplicated symbols left behind by a broken conversion ---------------------
+
+#: The artifact this repairs, seen 13 times in one real manuscript (job 45): a symbol
+#: immediately repeated in two notations with nothing between them —
+#:
+#:     LSTM increased R2R^2 to 0.924
+#:     coefficient of determination was R2=0.946R^2=0.946
+#:     Damage R2R2                                   (a table header)
+#:
+#: It is not an author's typo. Thirteen occurrences with one consistent shape, in a
+#: document that *also* contains clean `R²` in four other places, is the signature of a
+#: find-and-replace that inserted where it meant to replace: the old form and the new
+#: one both survived.
+#:
+#: Why this is a rule and not left to the model: on that manuscript the model repaired
+#: 2 of the 13 and left 11, because each chunk is judged separately and nothing made the
+#: decision once. That outcome is worse than doing nothing — before, every occurrence was
+#: identically wrong and a reader could see a conversion had failed; after, two say `R²`
+#: and eleven say `R2R^2`, which reads as two different quantities.
+_DUPLICATED_SYMBOL = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?P<base>[A-Za-z]{1,3})\^?(?P<exp>\d)(?P<tail>\s*=\s*-?\d+(?:\.\d+)?)?"
+    r"(?P=base)\^?(?P=exp)(?P<tail2>\s*=\s*-?\d+(?:\.\d+)?)?"
+    r"(?![A-Za-z0-9])"
+)
+
+_SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _tails_agree(tail: Optional[str], tail2: Optional[str]) -> bool:
+    """Both halves must carry the same value, or neither may carry one.
+
+    `R2=0.946R^2=0.946` is the artifact. `R2=0.9R2=0.8` is two different numbers and
+    must be left alone for a person to read — collapsing it would delete a result.
+    """
+    if tail is None and tail2 is None:
+        return True
+    if tail is None or tail2 is None:
+        return False
+    return tail.replace(" ", "") == tail2.replace(" ", "")
+
+
+def collapse_duplicated_symbols(
+    paras: List[str],
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Remove a symbol duplicated by a failed conversion. Returns the text and queries.
+
+    The exponent is rendered as a real superscript only where the document itself gives
+    evidence for it: a caret in one of the two halves, or the same base and digit
+    already written as `R²` somewhere else in the manuscript. Without that evidence the
+    duplication is still collapsed — that part is certain — but the notation is left
+    exactly as the author had it.
+
+    That restraint is the whole design. `CO2CO2` collapsed to `CO²` would be a new
+    error, not a fix: in a chemical formula the 2 is a subscript, and a rule that
+    guesses would turn a repair into corruption. Deciding sub versus superscript is
+    `enforce_formula_subscripts`'s job and it is left to it.
+
+    Every collapse is reported as a query. A silent repair of something this odd is
+    worse than a visible one: the editor should know the source was damaged, because
+    whatever damaged it probably damaged something else too.
+    """
+    joined = "\n".join(p or "" for p in paras)
+    # Which base+digit pairs does the document already write as a true superscript?
+    superscripted = {
+        (m.group(1), m.group(2))
+        for m in re.finditer(r"(?<![A-Za-z0-9])([A-Za-z]{1,3})([⁰¹²³⁴⁵⁶⁷⁸⁹])", joined)
+    }
+    superscripted = {
+        (base, sup.translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")))
+        for base, sup in superscripted
+    }
+
+    queries: List[Dict[str, Any]] = []
+    out: List[str] = []
+
+    for index, para in enumerate(paras):
+        if not para:
+            out.append(para)
+            continue
+
+        def repair(m: "re.Match[str]") -> str:
+            if not _tails_agree(m.group("tail"), m.group("tail2")):
+                return m.group(0)
+            base, exp = m.group("base"), m.group("exp")
+            caret = "^" in m.group(0)
+            if caret or (base, exp) in superscripted:
+                symbol = base + exp.translate(_SUPERSCRIPT_DIGITS)
+            else:
+                symbol = base + exp
+            return symbol + (m.group("tail") or "")
+
+        fixed = _DUPLICATED_SYMBOL.sub(repair, para)
+        if fixed != para:
+            for m in _DUPLICATED_SYMBOL.finditer(para):
+                if _tails_agree(m.group("tail"), m.group("tail2")):
+                    queries.append({
+                        "index": index,
+                        "severity": "warning",
+                        "message": (
+                            f"The source repeated '{m.group(0).strip()}' — the same "
+                            f"symbol written twice with nothing between it, which a "
+                            f"failed find-and-replace leaves behind. It has been "
+                            f"collapsed to a single symbol. Check the rest of the "
+                            f"document for the same damage."
+                        ),
+                    })
+        out.append(fixed)
+
+    return out, queries

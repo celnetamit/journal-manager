@@ -36,6 +36,7 @@ from edit_guards import (
     restore_protected_text,
 )
 from science_format import (
+    collapse_duplicated_symbols,
     enforce_all_formula_subscripts,
     enforce_language_variant,
     enforce_science_symbols,
@@ -240,6 +241,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # body list `generate_redline_docx` pairs by index.
     table_edits: dict = {}
     table_queries: list = []
+    # Kept beyond the block below so the document-wide repairs can reach table cells
+    # too. A rule that fires on the body and not on the tables leaves the document
+    # disagreeing with itself, which is worse than not firing at all.
+    table_cell_addresses: list = []
+    table_cell_originals: list = []
     if structure is not None and opts.get("edit_tables", True):
         try:
             table_items = collect_table_texts(structure)
@@ -252,6 +258,8 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
                     custom_dict, use_crossref, lambda _f: None, enabled_rule_ids,
                     custom_rules, use_serper=use_serper, serper_key=serper_key,
                 )
+                table_cell_addresses = list(addresses)
+                table_cell_originals = list(originals)
                 for addr, before, after in zip(addresses, originals, edited_cells):
                     if after and after.strip() != before.strip():
                         table_edits[addr] = after
@@ -292,6 +300,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs = enforce_all_formula_subscripts(edited_paragraphs)
     edited_paragraphs = enforce_science_symbols(edited_paragraphs)
     edited_paragraphs = enforce_unit_case(edited_paragraphs)
+
     # Before `run_proofread`, so the spelling-consistency check sees the text as
     # it will be published. Reporting a clash the enforcement has just resolved
     # would put a finding in the report about text that no longer exists.
@@ -306,6 +315,39 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         original_paragraphs, edited_paragraphs)
     guard_queries += orphaned_formula_queries(
         original_paragraphs, edited_paragraphs)
+
+    # Body and table cells in ONE call, deliberately. The rule renders a superscript
+    # only where the document gives evidence for it, and that evidence is document-wide:
+    # a table header reading `Damage R2R2` should follow the `R²` the body already uses.
+    # Split into two calls, the table would be judged on its own few words and reach a
+    # different answer — which is exactly the failure this rule exists to repair.
+    _cells_now = [table_edits.get(a, o) for a, o
+                  in zip(table_cell_addresses, table_cell_originals)]
+    _n_body = len(edited_paragraphs)
+    _repaired, _dup_queries = collapse_duplicated_symbols(edited_paragraphs + _cells_now)
+    edited_paragraphs = _repaired[:_n_body]
+    for _addr, _was, _now in zip(table_cell_addresses, table_cell_originals,
+                                 _repaired[_n_body:]):
+        if _now != table_edits.get(_addr, _was):
+            table_edits[_addr] = _now
+    for _q in _dup_queries:
+        _i = _q["index"]
+        if _i < _n_body:
+            guard_queries.append({
+                "index": _i, "snippet": edited_paragraphs[_i][:200],
+                "query": _q["message"], "suggestion": None,
+            })
+        else:
+            # Table queries carry no body index — `generate_redline_docx` reads
+            # `index` as a body paragraph, so anchoring one there points the note at
+            # unrelated text in a file that still opens.
+            _t, _r, _c, _ = table_cell_addresses[_i - _n_body]
+            table_queries.append({
+                "index": None,
+                "query": f"[Table {_t + 1}, row {_r + 1}, column {_c + 1}] "
+                         f"{_q['message']}",
+                "suggestion": None,
+            })
 
     # Did the copyedit lose something the author wrote? Only the two checks that
     # survived measurement: a paragraph returned empty, and a negation dropped — the one

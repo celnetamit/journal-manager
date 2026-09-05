@@ -336,3 +336,91 @@ def test_already_correct_text_is_untouched():
 
 def test_empty_and_none_paragraphs_survive():
     assert S.enforce_unit_case(["", None, "5 KJ"]) == ["", None, "5 kJ"]
+
+
+# --- a symbol duplicated by a broken conversion --------------------------------
+#
+# From job 45, a real manuscript: `R2R^2` and its variants appeared thirteen times,
+# including `R2=0.946R^2=0.946` — the same value written twice with nothing between.
+# That is not an author's typo. The same document also contains clean `R²` in four
+# places, which is what a find-and-replace that inserted instead of replacing leaves
+# behind.
+#
+# The model repaired 2 of the 13 and left 11, because each chunk is judged separately.
+# That is worse than leaving all 13: identical damage reads as a failed conversion,
+# while two `R²` beside eleven `R2R^2` reads as two different quantities. Hence a rule.
+
+from science_format import collapse_duplicated_symbols
+
+
+def test_it_collapses_the_duplicate_seen_in_the_real_manuscript():
+    out, _ = collapse_duplicated_symbols(
+        ["LSTM increased R2R^2 to 0.924 and AUROC to 0.938."])
+    assert out[0] == "LSTM increased R² to 0.924 and AUROC to 0.938."
+
+
+def test_a_duplicated_value_is_collapsed_once_not_twice():
+    """`R2=0.946R^2=0.946` — the number is duplicated along with the symbol."""
+    out, _ = collapse_duplicated_symbols(
+        ["the coefficient of determination was R2=0.946R^2=0.946, showing that"])
+    assert out[0] == "the coefficient of determination was R²=0.946, showing that"
+
+
+def test_two_different_values_are_never_collapsed():
+    """The guard that matters most. `R2=0.9R2=0.8` is two results, and collapsing it
+    would delete one of them — a copyedit destroying data, silently."""
+    text = "R2=0.9R2=0.8 differ across folds"
+    out, queries = collapse_duplicated_symbols([text])
+    assert out[0] == text
+    assert queries == []
+
+
+def test_a_superscript_is_only_used_where_the_document_shows_one():
+    """`CO2CO2` must collapse to `CO2`, never `CO²`: in a formula that 2 is a
+    subscript, and a rule that guesses turns a repair into corruption. Deciding sub
+    versus superscript belongs to `enforce_formula_subscripts`."""
+    out, _ = collapse_duplicated_symbols(["CO2CO2 emissions rose"])
+    assert out[0] == "CO2 emissions rose"
+
+
+def test_the_document_s_own_usage_decides_the_notation():
+    """A table cell reading `R2R2` has no caret to go on. The body does — so the
+    whole document must be passed in one call, which is why the pipeline concatenates
+    body paragraphs and table cells before calling this."""
+    body_and_cells = ["yielded a damage-estimation R² of 0.946", "Damage R2R2"]
+    out, _ = collapse_duplicated_symbols(body_and_cells)
+    assert out[1] == "Damage R²"
+
+    # Judged alone, the same cell has no evidence and must not invent a superscript.
+    alone, _ = collapse_duplicated_symbols(["Damage R2R2"])
+    assert alone[0] == "Damage R2"
+
+
+def test_clean_text_is_left_exactly_alone():
+    clean = [
+        "yielded a damage-estimation R² of 0.946, RMSE of 0.052",
+        "H2O and H2O2 are different compounds",
+        "the R2 value was low",
+        "Du et al. [2] obtained R² = 0.9402 for real-time CAI",
+    ]
+    out, queries = collapse_duplicated_symbols(list(clean))
+    assert out == clean
+    assert queries == []
+
+
+def test_every_collapse_raises_a_query():
+    """Silently repairing something this odd is worse than repairing it visibly:
+    whatever damaged the file probably damaged something else too."""
+    out, queries = collapse_duplicated_symbols(
+        ["damage R2R^2 fell from 0.946", "unrelated text", "Damage R2R^2"])
+    assert len(queries) == 2
+    assert {q["index"] for q in queries} == {0, 2}
+    assert "find-and-replace" in queries[0]["message"]
+
+
+def test_it_fires_on_every_occurrence_not_the_first():
+    """The whole point. The model fixed 2 of 13; a rule fixes 13 of 13."""
+    paras = [f"damage R2R^2 of 0.9{i}" for i in range(13)]
+    out, queries = collapse_duplicated_symbols(paras)
+    assert all("R2R^2" not in p for p in out)
+    assert len(queries) == 13
