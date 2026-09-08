@@ -78,3 +78,25 @@ def test_appending_nothing_is_a_no_op(auth_mod):
     auth_mod.append_job_events(job_id, [])
     auth_mod.append_job_events(job_id, None)
     assert auth_mod.get_job(job_id).get("live_json") in (None, "")
+
+
+def test_feed_survives_a_mapping_row_cursor(auth_mod):
+    """Appending twice must accumulate, not silently fail.
+
+    The first live run wrote nothing at all: `append_job_events` read the existing feed
+    with `row[0]`, and the Postgres connection returns mapping rows, so every call raised
+    `KeyError: 0` — swallowed by design, leaving a job with a moving progress bar, an
+    empty feed, and only "error: 0" in the container log.
+
+    **This test would not have caught that**, and saying so is the point: it runs on
+    SQLite, whose `Row` supports positional access, so the broken version passes here.
+    What it does cover is that a second append accumulates onto the first — the part
+    that is backend-independent. The mapping-row failure is guarded by the comment at
+    the read site and was found, and confirmed fixed, on the deployed instance.
+    """
+    job_id = auth_mod.create_job(1, "m.docx", "/tmp/m.docx", "{}")
+    auth_mod.append_job_events(job_id, [{"para": 1, "change": "first"}])
+    auth_mod.append_job_events(job_id, [{"para": 2, "change": "second"}])
+
+    feed = json.loads(auth_mod.get_job(job_id)["live_json"])
+    assert [e["change"] for e in feed] == ["first", "second"]

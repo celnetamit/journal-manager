@@ -813,9 +813,14 @@ def append_job_events(job_id: int, events) -> None:
             c.execute(f"SELECT live_json FROM jobs WHERE id={ph}", (job_id,))
             row = c.fetchone()
             current = []
-            if row and row[0]:
+            # `dict(row)[...]`, not `row[0]`: this connection hands back mapping rows
+            # (which is why `get_job` can return a dict), and indexing one by position
+            # raises `KeyError: 0`. It cost a whole live run to find, because this
+            # function swallows its own errors by design — the log said only "error: 0".
+            existing = dict(row).get("live_json") if row else None
+            if existing:
                 try:
-                    current = json.loads(row[0])
+                    current = json.loads(existing)
                 except Exception:  # noqa: BLE001
                     current = []
             current.extend(events)
