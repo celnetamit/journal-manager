@@ -958,9 +958,13 @@ def _house_panel_summary() -> bool:
     return os.getenv("HOUSE_PANEL_MODE", "full").strip().lower() == "summary"
 
 
-def _render_job_usage(job: dict) -> None:
+def _render_job_usage(job: dict, live: bool = False) -> None:
     """One line: what this job spent. Shown on failures too — a job that fell over
-    still burned its tokens, and hiding that is how a bill becomes a surprise."""
+    still burned its tokens, and hiding that is how a bill becomes a surprise.
+
+    `live` renders the same line for a job still running, where the numbers are a
+    running total rather than a final one and are labelled as such — a cost that is
+    still climbing must not read as the bill."""
     calls = int(job.get("llm_calls") or 0)
     if not calls:
         return
@@ -972,7 +976,33 @@ def _render_job_usage(job: dict) -> None:
     if cached:
         parts.append(f"{cached:,} reused from cache")
     parts.append(_usage.format_cost(job.get("cost_usd")))
-    st.caption(" · ".join(parts))
+    st.caption(("so far: " if live else "") + " · ".join(parts))
+
+
+
+def _render_live_feed(job: dict, limit: int = 12) -> None:
+    """The copyedit's own commentary while it runs: paragraph number and what changed."""
+    raw = job.get("live_json")
+    if not raw:
+        return
+    try:
+        events = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return
+    if not events:
+        return
+    st.caption(f"Live edits · {len(events)} shown of this run")
+    for ev in reversed(events[-limit:]):
+        para = ev.get("para")
+        change = (ev.get("change") or "").strip()
+        if not change:
+            continue
+        st.markdown(
+            f"<div style='font-size:13px;line-height:1.5;padding:4px 0;"
+            f"border-bottom:1px solid rgba(255,255,255,.07)'>"
+            f"<span style='opacity:.55'>¶{para}</span> {change}</div>",
+            unsafe_allow_html=True)
+
 
 
 def _render_job(job: dict) -> None:
@@ -981,6 +1011,13 @@ def _render_job(job: dict) -> None:
     if status in ("queued", "running"):
         st.info(f"**{job.get('stage', 'Queued')}** — job #{job['id']} · {job['filename']}")
         st.progress(float(job.get("progress") or 0.0))
+        # A bar says the job is alive; it does not say what the job is doing. The feed
+        # below is the actual work — the edits as they are made, newest first — because
+        # "is it doing anything useful?" is the question a bar cannot answer, and the
+        # answer already exists in the pipeline. Newest first so the reader does not have
+        # to chase a scrolling tail.
+        _render_live_feed(job)
+        _render_job_usage(job, live=True)
         st.caption("Processing runs in the background. You can close this tab and come back.")
         time.sleep(2)
         st.rerun()

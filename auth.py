@@ -166,6 +166,11 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         # is not the same as zero and must never be shown as "free".
         ("cost_usd", "REAL"),
         ("usage_json", "TEXT"),
+        # The live feed: a short rolling list of what the copyedit just changed, so a
+        # running job can show its work instead of only a bar. Deliberately capped and
+        # overwritten in place — this is a view onto a job in flight, not a record. The
+        # record is the redline.
+        ("live_json", "TEXT"),
     ):
         try:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
@@ -264,6 +269,7 @@ def _ensure_schema_pg(cur: Any) -> None:
         # Nullable on purpose: NULL is "the provider reported no cost", not zero.
         ("cost_usd", "DOUBLE PRECISION"),
         ("usage_json", "TEXT"),
+        ("live_json", "TEXT"),
     ):
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {decl}")
 
@@ -784,6 +790,41 @@ def claim_next_job() -> Optional[dict]:
         if not claimed:
             return None
     return get_job(jid)
+
+
+#: How many feed lines a running job keeps. Enough to see the shape of the work
+#: scrolling past, few enough that the row stays small and the poll stays cheap.
+LIVE_FEED_MAX = 40
+
+
+def append_job_events(job_id: int, events) -> None:
+    """Add lines to a job's live feed, keeping only the most recent ones.
+
+    Failures here are swallowed on purpose: this is a progress view. A job that
+    copyedited a manuscript correctly must not be failed by an error writing the
+    decoration — which is why the whole call is wrapped and only logged.
+    """
+    if not events:
+        return
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            c = conn.cursor()
+            c.execute(f"SELECT live_json FROM jobs WHERE id={ph}", (job_id,))
+            row = c.fetchone()
+            current = []
+            if row and row[0]:
+                try:
+                    current = json.loads(row[0])
+                except Exception:  # noqa: BLE001
+                    current = []
+            current.extend(events)
+            trimmed = current[-LIVE_FEED_MAX:]
+            c.execute(f"UPDATE jobs SET live_json={ph} WHERE id={ph}",
+                      (json.dumps(trimmed), job_id))
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"[auth.append_job_events] error: {e}")
 
 
 def update_job_progress(job_id: int, progress: float, stage: str) -> None:

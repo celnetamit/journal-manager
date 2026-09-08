@@ -120,9 +120,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     """Run the full manuscript pipeline. `opts` carries non-secret options;
     LLM settings (incl. the API key) are resolved server-side, never stored on
     the job. Returns a JSON-serializable result dict."""
-    def progress(frac: float, stage: str) -> None:
-        if progress_cb:
-            progress_cb(min(max(frac, 0.0), 1.0), stage)
+    def progress(frac: float, stage: str, events: Optional[list] = None) -> None:
+        if not progress_cb:
+            return
+        frac = min(max(frac, 0.0), 1.0)
+        # `events` is the live feed — what the copyedit just changed. It is passed
+        # separately from the stage text because a caller that only wants a bar should
+        # not have to parse one, and an older caller should not break for want of it.
+        try:
+            progress_cb(frac, stage, events)
+        except TypeError:
+            progress_cb(frac, stage)
 
     # One meter per job. It rides in the settings dict — which is built fresh here
     # and already threaded through every call — because three jobs can run at once
@@ -246,8 +254,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
 
     progress(0.05, "Analyzing and copyediting (parallel chunks)...")
 
-    def chunk_progress(frac: float) -> None:
-        progress(0.05 + frac * 0.55, "Copyediting manuscript...")
+    def chunk_progress(frac: float, info: Optional[dict] = None) -> None:
+        # "Copyediting manuscript…" for the whole 55% of the run told the reader nothing
+        # except that it had not finished. The counts come from the chunk pool, so the
+        # stage line now says which paragraph the work has reached.
+        if info:
+            stage = (f"Copyediting — paragraph {info.get('paras_done', 0)} "
+                     f"of {info.get('paras_total', 0)}")
+            events = info.get("edits") or []
+        else:
+            stage, events = "Copyediting manuscript...", []
+        progress(0.05 + frac * 0.55, stage, events)
 
     edited_paragraphs, editor_queries, skipped_chunks = process_document_async(
         original_paragraphs, llm_settings, edit_style, ref_style, lang_type,
@@ -632,12 +649,16 @@ def _process_job(job: Dict[str, Any]) -> None:
     except Exception:
         opts = {}
 
-    def cb(frac: float, stage: str) -> None:
+    def cb(frac: float, stage: str, events=None) -> None:
         # Cooperative cancellation: bail before doing more LLM work if the job
         # was cancelled out from under us.
         if auth.job_is_cancelled(job_id):
             raise JobCancelled()
         auth.update_job_progress(job_id, frac, stage)
+        # The live feed is written separately from the bar so that a failure to record
+        # what changed can never fail the job that changed it.
+        if events:
+            auth.append_job_events(job_id, events)
 
     meter = _usage.Meter()
     try:

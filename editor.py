@@ -3170,6 +3170,61 @@ def generate_ai_review(manuscript_text: str, settings: Dict[str, Any]) -> str:
 
 # --- Orchestration ---
 
+
+def _edit_summary(before: str, after: str, limit: int = 70) -> str:
+    """A one-line "this became that" for the live feed, or "" when nothing changed.
+
+    Diffed on **words, not characters**. A character diff of "H2O" → "H₂O" reports
+    `"2" → "₂"`, and of "was analysed by" → "were analysed using" reports `"as" → "ere"`
+    — both technically correct and both unreadable. Whole words are what an editor
+    recognises as an edit, so the changed span is widened to word boundaries and shown
+    with a little of the sentence around it.
+
+    Whitespace-only differences are treated as no change: they are invisible to the
+    reader and would fill the feed with noise.
+    """
+    if before.strip() == after.strip():
+        return ""
+    # Keep the separators so the rebuilt strings read naturally.
+    split = lambda t: [w for w in re.split(r"(\s+)", t) if w != ""]
+    a, b = split(before), split(after)
+    sm = difflib.SequenceMatcher(None, a, b)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        old = "".join(a[i1:i2]).strip()
+        new = "".join(b[j1:j2]).strip()
+        if not old and not new:
+            continue
+        pre = "".join(a[max(0, i1 - 4):i1]).strip()
+        if len(old) > limit:
+            old = old[:limit] + "…"
+        if len(new) > limit:
+            new = new[:limit] + "…"
+        if not old:
+            return f"…{pre} + “{new}”" if pre else f"added “{new}”"
+        if not new:
+            return f"…{pre} − “{old}”" if pre else f"removed “{old}”"
+        return f"…{pre} “{old}” → “{new}”" if pre else f"“{old}” → “{new}”"
+    return ""
+
+def _chunk_edits(paras, edited_paras, chunk_inds, cap: int = 4) -> list:
+    """What visibly changed in this chunk, as feed lines.
+
+    Capped: a chunk of five long paragraphs can produce five long lines faster than
+    anyone can read them, and the feed's job is to show that work is happening and what
+    kind — not to be the redline. The redline is the download.
+    """
+    out = []
+    for idx in chunk_inds:
+        summary = _edit_summary(paras[idx], edited_paras[idx] or paras[idx])
+        if summary:
+            out.append({"para": idx + 1, "change": summary})
+        if len(out) >= cap:
+            break
+    return out
+
+
 def process_document_async(
     paras: List[str], settings: Dict[str, Any], edit_style: str, ref_style: str,
     lang: str, custom_dict: str, use_crossref: bool, progress_callback,
@@ -3240,6 +3295,20 @@ def process_document_async(
                                 "reason": f"{type(exc).__name__}: {exc}"})
             completed += 1
             if progress_callback:
-                progress_callback(completed / total_chunks)
+                # The callback learned a second argument: what this chunk actually did.
+                # Old callers (and the tests) pass a one-argument function, so the extra
+                # detail is offered and dropped rather than required — a progress view is
+                # not worth breaking the pipeline for.
+                info = {
+                    "chunks_done": completed,
+                    "chunks_total": total_chunks,
+                    "paras_done": min(completed * CHUNK_SIZE, len(task_indices)),
+                    "paras_total": len(task_indices),
+                    "edits": _chunk_edits(paras, edited_paras, chunk_inds),
+                }
+                try:
+                    progress_callback(completed / total_chunks, info)
+                except TypeError:
+                    progress_callback(completed / total_chunks)
     all_queries.sort(key=lambda q: q["index"])
     return edited_paras, all_queries, skipped
