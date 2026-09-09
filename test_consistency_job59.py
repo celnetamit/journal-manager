@@ -77,3 +77,30 @@ def test_a_consistently_abbreviated_list_is_not_flagged():
 def test_too_few_references_to_call_it_a_convention():
     """Two entries are not a house style; flagging them would be an opinion."""
     assert P._reference_style_findings(REF_DOC[2:]) == []
+
+
+# The ILO case Amit asked about: an organisation name introduced once and never
+# shortened afterwards. The rule is the same as for any abbreviation — but an
+# abbreviation nobody uses a second time has only cost the reader a bracket.
+
+def test_an_abbreviation_introduced_once_and_never_used_is_flagged():
+    doc = [
+        "Employment patterns were reviewed across three regions.",
+        "The International Labour Organization (ILO) reports a widening gap in "
+        "access to vocational training.",
+        "That gap is largest in rural districts.",
+    ]
+    hits = [f for f in P._acronym_findings(doc) if f.rule == "acronym.defined_but_unused"]
+    assert len(hits) == 1 and hits[0].paragraph == 1
+    assert "International Labour Organization" in hits[0].suggestion
+
+
+def test_an_abbreviation_that_is_used_again_is_not_flagged():
+    """The normal, correct case: define once, then use the short form."""
+    doc = [
+        "The International Labour Organization (ILO) reports a widening gap.",
+        "The ILO recommends expanding vocational programmes.",
+        "ILO figures for 2024 show the same pattern.",
+    ]
+    assert [f for f in P._acronym_findings(doc)
+            if f.rule == "acronym.defined_but_unused"] == []

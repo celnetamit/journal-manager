@@ -491,6 +491,22 @@ def _acronym_findings(paragraphs: List[str]) -> List["ProofFinding"]:
                 f"{first_def + 1} and {rest})",
                 (paragraphs[where[1]] or "")[:120],
                 f"keep the expansion at its first use and write “{acr}” alone here"))
+
+        # Introduced and then never used. An abbreviation earns its place by saving the
+        # reader the full name a second time; one that appears once has only cost them a
+        # bracket. Common with organisation names — "International Labour Organization
+        # (ILO)" cited once in a paragraph and never again — where spelling it out and
+        # stopping there is the better sentence.
+        later = sum(1 for t in paragraphs[first_def:]
+                    if not _is_reference_block(t or "") and pattern.search(t or ""))
+        first_para = paragraphs[first_def] or ""
+        if len(where) == 1 and later <= 1 and len(pattern.findall(first_para)) <= 1:
+            out.append(ProofFinding(
+                "acronym.defined_but_unused", "info", first_def,
+                f"“{acr}” is introduced here but never used again; the short form "
+                f"is not needed",
+                first_para[:120],
+                f"write “{expansions[acr]}” without the “({acr})”"))
     return out
 
 
