@@ -61,3 +61,6 @@ output_log*.txt
 # Generated manuscript outputs
 *_redline.docx
 *_originality.docx
+
+# The ce4<->manuscript-ngine shared secret. Never in git.
+.mng_bridge_secret

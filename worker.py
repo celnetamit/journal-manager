@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 
+import mng_bridge
 import pipeline
 
 _stop = threading.Event()
@@ -39,6 +40,10 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
 
     pipeline.start_worker_once()
+    # The manuscript-ngine bridge lives here for the same reason the worker does: it is
+    # background work, and anything started from the Streamlit script only runs when
+    # somebody opens the page. It returns None and says so when it is not configured.
+    mng_bridge.start_in_background()
     print("[worker] standalone worker process started", flush=True)
     while not _stop.is_set():
         time.sleep(1)
