@@ -340,23 +340,29 @@ _REF_LINE = re.compile(r"^\s*\[?(\d{1,3})[\].)]\s")
 def _bibliography_census(paras: List[str]) -> Tuple[int, int]:
     """(how many numbered entries, how many distinct ones).
 
-    The identity of an entry is its own text with the leading *reference* number
-    stripped — that one legitimately changes, renumbering is the point of this pass —
-    and everything but letters and digits removed, so a reformatted entry still counts
-    as itself.
+    Identity is the first author's surname and the year, not the entry's own wording.
 
-    The digits have to stay. A first version dropped them, and then every entry in a
-    list of `Author1 ... 2001`, `Author2 ... 2002` fingerprinted identically: the
-    census reported one distinct entry out of ten and the guard could never fire. The
-    year, volume and pages are most of what distinguishes two references by the same
-    author.
+    Fingerprinting the wording is the hole job #62 went through. The re-sort returned
+    sixteen entries for sixteen with four of the author's works replaced by second
+    copies of four others — and because each copy came back reformatted slightly
+    differently, one carrying "et al." where the other kept its full author list, the
+    two copies fingerprinted as two distinct entries. Count matched, distinctness
+    matched, the census passed, and four references left the paper: UNESCO's OER
+    Recommendation, its 2026 restatement, Vygotsky & Cole (1978) and Almasri (2024).
+
+    Surname and year survive every reformat this pass performs — abbreviating the
+    journal, capping the author list at six, dropping the month — which is exactly the
+    property an identity needs and the wording does not have.
     """
-    bodies = []
+    ids = []
     for p in paras:
         if p and _REF_LINE.match(p):
-            bodies.append(re.sub(r"[^a-z0-9]", "",
-                                 _REF_LINE.sub("", p).lower())[:60])
-    return len(bodies), len(set(bodies))
+            body = _REF_LINE.sub("", p)
+            surname = re.match(r"\s*([A-Za-zÀ-ÿ'\-]{3,})", body)
+            year = re.search(r"\b(?:19|20)\d{2}\b", body)
+            ids.append((surname.group(1).lower() if surname else "?",
+                        year.group(0) if year else "?"))
+    return len(ids), len(set(ids))
 
 
 def align_global_citations(

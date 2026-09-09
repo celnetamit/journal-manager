@@ -559,6 +559,22 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         except Exception as scan_exc:
             warnings.append(f"Originality scan failed: {scan_exc}")
 
+    # The bibliography, checked one last time against the author's own.
+    #
+    # There was already a check here — and job #62 still returned four of the author's
+    # works replaced by second copies of four others, with neither this guard nor the
+    # re-sort's own census saying anything. Running it once in the middle of the chain
+    # means every step after it is unguarded, and the chain is long: renumbering, link
+    # restoration, Crossref completion, the abbreviation pass. Rather than keep hunting
+    # for which one did it, the question is asked again here, where nothing can follow.
+    #
+    # It is cheap — a surname-and-year census — and it is idempotent: if the earlier
+    # call already restored the list, this one finds nothing to do.
+    edited_paragraphs, _final_ref_queries = verify_reference_block(
+        original_paragraphs, edited_paragraphs)
+    for _q in _final_ref_queries:
+        editor_queries = list(editor_queries) + [_q]
+
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()
     # Unique per-job token so concurrent jobs never overwrite each other's
