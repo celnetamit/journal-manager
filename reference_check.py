@@ -275,7 +275,9 @@ def check_references(reference_paragraphs, fetch=None) -> List[RefFinding]:
         # Not a reference at all — see `_CITATION_SIGNAL`.
         if not _CITATION_SIGNAL.search(text):
             continue
-        gaps = missing_fields(text)
+        # A missing title comes first because it is a different order of problem: a
+        # reference short of its page range is still findable, one with no title is not.
+        gaps = missing_descriptive_fields(text) + missing_fields(text)
         if not gaps:
             continue
         # Each lookup is a network round trip. A median manuscript flags two
@@ -293,3 +295,68 @@ def check_references(reference_paragraphs, fetch=None) -> List[RefFinding]:
             + _why(suggestion, fetch, lookups),
             text[:180], suggestion, gaps))
     return out
+
+
+#: A publisher's name, or the words that introduce one. Vancouver writes a book as
+#: `Place: Publisher; Year`, so a colon between two capitalised names is the strongest
+#: signal, and the common house words cover the rest.
+_PUBLISHER = re.compile(
+    r"[A-Z][A-Za-z.'\- ]{2,30}:\s*[A-Z]"
+    r"|\b(press|publisher|publishing|publications?|books?|wiley|elsevier|springer|"
+    r"routledge|sage|taylor\s*&?\s*francis|mcgraw|pearson|oxford|cambridge|academic)\b",
+    re.I)
+
+#: A source: the journal, book or conference the work appeared in. Recognised by the
+#: notation that always accompanies one rather than by trying to name it — a volume,
+#: a `;year;vol` run, an `In:` for a chapter, or a proceedings/press word.
+_SOURCE = re.compile(
+    r"\bin\s*:\s|\bproc(?:eedings)?\b|\bconf(?:erence)?\b|\bsymposium\b"
+    r"|\b(?:press|publisher|publishing|publications?)\b"
+    r"|\b[A-Z][A-Za-z]*\s+(?:J|Journal|Rev|Review|Trans|Transactions|Bull|Ann|Res)\b"
+    r"|\b(?:J|Journal|Rev|Trans|Bull|Ann|Res|Technol|Educ|Sci|Med|Eng)\.?\s*\d*\s*[;.]",
+    re.I)
+
+
+def _segments(text: str) -> List[str]:
+    """The entry's full-stop-separated parts, with initials and abbreviations kept whole.
+
+    A bibliography is written in sentences that are not sentences: `Mikropoulos TA,
+    Iatraki G. Digital technology…. Educ Inf Technol. 2023; 28(4): 3911–3935p.` Splitting
+    on every full stop cuts `TA,` and `Technol.` into pieces, so only a stop followed by
+    a space and a capital — and not preceded by a single capital — divides two fields.
+    """
+    parts = re.split(r"(?<![A-Z])\.\s+(?=[A-Z\"'“])", (text or "").strip())
+    return [p.strip(" .") for p in parts if p.strip(" .")]
+
+
+def missing_descriptive_fields(text: str) -> List[str]:
+    """A reference with nothing in it that says what the work is.
+
+    `missing_fields` asks whether a reference can be located — authors, year, volume,
+    pages. This asks the blunter question: is there a title here at all. Job #61 carried
+    `Unesco.org. 2026. Available from: <url>`, which is a source, a year and a link and
+    nothing a reader can turn into a document; every existing check passed it, because
+    it has neither a volume nor pages to be missing.
+
+    Cut down to this one question after measuring. The first version also reported a
+    missing journal and a missing publisher, and reading its five findings on job #61's
+    own bibliography by hand showed four of them wrong: `The UDL Guidelines` and
+    `Recommendation on Open Educational Resources (OER)` are titles, and `Legal
+    Instruments` is a source. A check that is wrong four times in five buries the one
+    time it is right, so the two unreliable arms were removed rather than tuned — the
+    entries they were meant to catch are already covered by the model's own query.
+    """
+    segs = _segments((text or "").strip())
+
+    def descriptive(s: str) -> bool:
+        """Does this segment say something about the work, rather than locate it?"""
+        if _YEAR.fullmatch(s.strip()) or _URL.search(s):
+            return False
+        if re.match(r"(?i)^(available|accessed|retrieved|cited|online|doi)\b", s.strip()):
+            return False
+        words = [w for w in re.findall(r"[A-Za-z][A-Za-z\'\-]+", s) if len(w) > 2]
+        return len(words) >= 3
+
+    return [] if any(descriptive(s) for s in segs) else ["title"]
+
+

@@ -409,9 +409,26 @@ def enforce_abbreviation_first_use(
     Pairs come from `learn_abbreviations`, i.e. from the author's own definitions —
     never inferred from initials alone.
     """
-    pairs = learn_abbreviations(original)
+    pairs = learn_abbreviations(original[:_references_start(original)
+                                         if _references_start(original) is not None
+                                         else len(original)])
     if not pairs:
         return edited, []
+
+    # The bibliography is out of bounds, in both directions.
+    #
+    # A reference's title is the identity of somebody else's work, quoted. Job #61 came
+    # back with `Recommendation on open educational resources (OER)` shortened to
+    # `Recommendation on OER`, and `Are open educational resources (OER) and practices
+    # (OEP) effective…` to `Are OER and practices (OEP) effective…` — titles that no
+    # longer match the papers they name, so a reader searching for them finds nothing.
+    # House style governs how *this* manuscript writes; it does not get to rewrite what
+    # another author called their work.
+    #
+    # It is also excluded as a source: an abbreviation defined only inside a reference
+    # title was never this manuscript introducing a term.
+    refs_at = _references_start(original)
+    body_end = refs_at if refs_at is not None else len(original)
 
     out = list(edited)
     queries: List[Dict[str, object]] = []
@@ -434,12 +451,12 @@ def enforce_abbreviation_first_use(
         # our own earlier definition would leave the paper defining the same term
         # twice, and would move the author's chosen first mention.
         seen_definition = bool(def_rx.search(
-            "\n".join(p or "" for p in original)))
+            "\n".join(p or "" for p in original[:body_end])))
         first_index: Optional[int] = None
         already_defined_here = False
         redefined: List[int] = []
 
-        for i, para in enumerate(out):
+        for i, para in enumerate(out[:body_end]):
             if not para:
                 continue
             if def_rx.search(para):
