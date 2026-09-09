@@ -446,12 +446,22 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     _loss = _losscheck.check_document(original_paragraphs, edited_paragraphs)
     for _hit in _loss:
         i = _hit["index"]
-        edited_paragraphs[i] = original_paragraphs[i]      # keep the author's text
+        # The author's text back — except for single-word spelling corrections, which
+        # are kept. A whole-paragraph revert used to throw those away too: job #53's
+        # `comparision`/`breaking` were corrected, the paragraph shrank for unrelated
+        # reasons, and the misspellings shipped.
+        kept = _losscheck.salvage_safe_corrections(
+            original_paragraphs[i], edited_paragraphs[i])
+        edited_paragraphs[i] = kept
+        salvaged = kept != original_paragraphs[i]
         guard_queries.append({
             "index": i,
             "snippet": original_paragraphs[i][:200],
             "query": f"The copyedit was not applied to this paragraph: {_hit['detail']} "
-                     f"The original was kept. Please edit it by hand.",
+                     + ("Only its spelling corrections were kept; the wording is the "
+                        "author's own. Please edit it by hand."
+                        if salvaged else
+                        "The original was kept. Please edit it by hand."),
             "suggestion": None,
         })
 

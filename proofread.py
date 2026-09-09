@@ -370,6 +370,7 @@ def mechanical_findings(paragraphs: List[str],
     out.extend(_consistency_findings(paragraphs, joined, lang_type))
     out.extend(_acronym_findings(paragraphs))
     out.extend(_reference_style_findings(paragraphs))
+    out.extend(_reference_duplicate_findings(paragraphs))
     return out
 
 
@@ -554,6 +555,49 @@ def _reference_style_findings(paragraphs: List[str]) -> List["ProofFinding"]:
             f"of the other references are {style}",
             field[:110],
             f"use the same convention as the rest of the list ({style})"))
+    return out
+
+
+#: The entry's own list marker — `6.`, `[6]`, `6)`. Two entries are duplicates when what
+#: follows the marker is the same work; the numbers differ by definition.
+_ENTRY_MARKER = re.compile(r"^\s*\[?\d{1,3}[\].)]{0,2}\s*")
+
+
+def _reference_duplicate_findings(paragraphs: List[str]) -> List["ProofFinding"]:
+    """The same work listed twice in the bibliography.
+
+    Job #53 carried Aggarwal's *Integrated Technologies in Electrical, Electronics and
+    Biotechnology Engineering* (2025) as both entry 6 and entry 8, and nothing caught it:
+    every check ce4 ran looked at one entry at a time, and each of those two entries is
+    perfectly well-formed on its own. A duplicate is only visible when entries are
+    compared *against each other*, which no per-entry rule can ever do.
+
+    Comparison is on the entry with its list marker and punctuation removed, so `6.` and
+    `8.` do not make two copies of one book look like two different books. Both positions
+    are named, because which one to delete depends on which number the text cites.
+    """
+    out: List[ProofFinding] = []
+    entries = [(i, t) for i, t in enumerate(paragraphs)
+               if _is_reference_block(t or "") and len(t or "") > 40]
+
+    seen: Dict[str, int] = {}
+    for i, text in entries:
+        body = _ENTRY_MARKER.sub("", (text or "").strip())
+        # Case, spacing and punctuation are style, not identity: the same book typed
+        # twice is rarely typed identically twice.
+        key = re.sub(r"[^a-z0-9]+", " ", body.lower()).strip()
+        if len(key) < 30:
+            continue
+        first = seen.get(key)
+        if first is None:
+            seen[key] = i
+            continue
+        out.append(ProofFinding(
+            "reference.duplicate", "error", i,
+            f"this reference is identical to the one in paragraph {first + 1}; "
+            f"the same work is listed twice",
+            body[:110],
+            "delete one entry and renumber, keeping whichever number the text cites"))
     return out
 
 

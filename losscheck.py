@@ -50,6 +50,7 @@ whether the copyedit misbehaved.
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Dict, List, Optional
 
@@ -189,3 +190,70 @@ def check_document(originals: List[str], edited: List[str]) -> List[Dict[str, ob
         if hit:
             out.append({"index": i, **hit, "original": a, "edited": b})
     return out
+
+
+#: A word-for-word correction is accepted only when the two words are recognisably the
+#: same word. `comparision` -> `comparison` scores 0.95; `breaking` -> `braking` 0.87;
+#: `disc` -> `drum`, which would be a change of meaning rather than a spelling fix,
+#: scores 0.25 and is refused.
+_SAME_WORD = 0.75
+
+
+def salvage_safe_corrections(original: str, edited: str) -> str:
+    """The author's paragraph back, but keeping the copyedit's spelling corrections.
+
+    Reverting a paragraph wholesale is the right instinct and the wrong result. Job #53
+    put a heading, a source note, a citation and a body sentence into one paragraph:
+
+        6.1 Theoretical Performance Metrics (Derived from … Guo et al., 2021) [2, 5]
+        Table 1 illustrate the comparision of breaking system between …
+
+    The copyedit shortened it by 36%, the loss guard restored the original, and the two
+    corrections inside it — `comparision` -> `comparison`, `breaking` -> `braking` — went
+    back with everything else. The manuscript shipped with the misspellings still in it,
+    which is what the team saw and reported.
+
+    So the revert is made partial, on terms that cannot lose anything: **every original
+    token is kept unless a single word was replaced by a single, recognisably similar
+    word.** Deletions are refused, insertions are refused, multi-word rewrites are
+    refused. The output therefore has the same words as the author's original but for
+    spelling, which is the one class of edit that is safe to take without reading the
+    rest of the paragraph.
+    """
+    if not original.strip() or original == edited:
+        return original
+
+    token = re.compile(r"(\s+)")
+    a = [t for t in token.split(original) if t]
+    b = [t for t in token.split(edited) if t]
+
+    out: List[str] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+        if tag == "equal":
+            out.extend(a[i1:i2])
+        elif tag == "replace" and (i2 - i1) == 1 and (j2 - j1) == 1:
+            out.append(_corrected_word(a[i1], b[j1]))
+        else:
+            # delete, insert, or a rewrite of more than one word: keep the author's.
+            out.extend(a[i1:i2])
+    return "".join(out)
+
+
+def _corrected_word(before: str, after: str) -> str:
+    """`after` if it is the same word spelled correctly, else `before` untouched."""
+    # Punctuation is not part of the word and must survive either way: the copyedit
+    # legitimately turns `system.` into `systems.` and the full stop is not the edit.
+    lead = re.match(r"^\W*", before).group(0)
+    trail = re.search(r"\W*$", before).group(0)
+    core_a = before[len(lead):len(before) - len(trail) or None]
+    core_b = after.strip(" \t")
+    core_b = core_b[len(re.match(r"^\W*", core_b).group(0)):
+                    len(core_b) - len(re.search(r"\W*$", core_b).group(0)) or None]
+
+    if not core_a.isalpha() or not core_b.isalpha():
+        return before                     # numbers, units and symbols are never "spelling"
+    if core_a.lower() == core_b.lower():
+        return before                     # a case change is a style decision, not a fix
+    if difflib.SequenceMatcher(None, core_a.lower(), core_b.lower()).ratio() < _SAME_WORD:
+        return before
+    return f"{lead}{core_b}{trail}"

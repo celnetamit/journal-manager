@@ -528,6 +528,18 @@ def fetch_serper_scholar_doi(citation_text: str, api_key: str) -> Optional[str]:
     return None
 
 
+def _looks_like_reference_entry(text: str) -> bool:
+    """Is this a bibliography entry, as opposed to prose that mentions a study?
+
+    Deliberately the *narrow* test: it wants citation notation — a numbered entry with a
+    year, or a `35(1): 55-65` volume/issue/page run — not merely a year in a sentence.
+    An unnumbered entry with no page range will be missed and go without a DOI, and that
+    is the trade taken on purpose: a missing DOI is a gap an editor can fill, while a DOI
+    attached to the wrong thing is a wrong identifier that looks authoritative.
+    """
+    return _proofread._is_reference_block(text or "")
+
+
 def fetch_crossref_record(citation_text: str) -> Optional[Dict[str, Any]]:
     """The full Crossref record for a citation, or None.
 
@@ -1360,6 +1372,20 @@ Input JSON:
             if use_crossref or use_serper:
                 for i in range(len(result)):
                     t = result[i]
+                    # A DOI belongs in the bibliography and nowhere else. The test used
+                    # to be "longer than 30 characters and contains a year", which every
+                    # literature-review paragraph passes — so job #53 came back with
+                    # Crossref DOIs appended mid-prose to sentences like "Zhou, H., et
+                    # al. (2025). Anti-Lock Braking System Performance Optimization…",
+                    # which is not a citation the reader can follow, it is a bare URL
+                    # dropped into a discussion of the work.
+                    #
+                    # The lookup itself is not free either: every such paragraph cost a
+                    # Crossref round-trip, and a prose paragraph that merely mentions a
+                    # study matches some other paper often enough to attach the wrong
+                    # DOI to it — a wrong identifier being worse than none.
+                    if not _looks_like_reference_entry(t):
+                        continue
                     if (len(t) > 30 and re.search(r"\b(19|20)\d{2}\b", t)
                             and "doi.org" not in t):
                         doi = fetch_crossref_doi(t) if use_crossref else None
@@ -1574,6 +1600,23 @@ def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
         rpr = run._r.find(qn("w:rPr"))
         char_rpr.extend([rpr] * len(run.text or ""))
 
+    # Anything in this paragraph that is not text has to be carried across the clear()
+    # by hand, because `Paragraph.clear()` removes every child element — including the
+    # `w:drawing` that *is* the author's figure.
+    #
+    # Job #53 lost three of its four figures this way. The pattern in the output was
+    # exact: every paragraph whose text the copyedit changed came back with no image,
+    # and the one image-bearing paragraph it left alone ("The controller ensures:")
+    # kept its picture. The captions were inline with the images — "Fig 1: actual model
+    # of hybrid breaking system" — so copyediting the caption destroyed the figure it
+    # captioned, and nothing anywhere said so: the file still carried image1-3 in
+    # word/media/ with their relationships intact, referenced by nothing.
+    #
+    # An image-only paragraph was never at risk (equal text returns above), which is
+    # why this went unseen for so long: it only bites when a figure and its caption
+    # share a paragraph, which is exactly how authors write them.
+    graphics = _detachable_graphics(p)
+
     p.clear()
 
     token_pattern = r"(\s+|\b|[.,!?;:])"
@@ -1638,7 +1681,47 @@ def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
             add_track_change_run(p, "".join(edited_tokens[j1:j2]), "insert", tc_id,
                                  source_rpr=fmt_at(src if src is not None else 0))
             tc_id += 1
+
+    _reattach_graphics(p, graphics)
     return tc_id
+
+
+#: Run-level content that carries a picture or an embedded object. `w:drawing` is the
+#: modern inline/floating image, `w:pict` the VML one Word still writes for pasted
+#: screenshots, `w:object` an embedded OLE item such as an equation editor formula.
+_GRAPHIC_TAGS = ("w:drawing", "w:pict", "w:object")
+
+
+def _detachable_graphics(p) -> list:
+    """Take the picture-bearing runs out of a paragraph, remembering roughly where.
+
+    Returns `(leading, trailing)` element lists. Position is kept only as "before any
+    text" or "after it", which is all the fidelity that survives a rewrite anyway: the
+    new text has different offsets from the old, so an exact character position would
+    be a made-up number dressed as precision. In practice a figure sits at one end of
+    its caption paragraph or the other, and both ends are preserved exactly.
+    """
+    leading, trailing, seen_text = [], [], False
+    for child in list(p._p):
+        if child.tag == qn("w:r"):
+            if any(child.find(qn(t)) is not None for t in _GRAPHIC_TAGS):
+                (trailing if seen_text else leading).append(child)
+                p._p.remove(child)
+            elif (child.findtext(qn("w:t")) or "").strip():
+                seen_text = True
+    return [leading, trailing]
+
+
+def _reattach_graphics(p, graphics: list) -> None:
+    """Put the pictures back, before and after the rewritten text as they were."""
+    leading, trailing = graphics
+    pPr = p._p.find(qn("w:pPr"))
+    at = list(p._p).index(pPr) + 1 if pPr is not None else 0
+    for el in leading:
+        p._p.insert(at, el)
+        at += 1
+    for el in trailing:
+        p._p.append(el)
 
 
 def generate_redline_docx(

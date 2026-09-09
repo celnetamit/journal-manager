@@ -65,6 +65,45 @@ def _lost_the_step_number(before: str, after: str) -> bool:
     return not re.match(rf"^\s*{m.group(2)}\s*[:.]", after)
 
 
+#: A figure or table caption label, however the author punctuated it — `Table 2:`,
+#: `Fig 1:`, `Figure 3.`, `Tab. 4 —`. The number is what matters: it is the anchor every
+#: in-text "see Table 2" points at, and the only thing that makes a caption findable.
+#: The separator between the word and the number is whatever the author typed. `Fig: 2`
+#: is real — job #53 wrote its second figure that way — and a pattern that allowed only
+#: `Fig.` or `Fig ` walked straight past the one caption that was actually deleted.
+_CAPTION_LABEL = re.compile(
+    r"(?i)\b(fig(?:ure)?|tab(?:le)?)\s*[.:\-–—]?\s*(\d+)")
+
+
+def _lost_the_caption_label(before: str, after: str) -> Optional[str]:
+    """The caption number that the copyedit dropped, or None.
+
+    Job #53 lost both of its numbered elements to the heading rules, which is a house
+    rule doing exactly what it says on text it should never have been given:
+
+    * `Table 2: Comparative Summary Table` -> `Comparative Summary Table`. "Table 2:"
+      reads like heading numbering, and rule 2 removes leading numbering from headings.
+    * `3.2 Sensor Fusion    Fig: 2 Design of Prototype` -> `Sensor Fusion`. A heading
+      and a caption had been typed into one paragraph, and only the heading survived.
+
+    Then the manuscript's own cross-reference check reported "the text refers to Table 2,
+    which has no caption" — the tool breaking something and filing a defect against the
+    author for it. That is the part worth guarding: a caption label is not decoration,
+    and no style rule is worth silently unnumbering a figure.
+
+    Only the *number* is compared. A caption legitimately changes shape under the house
+    rules — `Fig 1: actual model` -> `Figure 1. Actual model.` is correct and must not be
+    flagged — so this asks the narrow question the author cares about: is Table 2 still
+    called Table 2?
+    """
+    for kind, num in _CAPTION_LABEL.findall(before or ""):
+        word = "fig" if kind.lower().startswith("fig") else "tab"
+        if not any(k.lower().startswith(word[:3]) and n == num
+                   for k, n in _CAPTION_LABEL.findall(after or "")):
+            return f"{'Figure' if word == 'fig' else 'Table'} {num}"
+    return None
+
+
 def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
         List[str], List[Dict[str, object]]]:
     """Put back what the copyedit removed but must not have.
@@ -105,6 +144,24 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
                 "query": ("This is a numbered step in an algorithm listing, not a "
                           "heading — its number has been put back."),
                 "suggestion": restored,
+            })
+            continue
+        lost = _lost_the_caption_label(before, after)
+        if lost:
+            # The original is restored whole rather than patched. Where the label went
+            # missing the paragraph usually held a heading *and* a caption, and there is
+            # no safe way to guess where one ends and the other begins — splitting it
+            # would be this guard inventing structure while claiming to protect it.
+            out.append(before)
+            queries.append({
+                "index": i,
+                "snippet": before[:80],
+                "query": (f"The copyedit removed the caption label for {lost}. A "
+                          f"caption number is what every '{lost}' in the text points "
+                          f"at, so the original has been restored. If this paragraph "
+                          f"holds both a heading and a caption, please split them into "
+                          f"two paragraphs."),
+                "suggestion": before,
             })
             continue
         out.append(after)
