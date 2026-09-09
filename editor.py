@@ -1818,6 +1818,72 @@ def _reattach_graphics(p, graphics: list) -> None:
         p._p.append(el)
 
 
+#: Words that stay lower case inside a title-case heading.
+_HEADING_JOINERS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+                    "of", "on", "or", "the", "to", "with", "into", "over", "vs"}
+
+
+def _looks_like_a_heading(text: str) -> bool:
+    """Short, unpunctuated, and capitalised — the shape of a section heading."""
+    t = (text or "").strip()
+    if not t or len(t) > 70 or t[-1] in ".!?,;:":
+        return False
+    words = t.split()
+    if len(words) > 9:
+        return False
+    return t.isupper() or all(w[0].isupper() or w.lower() in _HEADING_JOINERS
+                              for w in words if w[:1].isalpha())
+
+
+def strip_heading_numbering(doc) -> int:
+    """Remove Word's automatic numbering from headings. Returns how many.
+
+    The house rules give headings no number, and the copyedit removes the ones the
+    author *typed* — job #60's `2.1 Overview of the Field:` came back as `Overview of
+    the Field`. Its "1. Introduction" still read "1." because that number was never in
+    the text: the paragraph carries Word's automatic list numbering and Word draws the
+    number at display time, so no edit to the text can reach it.
+
+    The decision is made per **numbering definition**, not per paragraph, and that is
+    what makes it safe. Job #60 carries 76 numbered paragraphs across 17 numbering
+    definitions; `numId=1` holds exactly INTRODUCTION, Theoretical Framework, RESULTS
+    AND DISCUSSION and CONCLUSIONS, and every other definition holds the author's real
+    lists — research questions ending in "?", bulleted findings, the bibliography. A
+    Word numbering definition is created per list, so the headings of a document share
+    one and the lists never join it.
+
+    A definition is stripped only when **every** paragraph on it looks like a heading.
+    One sentence among them and the whole group is left alone, because the cost of
+    being wrong is asymmetric: a heading keeping a number is untidy, while a list losing
+    its numbering is the author's content damaged.
+    """
+    groups: Dict[str, List[Any]] = {}
+    for p in doc.paragraphs:
+        pPr = p._p.find(qn("w:pPr"))
+        numPr = pPr.find(qn("w:numPr")) if pPr is not None else None
+        if numPr is None:
+            continue
+        num_id = numPr.find(qn("w:numId"))
+        if num_id is None:
+            continue
+        groups.setdefault(num_id.get(qn("w:val")), []).append(p)
+
+    removed = 0
+    for paras in groups.values():
+        texts = [(p.text or "").strip() for p in paras]
+        if not all(_looks_like_a_heading(t) for t in texts if t):
+            continue
+        if not any(texts):
+            continue
+        for p in paras:
+            pPr = p._p.find(qn("w:pPr"))
+            numPr = pPr.find(qn("w:numPr")) if pPr is not None else None
+            if numPr is not None:
+                pPr.remove(numPr)
+                removed += 1
+    return removed
+
+
 def generate_redline_docx(
     original_path: str, edited_paragraphs: List[str], output_path: str,
     queries: Optional[List[Dict[str, Any]]] = None,
@@ -1829,6 +1895,8 @@ def generate_redline_docx(
     settings = doc.settings.element
     track_changes = OxmlElement("w:trackRevisions")
     settings.append(track_changes)
+
+    strip_heading_numbering(doc)
 
     for p, edited in zip(doc.paragraphs, edited_paragraphs):
         tc_id = _mark_up_paragraph(p, p.text, edited, tc_id)

@@ -156,3 +156,69 @@ def test_a_bracket_that_defines_nothing_is_still_rejected():
                  "Results were mixed, however (Fig. 2) shows the trend.",
                  "Two groups were used, and control (CTRL) values were stable."):
         assert G.learn_abbreviations([text]) == {}, text
+
+
+# ------------------------------------------- and now the number is actually removed
+
+def _numbered_count(doc):
+    from docx.oxml.ns import qn
+    n = 0
+    for p in doc.paragraphs:
+        pPr = p._p.find(qn("w:pPr"))
+        if pPr is not None and pPr.find(qn("w:numPr")) is not None:
+            n += 1
+    return n
+
+
+def _mixed_doc():
+    """Job #60's shape: headings on one numbering definition, lists on others.
+
+    Word creates a numbering definition per list, so a document's headings share one
+    and its lists never join it. That is the whole basis for deciding by group.
+    """
+    doc = Document()
+    for text in ("Introduction", "Results and Discussion", "Conclusions"):
+        _number(doc.add_paragraph(text), num_id=1)
+    for text in ("How do ICT tools contribute to inclusive education?",
+                 "What are the key challenges in leveraging digital pedagogies?"):
+        _number(doc.add_paragraph(text), num_id=21)
+    for text in ("Adaptive Learning Technologies: AI-powered platforms adjust pace.",
+                 "Collaborative Platforms: Tools like Google Classroom support groups."):
+        _number(doc.add_paragraph(text), num_id=22)
+    return doc
+
+
+def test_heading_numbering_is_removed_and_lists_are_not():
+    import editor
+
+    doc = _mixed_doc()
+    assert _numbered_count(doc) == 7
+    assert editor.strip_heading_numbering(doc) == 3      # the three headings only
+    assert _numbered_count(doc) == 4                     # both lists intact
+
+
+def test_one_sentence_in_the_group_protects_the_whole_group():
+    """The cost of being wrong is asymmetric.
+
+    A heading keeping its number is untidy; a list losing its numbering is the author's
+    content damaged. So a single paragraph that is not heading-shaped keeps the entire
+    numbering definition.
+    """
+    import editor
+
+    doc = Document()
+    _number(doc.add_paragraph("Introduction"), num_id=1)
+    _number(doc.add_paragraph("Results and Discussion"), num_id=1)
+    _number(doc.add_paragraph("This one is a whole sentence, and it ends in a stop."),
+            num_id=1)
+    assert editor.strip_heading_numbering(doc) == 0
+    assert _numbered_count(doc) == 3
+
+
+def test_a_document_with_no_numbering_is_untouched():
+    import editor
+
+    doc = Document()
+    doc.add_paragraph("Introduction")
+    doc.add_paragraph("The field has grown.")
+    assert editor.strip_heading_numbering(doc) == 0
