@@ -94,6 +94,23 @@ def test_without_configuration_the_bridge_does_not_start(tmp_path, monkeypatch):
         "an unconfigured bridge should be absent, not a thread logging failures")
 
 
+def test_an_idle_bridge_says_which_variable_is_missing(tmp_path, monkeypatch, capsys):
+    """Silence cannot be told apart from a bridge that is configured and broken."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MNG_BASE_URL", "https://manuscript-engine.example")
+    monkeypatch.delenv("MNG_BRIDGE_SECRET", raising=False)
+    import importlib
+
+    import mng_bridge
+    importlib.reload(mng_bridge)
+
+    mng_bridge.start_in_background()
+
+    said = capsys.readouterr().out
+    assert "MNG_BRIDGE_SECRET" in said
+    assert "MNG_BASE_URL" not in said, "only the one that is actually missing"
+
+
 # ----------------------------------------------------------------------------------
 # What has been returned is recorded, not inferred
 # ----------------------------------------------------------------------------------

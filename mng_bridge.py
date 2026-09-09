@@ -433,6 +433,13 @@ def start_in_background() -> Optional[threading.Thread]:
     check stayed green.
     """
     if not configured():
+        # Said out loud, once. An operator who has just set the two variables needs to be
+        # able to tell "not configured" from "configured and broken" by reading the log,
+        # and an absence that explains itself is the difference between a restart and an
+        # afternoon.
+        missing = [n for n, v in (("MNG_BASE_URL", base_url()),
+                                  ("MNG_BRIDGE_SECRET", secret())) if not v]
+        print(f"[bridge] idle — {' and '.join(missing)} not set", flush=True)
         return None
     thread = threading.Thread(target=run_forever, name="mng-bridge", daemon=True)
     thread.start()
