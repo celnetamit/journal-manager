@@ -78,3 +78,47 @@ def test_entries_that_do_have_titles_are_left_alone():
         "Seale J. Doom and gloom lessons. Br J Educ Technol. 2023; 52(4): 1545–1552p.",
     ):
         assert R.missing_descriptive_fields(entry) == [], entry
+
+
+# ------------------------------- the abstract and the body are two independent scopes
+
+_SCOPED = [
+    "Next-Generation Digital Pedagogies for Inclusive Education",
+    "Abstract",
+    "The advent of next-generation digital pedagogies has revolutionized inclusive "
+    "education by harnessing cutting-edge Information and Communication Technology "
+    "(ICT) solutions.",
+    "Keywords: digital pedagogy, ICT tools, inclusivity",
+    "INTRODUCTION",
+    "The transformative potential of Information and Communication Technology aligns "
+    "with Sustainable Development Goal 4.",
+    "Recent studies emphasize the growing role of Information and Communication "
+    "Technology in schools.",
+]
+
+
+def test_the_body_defines_the_term_again_at_its_own_first_use():
+    """An abstract is read on its own, in indexes and databases, so it defines nothing
+    for the body. The body spells the term out at *its* first use and shortens after.
+    """
+    out, _q = G.enforce_abbreviation_first_use(_SCOPED, list(_SCOPED))
+    assert out[5].startswith(
+        "The transformative potential of Information and Communication Technology (ICT)")
+    assert out[6] == "Recent studies emphasize the growing role of ICT in schools."
+
+
+def test_the_abstract_is_not_shortened_by_this_guard():
+    """Job #61 reduced the abstract's own `Information and Communication Technology
+    (ICT)` to a bare `ICT`, and the body's first mention was shortened rather than
+    defined — so the term was spelled out nowhere in the paper.
+    """
+    out, _q = G.enforce_abbreviation_first_use(_SCOPED, list(_SCOPED))
+    assert out[2] == _SCOPED[2]
+
+
+def test_the_body_starts_after_the_keywords_line():
+    assert G._body_start(_SCOPED) == 4
+    # No keywords line: the abstract's own paragraphs are skipped to the next heading.
+    assert G._body_start(["Title", "Abstract", "A long abstract sentence goes here.",
+                          "INTRODUCTION", "Body text follows."]) == 3
+    assert G._body_start(["Just body text with no front matter at all."]) == 0

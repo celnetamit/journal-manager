@@ -390,6 +390,40 @@ def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
     return pairs
 
 
+#: The keywords line, which closes the front matter. After it the article proper starts.
+_KEYWORDS_LINE = re.compile(r"(?i)^\s*key\s*words?\s*[:.\-–—]")
+_ABSTRACT_HEADING = re.compile(r"(?i)^\s*abstract\s*[:.\-–—]?\s*$")
+
+
+def _body_start(paragraphs: List[str]) -> int:
+    """Where the article's body begins — after the abstract and its keywords.
+
+    The abstract is a separate scope from the body, and the journal's own rule says so:
+    the abstract carries no abbreviations at all, and the body still spells a term out
+    in full at *its* first use, because the two are read apart. An abstract is
+    reproduced on its own in indexes and databases, where the body is not there to
+    define anything.
+
+    Job #61 shows what happens when the two are treated as one document. The abstract's
+    `Information and Communication Technology (ICT)` was counted as the definition, so
+    the body's first mention was shortened rather than defined — and the abstract itself
+    was reduced to a bare `ICT`. The term ended up spelled out nowhere in the paper.
+    """
+    for i, p in enumerate(paragraphs):
+        if _KEYWORDS_LINE.match((p or "").strip()):
+            return i + 1
+    for i, p in enumerate(paragraphs):
+        if _ABSTRACT_HEADING.match((p or "").strip()):
+            # No keywords line: skip the abstract's own paragraphs, which run until the
+            # next short heading-like line.
+            for j in range(i + 1, min(i + 8, len(paragraphs))):
+                t = (paragraphs[j] or "").strip()
+                if t and len(t) < 60 and not t.endswith("."):
+                    return j
+            return min(i + 4, len(paragraphs))
+    return 0
+
+
 def enforce_abbreviation_first_use(
     original: List[str], edited: List[str],
 ) -> Tuple[List[str], List[Dict[str, object]]]:
@@ -429,6 +463,7 @@ def enforce_abbreviation_first_use(
     # title was never this manuscript introducing a term.
     refs_at = _references_start(original)
     body_end = refs_at if refs_at is not None else len(original)
+    body_from = _body_start(original)
 
     out = list(edited)
     queries: List[Dict[str, object]] = []
@@ -451,12 +486,13 @@ def enforce_abbreviation_first_use(
         # our own earlier definition would leave the paper defining the same term
         # twice, and would move the author's chosen first mention.
         seen_definition = bool(def_rx.search(
-            "\n".join(p or "" for p in original[:body_end])))
+            "\n".join(p or "" for p in original[body_from:body_end])))
         first_index: Optional[int] = None
         already_defined_here = False
         redefined: List[int] = []
 
-        for i, para in enumerate(out[:body_end]):
+        for i in range(body_from, body_end):
+            para = out[i]
             if not para:
                 continue
             if def_rx.search(para):
