@@ -896,3 +896,50 @@ def verify_reference_block(
               "reformat it by hand or re-run once the list is stable."),
         "suggestion": None,
     }]
+
+
+#: A link, in the two shapes a bibliography writes one.
+_REF_URL = re.compile(r"https?://\S+|\bwww\.\S+", re.I)
+
+
+def restore_reference_urls(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A reference that arrived with a link must still have it.
+
+    In-House Reference Rule 3 formats a web source as `Available at URL [Accessed on
+    Month Year]`, so the link is a required field — and nothing was checking that it
+    survived. Job #61 returned `Unesco.org. 2026. Available from:` with the address
+    gone: an entry that still reads like a complete reference, still says where to look,
+    and no longer tells anyone where.
+
+    Only the link is restored, not the entry, so the Vancouver reformatting around it
+    stands. Restoring the whole entry would throw away correct work to recover one
+    field.
+    """
+    start = _references_start(original)
+    if start is None:
+        return edited, []
+
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i in range(start + 1, min(len(original), len(edited))):
+        had = _REF_URL.findall(original[i] or "")
+        if not had or _REF_URL.search(out[i] or ""):
+            continue
+        restored = (out[i] or "").rstrip()
+        # Put it back where the entry already points at it, or at the end.
+        if re.search(r"(?i)(available\s+(?:from|at|online)\s*:?)\s*$", restored):
+            restored = f"{restored} {had[0]}"
+        else:
+            restored = f"{restored} {had[0]}".strip()
+        out[i] = restored
+        queries.append({
+            "index": i,
+            "snippet": (original[i] or "")[:200],
+            "query": ("The copyedit dropped this reference's link, which the house "
+                      "format for a web source requires. It has been put back — please "
+                      "check it sits where the entry wants it."),
+            "suggestion": None,
+        })
+    return out, queries

@@ -66,7 +66,10 @@ def test_reference_list_mixing_abbreviated_and_full_journal_names():
     assert len(hit) == 1, "only the odd one out should be flagged"
     assert hit[0].paragraph == 3
     assert "International Journal of Instructional Technology" in hit[0].fragment
-    assert "abbreviated" in hit[0].message
+    # The direction is the house rule's, not the majority's — see the audit note in
+    # `_reference_style_findings`. Here the two happen to agree; the test asserts the
+    # rule, so it keeps holding on a manuscript where they do not.
+    assert "abbreviate" in hit[0].suggestion
 
 
 def test_a_consistently_abbreviated_list_is_not_flagged():

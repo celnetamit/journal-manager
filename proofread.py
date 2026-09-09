@@ -645,17 +645,21 @@ def _reference_style_findings(paragraphs: List[str]) -> List["ProofFinding"]:
     if not abbreviated or not full:
         return out           # consistent, or nothing recognisable
 
-    majority_is_abbrev = len(abbreviated) >= len(full)
-    minority = full if majority_is_abbrev else abbreviated
-    style = "abbreviated" if majority_is_abbrev else "spelled out in full"
-    other = "spelled out in full" if majority_is_abbrev else "abbreviated"
-    for i, field in minority:
+    # The house has a convention and it is not decided by a vote: In-House Reference
+    # Rule 2 abbreviates journal names to ISO-4/NLM. An earlier version of this took
+    # the majority as the convention, which reads well until you notice that a
+    # manuscript arriving with its journal names spelled out — the ordinary case, and
+    # the whole reason the rule exists — has a spelled-out majority. On those the check
+    # told the editor to undo the house rule. So the direction is fixed: the entries
+    # still spelled out in full are the ones flagged.
+    for i, field in full:
         out.append(ProofFinding(
             "reference.journal_abbreviation", "warning", i,
-            f"journal name is {other} here, but {len(abbreviated) if majority_is_abbrev else len(full)} "
-            f"of the other references are {style}",
+            f"this journal name is spelled out in full; house style abbreviates "
+            f"journal names (ISO-4/NLM), as {len(abbreviated)} of the other "
+            f"references already are",
             field[:110],
-            f"use the same convention as the rest of the list ({style})"))
+            "abbreviate the journal name to its ISO-4 form"))
     return out
 
 

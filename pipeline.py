@@ -39,6 +39,7 @@ from edit_guards import (
     restore_protected_text,
     restore_reference_numbering,
     verify_reference_block,
+    restore_reference_urls,
     verify_cell_edits,
 )
 from science_format import (
@@ -419,6 +420,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _refnum_queries = restore_reference_numbering(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_refnum_queries)
+    # After the block guard: if the whole list was restored there is no lost link left
+    # to put back, and this is a no-op rather than a second opinion on the same entry.
+    edited_paragraphs, _refurl_queries = restore_reference_urls(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_refurl_queries)
 
     edited_paragraphs, _abbr_queries = enforce_abbreviation_first_use(
         original_paragraphs, edited_paragraphs)
