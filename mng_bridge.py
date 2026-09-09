@@ -47,12 +47,33 @@ POLL_SECONDS = int(os.getenv("MNG_POLL_SECONDS", "60") or 60)
 HTTP_TIMEOUT = 120
 
 
+#: Settings come from the environment first and from a file on the data volume second.
+#:
+#: The file exists because this service's environment is owned by the deployment platform
+#: and cannot be changed from here, while the volume survives a deploy. It is deliberately
+#: *not* `config.json`: that one is rendered on an admin screen, and a shared secret has
+#: no business being somewhere it can be displayed.
+SETTINGS_FILE = "mng_bridge.json"
+
+
+def _from_file(key: str) -> str:
+    try:
+        path = config.data_dir() / SETTINGS_FILE
+        if not path.exists():
+            return ""
+        with path.open() as fh:
+            return str(json.load(fh).get(key, "") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def base_url() -> str:
-    return (os.getenv("MNG_BASE_URL", "") or "").rstrip("/")
+    value = os.getenv("MNG_BASE_URL", "") or _from_file("base_url")
+    return value.rstrip("/")
 
 
 def secret() -> str:
-    return os.getenv("MNG_BRIDGE_SECRET", "") or ""
+    return os.getenv("MNG_BRIDGE_SECRET", "") or _from_file("secret")
 
 
 def configured() -> bool:
@@ -439,7 +460,8 @@ def start_in_background() -> Optional[threading.Thread]:
         # afternoon.
         missing = [n for n, v in (("MNG_BASE_URL", base_url()),
                                   ("MNG_BRIDGE_SECRET", secret())) if not v]
-        print(f"[bridge] idle — {' and '.join(missing)} not set", flush=True)
+        print(f"[bridge] idle — {' and '.join(missing)} not set "
+              f"(env, or {config.data_dir() / SETTINGS_FILE})", flush=True)
         return None
     thread = threading.Thread(target=run_forever, name="mng-bridge", daemon=True)
     thread.start()

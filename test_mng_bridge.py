@@ -327,3 +327,44 @@ def test_the_returned_file_is_named_for_the_manuscript(bridge):
     assert bridge._manuscript_number(job) == "SMOKE-2026-00003", (
         "ce4 names its output user_None_2_redline.docx, which is meaningless in "
         "somebody's manuscript file list")
+
+
+def test_settings_can_come_from_the_volume_when_the_environment_cannot_be_changed(
+        tmp_path, monkeypatch):
+    """The deployment platform owns the environment; the volume survives a deploy."""
+    import json as _json
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("MNG_BASE_URL", raising=False)
+    monkeypatch.delenv("MNG_BRIDGE_SECRET", raising=False)
+    (tmp_path / "mng_bridge.json").write_text(_json.dumps(
+        {"base_url": "https://manuscript-engine.example/", "secret": "from-the-volume"}))
+
+    import importlib
+
+    import config
+    importlib.reload(config)
+    import mng_bridge
+    importlib.reload(mng_bridge)
+
+    assert mng_bridge.configured() is True
+    assert mng_bridge.base_url() == "https://manuscript-engine.example", "no trailing slash"
+    assert mng_bridge.secret() == "from-the-volume"
+
+
+def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MNG_BRIDGE_SECRET", "from-the-environment")
+    monkeypatch.setenv("MNG_BASE_URL", "https://env.example")
+    (tmp_path / "mng_bridge.json").write_text(_json.dumps({"secret": "from-the-volume"}))
+
+    import importlib
+
+    import config
+    importlib.reload(config)
+    import mng_bridge
+    importlib.reload(mng_bridge)
+
+    assert mng_bridge.secret() == "from-the-environment"
