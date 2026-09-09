@@ -90,11 +90,22 @@ def test_the_table_label_is_not_stripped_as_heading_numbering():
     The house heading rule removes leading numbering, and "Table 2:" looks exactly like
     it. The manuscript then failed its own cross-reference check for a caption the tool
     had itself deleted.
+
+    A caption stays a caption and keeps its corrections: only the label is put back, so
+    the spelling fixes inside the caption survive alongside it. Reverting the whole
+    paragraph would have thrown those away together with the damage.
     """
     out, queries = edit_guards.restore_protected_text(
-        ["Table 2: Comparative Summary Table"], ["Comparative Summary Table"])
-    assert out == ["Table 2: Comparative Summary Table"]
+        ["Table 2: Comparision of breaking sytem"], ["Comparison of braking system"])
+    assert out == ["Table 2. Comparison of braking system"]
     assert queries and "Table 2" in queries[0]["query"]
+
+
+def test_the_table_label_is_restored_without_losing_the_copyedit():
+    """The label alone comes back; the edited wording stays."""
+    out, _q = edit_guards.restore_protected_text(
+        ["Table 2: Comparative Summary Table"], ["Comparative Summary Table"])
+    assert out == ["Table 2. Comparative Summary Table"]
 
 
 def test_a_caption_sharing_a_paragraph_with_a_heading_is_not_dropped():

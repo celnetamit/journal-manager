@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 #: Fields a Vancouver-style entry is expected to carry, and how to see one.
 #: Deliberately loose: the goal is "is there a year at all", not "is the year in the
@@ -360,3 +360,110 @@ def missing_descriptive_fields(text: str) -> List[str]:
     return [] if any(descriptive(s) for s in segs) else ["title"]
 
 
+
+
+def _tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z]{4,}", (text or "").lower())}
+
+
+def crossref_match_confidence(text: str, rec: Dict[str, Any]) -> float:
+    """How sure we are that this Crossref record is the work the entry names.
+
+    Crossref answers a fuzzy query with its best guess, and its best guess for a thin
+    entry is often a different paper by the same author or on the same subject. Filling
+    an entry in from the wrong record produces a reference that is complete, correctly
+    formatted, and about something else — the worst of the three states, because it no
+    longer looks like it needs checking.
+
+    Three independent signals, because any one of them agrees by accident often enough:
+    the first author's surname, the year, and how much of the record's title the entry
+    already contains. A record has to satisfy all three to be used without a person.
+    """
+    rec_year = str(rec.get("year") or "")
+    entry_years = set(re.findall(r"\b(?:19|20)\d{2}\b", text or ""))
+    if rec_year and entry_years and rec_year not in entry_years:
+        return 0.0                                  # a different year is a different work
+
+    surname = ""
+    m = re.match(r"\s*(?:\[?\d{1,3}[\].)]{0,2}\s*)?([A-Za-zÀ-ÿ'\-]{3,})", text or "")
+    if m:
+        surname = m.group(1).lower()
+    authors = (rec.get("authors") or "").lower()
+    if surname and authors and surname not in authors:
+        return 0.0
+
+    title_words = _tokens(rec.get("title") or "")
+    if not title_words:
+        return 0.0
+    overlap = len(title_words & _tokens(text)) / len(title_words)
+    if not rec_year or not entry_years:
+        overlap *= 0.8            # no year to agree on: less certain, never disqualifying
+    return overlap
+
+
+#: How much of the Crossref title the entry must already carry before its record is
+#: used to complete that entry without anyone looking. Set high on purpose: below it
+#: the record is still offered as a suggestion, which costs an editor a glance, while
+#: above it the entry is rewritten, which costs nothing if right and misleads if wrong.
+_APPLY_THRESHOLD = 0.75
+
+
+def complete_verified_references(
+    paragraphs: List[str], fetch, limit: int = _MAX_LOOKUPS,
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Fill in incomplete references from Crossref, but only where the record matches.
+
+    The editorial rule this implements: put the reference in the right format, query
+    what is missing — and if the data can be found, add it, *after* confirming it is
+    the right data.
+
+    So a completion happens only when the surname agrees, the year agrees, and three
+    quarters of the record's title is already in the entry. Anything less is left as a
+    suggestion for a person to accept. Every completion is written as a tracked change
+    with the original quoted in its query, so it is reviewable in Word like any other
+    edit rather than being a silent authority.
+    """
+    start = None
+    for i, p in enumerate(paragraphs):
+        if re.fullmatch(r"(?i)\s*(?:list of\s+)?references?\s*[:.\-–—]?\s*",
+                        (p or "").strip()):
+            start = i
+            break
+    if start is None:
+        return paragraphs, []
+
+    out = list(paragraphs)
+    queries: List[Dict[str, object]] = []
+    used = 0
+    for i in range(start + 1, len(out)):
+        text = out[i] or ""
+        if len(text.strip()) < 40 or not _CITATION_SIGNAL.search(text):
+            continue
+        gaps = missing_descriptive_fields(text) + missing_fields(text)
+        if not gaps or used >= limit:
+            continue
+        used += 1
+        try:
+            rec = fetch(text)
+        except Exception:                            # noqa: BLE001
+            continue
+        if not rec:
+            continue
+        score = crossref_match_confidence(text, rec)
+        if score < _APPLY_THRESHOLD:
+            continue                                 # still reported, never applied
+        entry = _crossref_entry(text, lambda _t, _r=rec: _r)
+        if not entry:
+            continue
+        out[i] = entry
+        queries.append({
+            "index": i,
+            "snippet": text[:200],
+            "query": (f"This reference was missing its {', '.join(gaps)}. It has been "
+                      f"completed from the Crossref record for the same work — the "
+                      f"author, the year and the title all match "
+                      f"({int(score * 100)}% of the title). The original read: "
+                      f"“{text.strip()[:160]}”. Please confirm before accepting."),
+            "suggestion": None,
+        })
+    return out, queries

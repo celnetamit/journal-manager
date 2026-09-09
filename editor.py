@@ -1885,6 +1885,24 @@ def strip_heading_numbering(doc) -> int:
     return removed
 
 
+#: A paragraph that opens with a figure or table label and its number — a caption.
+_CAPTION_OPENER = re.compile(r"(?i)^\s*(fig(?:ure)?|tab(?:le)?)\s*[.:\-–—]?\s*\d")
+
+
+def _query_marker_kind(text: str) -> Tuple[str, Tuple[int, int, int]]:
+    """Which kind of query this paragraph carries, and the colour to mark it in.
+
+    Word colours comments by author, so giving each kind its own author name separates
+    them in the review pane as well as on the page. Prose gets no marker at all — it is
+    the common case, and a symbol on every query would be no signal.
+    """
+    if _proofread._is_reference_block(text or ""):
+        return "Reference", (0x8B, 0x45, 0x13)      # brown
+    if _CAPTION_OPENER.match(text or ""):
+        return "Caption", (0x1F, 0x6F, 0x8B)        # teal
+    return "", (0, 0, 0)
+
+
 def generate_redline_docx(
     original_path: str, edited_paragraphs: List[str], output_path: str,
     queries: Optional[List[Dict[str, Any]]] = None,
@@ -1941,15 +1959,21 @@ def generate_redline_docx(
                 # so they are marked in brown and attributed to a second author name —
                 # Word colours comments per author, so the two kinds separate in the
                 # review pane as well as on the page.
-                in_references = _proofread._is_reference_block(p.text or "")
-                marker = p.add_run("◆" if in_references else "")
-                if in_references:
-                    marker.font.color.rgb = _docx_shared.RGBColor(0x8B, 0x45, 0x13)
+                #
+                # A caption gets its own colour for the same reason. A caption is not
+                # prose to be reworded and not a heading to be renumbered — it is a
+                # label, and a query on one is nearly always "this number, this wording,
+                # check it against the artwork". Job #53 lost both of its captions to a
+                # heading rule, so making them visible as captions is worth a colour.
+                kind, colour = _query_marker_kind(p.text or "")
+                marker = p.add_run("◆" if kind else "")
+                if kind:
+                    marker.font.color.rgb = _docx_shared.RGBColor(*colour)
                     marker.font.size = _docx_shared.Pt(9)
                 doc.add_comment(
                     marker, text="\n".join(notes),
-                    author="AI Editor — Reference" if in_references else "AI Editor",
-                    initials="AER" if in_references else "AE",
+                    author=f"AI Editor — {kind}" if kind else "AI Editor",
+                    initials=f"AE{kind[0]}" if kind else "AE",
                 )
 
     # Make DOIs, URLs and e-mail addresses clickable. Last, so it sees the finished

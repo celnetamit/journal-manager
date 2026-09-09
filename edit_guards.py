@@ -74,6 +74,12 @@ def _lost_the_step_number(before: str, after: str) -> bool:
 _CAPTION_LABEL = re.compile(
     r"(?i)\b(fig(?:ure)?|tab(?:le)?)\s*[.:\-–—]?\s*(\d+)")
 
+#: A paragraph that *opens* with the label is a caption; one that merely contains it is
+#: prose mentioning a caption. The distinction decides whether the label can be put back
+#: on its own — on a caption it can, so the copyedit's corrections to the caption's
+#: wording survive alongside it.
+_CAPTION_OPENER = re.compile(r"(?i)^\s*(fig(?:ure)?|tab(?:le)?)\s*[.:\-–—]?\s*\d+")
+
 
 def _lost_the_caption_label(before: str, after: str) -> Optional[str]:
     """The caption number that the copyedit dropped, or None.
@@ -148,19 +154,38 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
             continue
         lost = _lost_the_caption_label(before, after)
         if lost:
-            # The original is restored whole rather than patched. Where the label went
-            # missing the paragraph usually held a heading *and* a caption, and there is
-            # no safe way to guess where one ends and the other begins — splitting it
-            # would be this guard inventing structure while claiming to protect it.
+            # A caption stays a caption, and its corrections stay with it.
+            #
+            # Reverting the whole paragraph put the label back and threw the copyedit
+            # away with it — including the spelling and wording fixes inside the caption,
+            # which are exactly the corrections an editor wants to see. So where the
+            # paragraph is a caption and nothing but a caption, only the label is put
+            # back and the edited wording is kept underneath it.
+            if _CAPTION_OPENER.match(before) and not _CAPTION_OPENER.match(after):
+                label = _CAPTION_OPENER.match(before).group(0).strip()
+                restored = f"{label}. {after.lstrip()}" if after.strip() else before
+                out.append(restored)
+                queries.append({
+                    "index": i,
+                    "snippet": before[:80],
+                    "query": (f"The copyedit removed this caption's label. Every "
+                              f"'{lost}' in the text points at that number, so it has "
+                              f"been put back; the rest of the copyedit is kept."),
+                    "suggestion": restored,
+                })
+                continue
+            # Otherwise the paragraph held a heading *and* a caption, and there is no
+            # safe way to guess where one ends and the other begins — splitting it would
+            # be this guard inventing structure while claiming to protect it.
             out.append(before)
             queries.append({
                 "index": i,
                 "snippet": before[:80],
                 "query": (f"The copyedit removed the caption label for {lost}. A "
                           f"caption number is what every '{lost}' in the text points "
-                          f"at, so the original has been restored. If this paragraph "
-                          f"holds both a heading and a caption, please split them into "
-                          f"two paragraphs."),
+                          f"at, so the original has been restored. This paragraph holds "
+                          f"both a heading and a caption — please split them into two "
+                          f"paragraphs."),
                 "suggestion": before,
             })
             continue

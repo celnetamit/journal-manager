@@ -187,3 +187,62 @@ def test_nothing_happens_when_no_link_was_lost():
             "Seale J. Doom and gloom. Br J Educ Technol. 2023; 52(4): 1545–1552p."]
     out, queries = G.restore_reference_urls(orig, list(orig))
     assert queries == [] and out == orig
+
+
+# ------------------------- completing a reference, but only from the right record
+
+_REC = {"authors": "Seale J", "year": "2023", "journal": "Br J Educ Technol",
+        "volume": "52", "issue": "4", "pages": "1545-1552",
+        "doi": "10.1111/bjet.13116",
+        "title": "It is not all doom and gloom what the pandemic taught us about "
+                 "digitally inclusive practices"}
+
+_THIN = ("Seale J. It is not all doom and gloom: what the pandemic taught us about "
+         "digitally inclusive practices. Br J Educ Technol. 2023.")
+
+
+def test_a_matching_record_completes_the_entry():
+    """The editorial rule: query what is missing, and add it once it is confirmed."""
+    import reference_check as R
+
+    out, queries = R.complete_verified_references(
+        ["References:", _THIN], lambda _t: _REC)
+    assert "52(4)" in out[1] and "1545-1552" in out[1]
+    assert "10.1111/bjet.13116" in out[1]
+    assert queries and "Please confirm" in queries[0]["query"]
+    assert _THIN[:40] in queries[0]["query"]      # the original is quoted back
+
+
+def test_a_record_for_a_different_work_is_refused():
+    """Crossref answers a thin query with its best guess, which is often another paper.
+
+    A wrong record produces a reference that is complete, correctly formatted and about
+    something else — worse than the gap, because it no longer looks like it needs
+    checking.
+    """
+    import reference_check as R
+
+    other = ("Seale J. A study of assessment design in secondary schools. "
+             "Br J Educ Technol. 2023.")
+    out, queries = R.complete_verified_references(
+        ["References:", other], lambda _t: _REC)
+    assert out[1] == other and queries == []
+
+
+def test_a_record_with_the_wrong_year_is_refused():
+    import reference_check as R
+
+    stale = _THIN.replace("2023", "2019")
+    out, queries = R.complete_verified_references(
+        ["References:", stale], lambda _t: _REC)
+    assert out[1] == stale and queries == []
+
+
+def test_a_complete_reference_is_never_touched():
+    import reference_check as R
+
+    full = ("Seale J. It is not all doom and gloom. Br J Educ Technol. 2023; "
+            "52(4): 1545–1552p.")
+    out, queries = R.complete_verified_references(
+        ["References:", full], lambda _t: _REC)
+    assert out[1] == full and queries == []

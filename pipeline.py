@@ -28,7 +28,7 @@ from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
 from image_check import check_images
-from reference_check import check_references
+from reference_check import check_references, complete_verified_references
 from proofread import proofread as run_proofread
 from edit_guards import (
     fix_trailing_citations,
@@ -425,6 +425,19 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _refurl_queries = restore_reference_urls(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_refurl_queries)
+
+    # An incomplete reference is the one defect an editor cannot fix from the
+    # manuscript — the volume number is simply not on the page. Where Crossref has the
+    # record for the same work, and the surname, the year and the title all agree, the
+    # entry is completed rather than only queried. Every completion is a tracked change
+    # quoting the original, so it is accepted or rejected in Word like any other edit.
+    if use_crossref_refs:
+        try:
+            edited_paragraphs, _reffill_queries = complete_verified_references(
+                edited_paragraphs, fetch_crossref_record)
+            guard_queries.extend(_reffill_queries)
+        except Exception as fill_exc:                            # noqa: BLE001
+            warnings.append(f"Reference completion was skipped: {skip_reason(fill_exc)}")
 
     edited_paragraphs, _abbr_queries = enforce_abbreviation_first_use(
         original_paragraphs, edited_paragraphs)
