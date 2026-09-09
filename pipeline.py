@@ -678,6 +678,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "ai_review_path": str(ai_review_path) if ai_review_path else "",
         "jats_path": str(jats_path),
         "report_md": report,
+        # The same house-style and proofreading findings the report renders, kept in
+        # their own shape as well. A consumer that wants to show them — the editorial
+        # platform lists them on the manuscript — should not have to parse prose back
+        # into data that existed as data one function earlier.
+        "findings": _findings_payload(layout_findings, proof_findings),
         "recommended": _sanitize_recommended(recommended),
         "cover_letter": cover_letter,
         "polished_titles": polished_titles,
@@ -824,6 +829,30 @@ def start_worker_once() -> None:
                 target=_worker_loop, name=f"job-worker-{i}", daemon=True
             ).start()
         print(f"[worker] started {workers} job worker(s)")
+
+
+def _findings_payload(layout_findings, proof_findings) -> Dict[str, Any]:
+    """House-style and proofreading findings as data, not prose.
+
+    Paragraph numbers are made 1-based here for the same reason `Finding.__str__` does
+    it: every place a person reads one is 1-based, and a number that means ¶142 in one
+    view and ¶143 in another reads as a tool that cannot count.
+    """
+    def one(f) -> Dict[str, Any]:
+        return {
+            "rule": getattr(f, "rule", ""),
+            "severity": getattr(f, "severity", "info"),
+            "paragraph": (f.paragraph + 1) if getattr(f, "paragraph", None) is not None
+                         else None,
+            "message": getattr(f, "message", ""),
+            "detail": getattr(f, "detail", "") or getattr(f, "fragment", ""),
+            "suggestion": getattr(f, "suggestion", None),
+        }
+
+    return {
+        "layout": [one(f) for f in (layout_findings or [])],
+        "proofreading": [one(f) for f in (proof_findings or [])],
+    }
 
 
 def _house_style_section(layout_findings, proof_findings) -> str:

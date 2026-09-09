@@ -239,19 +239,39 @@ def return_one(local_job: dict, remote_id: str) -> bool:
 
     with open(redline, "rb") as fh:
         payload = fh.read()
+    number = _manuscript_number(local_job)
 
     report = {
         "changes": _count_tracked_changes(payload),
         "ce4_job_id": local_job.get("id"),
+        # The findings that have nowhere to sit in the redline. Measured on a real
+        # manuscript: the pass flagged 7 things and only 3 could be anchored as Word
+        # comments, and 10 house-style findings — a missing Abstract heading, references
+        # without a hanging indent — are about the document rather than any span of it.
+        # Sending only the marked-up file loses all fourteen, silently.
+        "findings": result.get("findings") or {},
     }
     # Named for the manuscript, not for the run that produced it. `run_pipeline` writes
     # `user_None_2_redline.docx`, which is fine inside ce4 and meaningless on somebody's
     # manuscript — the editor sees this filename in their file list.
-    number = _manuscript_number(local_job)
     name = f"{number}-copyedited.docx" if number else "copyedited.docx"
     files = {"file": (name, payload,
                       "application/vnd.openxmlformats-officedocument."
                       "wordprocessingml.document")}
+
+    # The editorial report travels as a second file: it is what an editor reads *beside*
+    # the redline, and the redline cannot carry it. Its absence is not fatal — a
+    # copy edit that came back without its report is still a copy edit — so a missing
+    # file here does not fail the return.
+    review = result.get("review_report_path") or ""
+    if review and Path(review).exists():
+        with open(review, "rb") as fh:
+            files["report_file"] = (
+                f"{number}-copyedit-report.docx" if number else "copyedit-report.docx",
+                fh.read(),
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document")
+
     data = {"report": json.dumps(report)}
     body, content_type = _multipart_body(files, data)
 
