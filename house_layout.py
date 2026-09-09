@@ -812,9 +812,62 @@ def check_references(structure: Structure) -> List[Finding]:
     return out
 
 
+def check_auto_numbered_headings(structure: Structure) -> List[Finding]:
+    """A section heading numbered by Word rather than by the author's typing.
+
+    The house rules remove numbering from headings, and the copyeditor does exactly
+    that — job #60's `2.1 Overview of the Field:` came back as `Overview of the Field`.
+    But its "1. Introduction" still reads "1." in Word, and the reason is that the "1."
+    was never in the text: the paragraph carries Word's automatic list numbering, which
+    generates the number at display time. No amount of editing the text can remove it,
+    so the copyedit looks broken while working perfectly.
+
+    Reported, never stripped. In this manuscript 76 paragraphs carry that numbering and
+    only a handful are headings — the rest are the author's genuine bulleted and
+    numbered lists — and none of them use a Heading style, so there is no reliable way
+    to tell them apart from the file. Turning numbering off for the wrong 43 paragraphs
+    would destroy the lists to tidy the headings.
+
+    The heuristic is therefore deliberately narrow: short, no terminal punctuation, and
+    not a sentence. It is used to decide *what to mention*, never *what to change*.
+    """
+    out: List[Finding] = []
+    for p in structure.body_paragraphs():
+        text = _visible(p.text).strip()
+        if not p.listing or not text or len(text) > 70:
+            continue
+        if text[-1] in ".!?,;":
+            continue
+        words = text.split()
+        if len(words) > 9:
+            continue
+        # Single words are allowed, and are in fact the commonest case: the headings
+        # this exists for are "Introduction", "Conclusions", "References". An earlier
+        # version required a space, to keep one-word bullets out, and so missed every
+        # heading anyone would actually complain about.
+        # A heading is titled or capitalised throughout; a list item reads as a sentence.
+        if not (text.isupper() or all(w[0].isupper() or w.lower() in _STOP_WORDS
+                                      for w in words if w[0].isalpha())):
+            continue
+        out.append(Finding(
+            "heading.auto-numbered", "warning", p.index,
+            "this heading is numbered by Word's automatic list numbering, not by the "
+            "text — the house rules use unnumbered headings, and the number cannot be "
+            "removed by copyediting because it is not in the text. Turn list numbering "
+            "off for this paragraph in Word.",
+            text[:70]))
+    return out
+
+
+#: Words that stay lower case inside a title-case heading.
+_STOP_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "of",
+               "on", "or", "the", "to", "with", "into", "over", "vs"}
+
+
 def check_all(structure: Structure) -> List[Finding]:
     return collapse_repeats(
         check_headings(structure) + check_listings(structure)
+        + check_auto_numbered_headings(structure)
         + check_artwork(structure) + check_page(structure)
         + check_tables(structure) + check_table_format(structure)
         + check_body_text(structure) + check_front_matter(structure)

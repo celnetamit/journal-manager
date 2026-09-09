@@ -341,12 +341,25 @@ def verify_cell_edits(
 #: `Expansion (ABBR)` as the author themselves wrote it. Learning the pair from the
 #: author's own definition is the whole safety argument: guessing that two words
 #: starting A and E mean `AE` would eventually rewrite "an experiment" as "AE".
+#: A comma is part of several real organisation names — "United Nations Educational,
+#: Scientific and Cultural Organization" is UNESCO — and excluding it made the match
+#: start after the comma, at "Scientific", which spells nothing. Letting it in is safe
+#: because the initials still have to spell the abbreviation exactly.
 _DEFINITION = re.compile(
-    r"([A-Za-z][A-Za-z\-‐-― ]{3,70}?)\s*\(([A-Z][A-Za-z]{1,7})\)")
+    r"([A-Za-z][A-Za-z\-‐-―, ]{3,70}?)\s*\(([A-Z][A-Za-z]{1,7})\)")
 
 
-def _initials(phrase: str) -> str:
-    return "".join(w[0] for w in re.split(r"[\s\-‐-―]+", phrase) if w)
+#: Words an acronym is allowed to skip. "Information and Communication Technology" is
+#: ICT, not IACT, and "United Nations Educational, Scientific and Cultural
+#: Organization" is UNESCO — the joining words are simply not counted.
+_JOINERS = {"and", "of", "for", "the", "in", "on", "to", "with", "a", "an", "&", "at"}
+
+
+def _initials(phrase: str, skip_joiners: bool = False) -> str:
+    words = [w for w in re.split(r"[\s\-‐-―]+", phrase) if w]
+    if skip_joiners:
+        words = [w for w in words if w.lower().strip(",.") not in _JOINERS] or words
+    return "".join(w[0] for w in words)
 
 
 def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
@@ -363,10 +376,16 @@ def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
         # Try the shortest tail of the phrase whose initials spell the abbreviation:
         # "employing publicly available acoustic-emission (AE)" defines "AE" as
         # "acoustic-emission", not as the whole clause.
-        for n in range(len(abbr), min(len(words), len(abbr) + 3) + 1):
-            tail = words[-n:]
-            if _initials(" ".join(tail)).upper() == abbr.upper():
-                pairs.setdefault(abbr, " ".join(tail))
+        # The window has to allow for the joining words the acronym skips: ICT is three
+        # letters over four words, UNESCO six over seven. Without the wider window and
+        # the joiner-skipping spelling, neither term was ever learned — so the whole
+        # first-use rule was silently doing nothing for exactly the abbreviations job
+        # #60 came back with expanded seven and eight times.
+        for n in range(len(abbr), min(len(words), len(abbr) * 2 + 2) + 1):
+            tail = " ".join(words[-n:])
+            if abbr.upper() in (_initials(tail).upper(),
+                                _initials(tail, skip_joiners=True).upper()):
+                pairs.setdefault(abbr, tail)
                 break
     return pairs
 
@@ -402,21 +421,40 @@ def enforce_abbreviation_first_use(
         # already followed by its own bracketed abbreviation.
         body = r"[\s\-‐-―]+".join(
             re.escape(w) for w in expansion.split() if w)
-        rx = re.compile(rf"\b{body}\b(?!\s*\({re.escape(abbr)}\))", re.I)
+        # The bracket may hold the plural. Job #60 carried "Open Educational Resources
+        # (OERs)"; the lookahead only excused "(OER)", so the guard treated the phrase
+        # as a stray expansion and replaced it — leaving **"OER (OERs)"**, an acronym
+        # followed by its own plural. Anything that reads as this abbreviation in
+        # brackets counts as already defined.
+        defined = rf"\(\s*{re.escape(abbr)}(?:['’]?s)?\s*\)"
+        rx = re.compile(rf"\b{body}\b(?!\s*{defined})", re.I)
+        def_rx = re.compile(rf"\b{body}\b\s*{defined}", re.I)
         # If the author already defined it, that definition stands and no second one
         # is invented — every stray expansion simply becomes the short form. Adding
         # our own earlier definition would leave the paper defining the same term
         # twice, and would move the author's chosen first mention.
-        seen_definition = bool(re.search(
-            rf"\b{body}\b\s*\(\s*{re.escape(abbr)}\s*\)",
-            "\n".join(p or "" for p in original), re.I))
+        seen_definition = bool(def_rx.search(
+            "\n".join(p or "" for p in original)))
         first_index: Optional[int] = None
+        already_defined_here = False
+        redefined: List[int] = []
 
         for i, para in enumerate(out):
             if not para:
                 continue
-            if re.search(rf"\b{body}\b\s*\(\s*{re.escape(abbr)}\s*\)", para, re.I):
-                seen_definition = True                      # already defined here
+            if def_rx.search(para):
+                if not already_defined_here:
+                    already_defined_here = True             # the definition we keep
+                    seen_definition = True
+                    continue
+                # A second, third, seventh definition of the same term. Job #60 expanded
+                # ICT at seven paragraphs and OER at eight, because this branch marked
+                # the term "seen" and moved on without touching the repeat — so every
+                # redundant definition after the first survived every pass. The rule is
+                # full form once, short form thereafter; the later ones become the short
+                # form, and the author's first mention is left exactly where it was.
+                out[i] = def_rx.sub(abbr, para)
+                redefined.append(i)
                 continue
             if not rx.search(para):
                 continue
@@ -443,6 +481,17 @@ def enforce_abbreviation_first_use(
                     f"'({abbr})' after it, and the short form from then on — that has "
                     f"been restored across the document. Please confirm the first "
                     f"mention is where you want the definition."),
+                "suggestion": None,
+            })
+        if redefined:
+            where = ", ".join(str(i + 1) for i in redefined[:6])
+            queries.append({
+                "index": redefined[0],
+                "query": (
+                    f"'{expansion}' was spelled out again after it had already been "
+                    f"defined (paragraph{'s' if len(redefined) > 1 else ''} {where}). "
+                    f"The house rule gives the full form once and '{abbr}' from then "
+                    f"on, so the repeats now read '{abbr}'."),
                 "suggestion": None,
             })
 
@@ -546,6 +595,22 @@ def restore_front_matter_names(
     return out, queries
 
 
+#: The bibliography's heading, however the author punctuated or titled it. The pattern
+#: used to be an exact `references?` and job #60 writes `References:` — with the colon,
+#: which meant the reference guards found no bibliography at all and silently did
+#: nothing on that manuscript, and on every other one whose heading carries a colon.
+_REFERENCES_HEAD = re.compile(
+    r"(?i)^\s*(?:\d+\.?\s*)?(?:list of\s+)?references?\s*[:.\-–—]?\s*$")
+
+
+def _references_start(paragraphs: List[str]) -> Optional[int]:
+    """Index of the References heading, or None."""
+    for i, p in enumerate(paragraphs):
+        if _REFERENCES_HEAD.match((p or "").strip()):
+            return i
+    return None
+
+
 def restore_reference_numbering(
     original: List[str], edited: List[str],
 ) -> Tuple[List[str], List[Dict[str, object]]]:
@@ -565,11 +630,7 @@ def restore_reference_numbering(
     renumbering, because a bibliography's order is the author's and re-sorting it is a
     separate decision the pipeline makes explicitly elsewhere.
     """
-    start = None
-    for i, p in enumerate(original):
-        if re.fullmatch(r"(?i)\s*references?\s*", (p or "").strip()):
-            start = i
-            break
+    start = _references_start(original)
     if start is None:
         return edited, []
 
@@ -698,5 +759,87 @@ def preserve_author_hyphenation(
             f"had hyphenated ({', '.join(unique[:5])}"
             f"{'…' if len(unique) > 5 else ''}). Hyphenation of these prefixes is a "
             f"style choice rather than an error, so the author's form was kept."),
+        "suggestion": None,
+    }]
+
+
+#: What identifies a bibliography entry across a reformat. The Vancouver conversion
+#: rewrites almost everything about an entry — author lists become "et al.", journal
+#: titles are abbreviated, dates lose their month — but the first author's surname and
+#: the year survive all of it, and together they are specific enough to tell sixteen
+#: references apart.
+_REF_IDENTITY = re.compile(r"^\s*(?:\[?\d{1,3}[\].)]{0,2}\s*)?([A-Za-zÀ-ÿ'\-]{3,})")
+
+
+def _reference_identity(entry: str) -> Optional[Tuple[str, str]]:
+    surname = _REF_IDENTITY.match(entry or "")
+    year = re.search(r"\b(?:19|20)\d{2}\b", entry or "")
+    if not surname or not year:
+        return None
+    return surname.group(1).lower(), year.group(0)
+
+
+def verify_reference_block(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Every work the author listed must still be listed, exactly once.
+
+    Job #60 returned sixteen references for sixteen — and three of the author's were
+    gone, replaced by second copies of three others. UNESCO's OER Recommendation, its
+    2026 restatement and **Vygotsky & Cole (1978)** left the bibliography; Tlili, Seale
+    and Hamilton each appeared twice. Vygotsky is argued from by name in the body, so
+    the paper now cited a source it did not list.
+
+    Nothing could see it. The count was unchanged, every individual entry was
+    well-formed, and each was correctly converted to Vancouver — the defect existed only
+    in the relationship between the list and itself, which no per-entry check can reach.
+    The cause is the entries being rewritten in place while the model reorders them:
+    where it drops or merges one, a neighbour's content lands in two paragraphs.
+
+    On a mismatch the author's whole reference list is restored. That throws away a
+    correct reformat, and it is still the right trade: a beautifully formatted
+    bibliography citing the wrong papers is worse than a plain one citing the right
+    ones, and this fires only when works have actually gone missing.
+    """
+    start = _references_start(original)
+    if start is None or start + 1 >= min(len(original), len(edited)):
+        return edited, []
+
+    def census(paras: List[str]) -> Dict[Tuple[str, str], int]:
+        counts: Dict[Tuple[str, str], int] = {}
+        for p in paras:
+            if len((p or "").strip()) <= 40:
+                continue
+            ident = _reference_identity(p)
+            if ident:
+                counts[ident] = counts.get(ident, 0) + 1
+        return counts
+
+    end = min(len(original), len(edited))
+    before = census(original[start + 1:end])
+    after = census(edited[start + 1:end])
+    if not before:
+        return edited, []
+
+    missing = sorted(k for k, n in before.items() if after.get(k, 0) < n)
+    if not missing:
+        return edited, []
+
+    out = list(edited)
+    out[start + 1:end] = original[start + 1:end]
+    named = "; ".join(f"{s.title()} ({y})" for s, y in missing[:5])
+    duplicated = sorted(k for k, n in after.items() if n > before.get(k, 0))
+    extra = ("; ".join(f"{s.title()} ({y})" for s, y in duplicated[:5])
+             if duplicated else "")
+    return out, [{
+        "index": start + 1,
+        "snippet": (original[start + 1] or "")[:200],
+        "query": (
+            f"{len(missing)} reference(s) went missing while the bibliography was being "
+            f"reformatted — {named}"
+            + (f" — and {extra} appeared more than once" if extra else "")
+            + ". The entry count was unchanged, so this would not have shown up in a "
+              "count. The author's reference list has been restored unformatted; please "
+              "reformat it by hand or re-run once the list is stable."),
         "suggestion": None,
     }]

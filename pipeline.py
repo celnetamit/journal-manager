@@ -38,6 +38,7 @@ from edit_guards import (
     restore_front_matter_names,
     restore_protected_text,
     restore_reference_numbering,
+    verify_reference_block,
     verify_cell_edits,
 )
 from science_format import (
@@ -410,6 +411,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _name_queries = restore_front_matter_names(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_name_queries)
+    # Before the numbering guard, because restoring the author's list makes its
+    # numbering question moot — and after it there would be nothing left to check.
+    edited_paragraphs, _refblock_queries = verify_reference_block(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_refblock_queries)
     edited_paragraphs, _refnum_queries = restore_reference_numbering(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_refnum_queries)
