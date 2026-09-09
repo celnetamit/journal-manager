@@ -104,3 +104,47 @@ def test_an_abbreviation_that_is_used_again_is_not_flagged():
     ]
     assert [f for f in P._acronym_findings(doc)
             if f.rule == "acronym.defined_but_unused"] == []
+
+
+# ------------------------------------------------ the abstract carries no short forms
+
+def test_an_abbreviation_left_in_the_abstract_is_reported():
+    """Job #53 expanded PID in the abstract's first paragraph and left it in the third.
+
+    The house rule is that an abstract carries no abbreviations at all — it is read on
+    its own, away from the paper that defines its terms — and the model applied it to
+    one paragraph of one abstract but not the next.
+    """
+    doc = [
+        "Abstract",
+        "The system combines electromagnetic and disc braking for safety.",
+        "The system merges ultrasonic and infrared sensors, and a PID controller "
+        "distributes the braking force.",
+        "Keywords: braking, sensors",
+        "A proportional-integral-derivative (PID) control algorithm analyzes inputs.",
+    ]
+    hits = [f for f in P._abstract_abbreviation_findings(doc)
+            if f.rule == "abstract.abbreviation"]
+    assert len(hits) == 1 and hits[0].paragraph == 2
+    assert "PID" in hits[0].message
+
+
+def test_a_hyphenated_expansion_still_defines_its_acronym():
+    """`proportional-integral-derivative (PID)` is one whitespace token.
+
+    Splitting on spaces alone gave the initials "P", so PID was not recognised as
+    defined anywhere — and every check that starts from "what does this paper define"
+    walked past it, including the abstract one above.
+    """
+    defs, phrases = P._definitions_in(
+        ["A proportional-integral-derivative (PID) control algorithm analyzes inputs."])
+    assert "PID" in defs
+    assert phrases["PID"] == "proportional-integral-derivative"
+
+
+def test_an_oxidation_state_is_not_an_abbreviation():
+    """`Cr(VI)` fills job #52's abstract and is not a short form of anything."""
+    doc = ["Abstract",
+           "The oxidation of thiourea by Cr(VI) was followed at pH 2.44.",
+           "Keywords: thiourea"]
+    assert P._abstract_abbreviation_findings(doc) == []

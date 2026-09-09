@@ -369,6 +369,7 @@ def mechanical_findings(paragraphs: List[str],
 
     out.extend(_consistency_findings(paragraphs, joined, lang_type))
     out.extend(_acronym_findings(paragraphs))
+    out.extend(_abstract_abbreviation_findings(paragraphs))
     out.extend(_reference_style_findings(paragraphs))
     out.extend(_reference_duplicate_findings(paragraphs))
     return out
@@ -432,6 +433,108 @@ _MAX_RANGE = 20
 _STOPWORDS = {"of", "and", "the", "for", "in", "on", "a", "an", "to", "with"}
 
 
+#: The abstract heading, and the things that end it — the keywords line or the first
+#: numbered/named section after it.
+_ABSTRACT_HEAD = re.compile(r"(?i)^\s*abstract\b\s*:?\s*$")
+_ABSTRACT_END = re.compile(r"(?i)^\s*(keywords?|key words|\d+\.?\s+\w|introduction)\b")
+
+
+def _abstract_span(paragraphs: List[str]) -> Optional[Tuple[int, int]]:
+    """Where the abstract body starts and stops, or None if there is no abstract."""
+    start = None
+    for i, text in enumerate(paragraphs):
+        if _ABSTRACT_HEAD.match(text or ""):
+            start = i + 1
+            break
+    if start is None:
+        return None
+    for j in range(start, len(paragraphs)):
+        if _ABSTRACT_END.match(paragraphs[j] or ""):
+            return start, j
+    return start, min(start + 4, len(paragraphs))
+
+
+def _initials_of(phrase: str) -> str:
+    """The letters a phrase contributes to an acronym.
+
+    Hyphens split words. `proportional-integral-derivative (PID)` is a single
+    whitespace token, so splitting on spaces alone gave "P" and the definition of PID
+    was not recognised as one — which is how job #53's abstract kept its PID while the
+    tool was busy filing a query about having expanded it.
+    """
+    words = [w for w in re.split(r"[\s\-–—]+", phrase) if w and w.lower() not in _STOPWORDS]
+    return "".join(w[0].upper() for w in words)
+
+
+def _definitions_in(paragraphs: List[str]) -> Tuple[Dict[str, List[int]], Dict[str, str]]:
+    """Every acronym the manuscript expands: where it does so, and the phrase it uses.
+
+    An acronym is 2-6 capitals, optionally with digits. The words before the bracket
+    have to actually spell it, so "the model (SEM)" does not define SEM.
+    """
+    defn = re.compile(r"([A-Za-z][A-Za-z'’\-]*(?:[\s\-–—]+[A-Za-z][A-Za-z'’\-]*){0,5})"
+                      r"\s*\((([A-Z]{2,6})[a-z]?s?)\)")
+    where: Dict[str, List[int]] = {}
+    phrases: Dict[str, str] = {}
+    for i, text in enumerate(paragraphs):
+        if _is_reference_block(text):
+            continue
+        for m in defn.finditer(text or ""):
+            acr = m.group(3)
+            initials = _initials_of(m.group(1))
+            if not initials.endswith(acr[-min(len(acr), len(initials)):]):
+                continue
+            where.setdefault(acr, []).append(i)
+            # Leading articles and prepositions are swept up by the capture but are not
+            # part of the term: "A proportional-integral-derivative" is not what an
+            # editor should be told to write out.
+            phrase = m.group(1).strip()
+            while True:
+                head, _, rest = phrase.partition(" ")
+                if rest and head.lower() in _STOPWORDS:
+                    phrase = rest
+                    continue
+                break
+            phrases.setdefault(acr, phrase)
+    return where, phrases
+
+
+def _abstract_abbreviation_findings(paragraphs: List[str]) -> List["ProofFinding"]:
+    """A short form still standing in the abstract, which house style forbids.
+
+    The rule is that the abstract carries no abbreviations at all — the full term is
+    written out and the parenthetical short form is not introduced there, because an
+    abstract is read on its own, away from the paper that defines its terms.
+
+    It is applied by the model, and measured across three real jobs it is applied
+    *unevenly within a single abstract*: job #53 expanded "PID" in the abstract's first
+    paragraph, filed a query saying it had done so, and left "PID" standing two
+    paragraphs later in the same abstract. One paragraph of an abstract obeying a rule
+    the next paragraph does not is worse than either answer on its own.
+
+    Only acronyms the manuscript itself expands somewhere are reported. That keeps the
+    check away from what merely looks like one: `Cr(VI)` is an oxidation state and `II`
+    a Roman numeral, and both sit in abstracts that are perfectly correct.
+    """
+    span = _abstract_span(paragraphs)
+    if not span:
+        return []
+    start, end = span
+
+    out: List[ProofFinding] = []
+    for acr in sorted(_definitions_in(paragraphs)[0]):
+        for i in range(start, end):
+            if re.search(rf"\b{re.escape(acr)}\b", paragraphs[i] or ""):
+                out.append(ProofFinding(
+                    "abstract.abbreviation", "warning", i,
+                    f"“{acr}” is an abbreviation and the abstract carries none; "
+                    f"spell it out here",
+                    (paragraphs[i] or "")[:120],
+                    f"write the term in full and drop “{acr}” from the abstract"))
+                break
+    return out
+
+
 def _acronym_findings(paragraphs: List[str]) -> List["ProofFinding"]:
     """Short forms used before they are defined, or defined more than once.
 
@@ -447,25 +550,7 @@ def _acronym_findings(paragraphs: List[str]) -> List["ProofFinding"]:
     paragraph numbers.
     """
     out: List[ProofFinding] = []
-    # An acronym is 2-6 capitals, optionally with digits. Anything longer is usually a
-    # gene, a product code or an all-caps heading, and flagging those is noise.
-    defn = re.compile(r"([A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*){0,5})"
-                      r"\s*\((([A-Z]{2,6})[a-z]?s?)\)")
-    definitions: Dict[str, List[int]] = {}
-    expansions: Dict[str, str] = {}
-    for i, text in enumerate(paragraphs):
-        if _is_reference_block(text):
-            continue          # a reference expands things for its own reasons
-        for m in defn.finditer(text or ""):
-            acr = m.group(3)
-            words = [w for w in m.group(1).split() if w.lower() not in _STOPWORDS]
-            initials = "".join(w[0].upper() for w in words if w)
-            # Only treat it as a definition when the words actually spell the acronym —
-            # otherwise "the model (SEM) described" would define SEM from "the model".
-            if not initials.endswith(acr[-min(len(acr), len(initials)):]):
-                continue
-            definitions.setdefault(acr, []).append(i)
-            expansions.setdefault(acr, m.group(1).strip())
+    definitions, expansions = _definitions_in(paragraphs)
 
     for acr, where in definitions.items():
         first_def = min(where)
