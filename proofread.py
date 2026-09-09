@@ -368,6 +368,8 @@ def mechanical_findings(paragraphs: List[str],
                     m.group(1)))
 
     out.extend(_consistency_findings(paragraphs, joined, lang_type))
+    out.extend(_acronym_findings(paragraphs))
+    out.extend(_reference_style_findings(paragraphs))
     return out
 
 
@@ -422,6 +424,137 @@ def _consistency_findings(paragraphs: List[str], joined: str,
 #: 2–4" is three figures; "Figure 1-2019" is a year that happens to follow a dash, and
 #: expanding it would invent two thousand citations.
 _MAX_RANGE = 20
+
+
+#: Words that appear inside an expansion but carry no identity — an acronym is not
+#: "defined" by them, and a journal name made only of these is not abbreviated.
+_STOPWORDS = {"of", "and", "the", "for", "in", "on", "a", "an", "to", "with"}
+
+
+def _acronym_findings(paragraphs: List[str]) -> List["ProofFinding"]:
+    """Short forms used before they are defined, or defined more than once.
+
+    Job #59 is the case this was written from. "OER" appears in three headings and a
+    table from paragraph 153 onward, is then expanded as *open educational resources
+    (OER)* at 159, and expanded **again** as *Open Educational Resources (OER)* at 163.
+    A reader meets the short form first and the definition twice, which is exactly what
+    the team reported as "short forms are not consistent".
+
+    Reported, never rewritten. Moving a definition changes where the author introduces
+    an idea, and deciding which of two expansions to keep is an editorial call — the
+    tool's job here is to put the inconsistency in front of a person, with the
+    paragraph numbers.
+    """
+    out: List[ProofFinding] = []
+    # An acronym is 2-6 capitals, optionally with digits. Anything longer is usually a
+    # gene, a product code or an all-caps heading, and flagging those is noise.
+    defn = re.compile(r"([A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*){0,5})"
+                      r"\s*\((([A-Z]{2,6})[a-z]?s?)\)")
+    definitions: Dict[str, List[int]] = {}
+    expansions: Dict[str, str] = {}
+    for i, text in enumerate(paragraphs):
+        if _is_reference_block(text):
+            continue          # a reference expands things for its own reasons
+        for m in defn.finditer(text or ""):
+            acr = m.group(3)
+            words = [w for w in m.group(1).split() if w.lower() not in _STOPWORDS]
+            initials = "".join(w[0].upper() for w in words if w)
+            # Only treat it as a definition when the words actually spell the acronym —
+            # otherwise "the model (SEM) described" would define SEM from "the model".
+            if not initials.endswith(acr[-min(len(acr), len(initials)):]):
+                continue
+            definitions.setdefault(acr, []).append(i)
+            expansions.setdefault(acr, m.group(1).strip())
+
+    for acr, where in definitions.items():
+        first_def = min(where)
+        # Used before it was defined?
+        pattern = re.compile(rf"\b{re.escape(acr)}\b")
+        for i, text in enumerate(paragraphs[:first_def]):
+            if _is_reference_block(text or ""):
+                continue
+            if pattern.search(text or ""):
+                out.append(ProofFinding(
+                    "acronym.used_before_definition", "warning", i,
+                    f"“{acr}” is used here but only defined later, in paragraph "
+                    f"{first_def + 1}",
+                    (text or "")[:120],
+                    f"expand it on first use — “{expansions[acr]} ({acr})” — and use "
+                    f"“{acr}” alone afterwards"))
+                break         # one finding per acronym, at its first use
+        if len(where) > 1:
+            rest = ", ".join(str(w + 1) for w in where[1:])
+            out.append(ProofFinding(
+                "acronym.defined_twice", "warning", where[1],
+                f"“{acr}” is expanded more than once (paragraphs "
+                f"{first_def + 1} and {rest})",
+                (paragraphs[where[1]] or "")[:120],
+                f"keep the expansion at its first use and write “{acr}” alone here"))
+    return out
+
+
+#: A journal name in an abbreviated citation style has no joining words and usually
+#: clipped words: "Educ Inf Technol", "Rev Educ", "Teach Coll Rec". A full title reads
+#: like prose: "International Journal of Instructional Technology and Distance
+#: Learning".
+def _journal_field(entry: str) -> str:
+    """The journal-name field of a numbered reference, as best as text allows.
+
+    Vancouver puts it after the article title and before the year, both of which end in
+    a full stop, so the field is the last such segment before a 4-digit year.
+    """
+    m = re.search(r"\.\s*([A-Z][^.]{2,80}?)\.\s*(?:\d{4}|\(?(?:19|20)\d\d)", entry)
+    return (m.group(1).strip() if m else "")
+
+
+def _reference_style_findings(paragraphs: List[str]) -> List["ProofFinding"]:
+    """Journal names abbreviated in some references and spelled out in others.
+
+    In job #59 the same list carried "Educ Inf Technol.", "Rev Educ." and "Teach Coll
+    Rec." beside "International Journal of Instructional Technology and Distance
+    Learning." — three abbreviated, one not. Either convention is defensible; mixing
+    them in one reference list is not, and it is the kind of thing a copyeditor is
+    expected to catch and a reader notices immediately.
+
+    The majority decides which is the document's convention, and only the minority is
+    flagged — with the entry quoted, because the fix is a lookup the author or editor
+    has to make (there is no reliable offline map from a full title to its NLM
+    abbreviation, and inventing one would put a wrong journal name in a citation).
+    """
+    out: List[ProofFinding] = []
+    entries = [(i, t) for i, t in enumerate(paragraphs)
+               if _is_reference_block(t or "") and len(t or "") > 60]
+    if len(entries) < 4:
+        return out           # too few to talk about a convention
+
+    abbreviated, full = [], []
+    for i, text in entries:
+        field = _journal_field(text)
+        if not field or len(field) < 4:
+            continue
+        words = field.split()
+        joiners = sum(1 for w in words if w.lower() in _STOPWORDS)
+        # Abbreviated names have no joining words and short, clipped tokens.
+        if joiners == 0 and len(words) <= 5 and all(len(w) <= 12 for w in words):
+            abbreviated.append((i, field))
+        elif joiners >= 1 or len(words) >= 5:
+            full.append((i, field))
+
+    if not abbreviated or not full:
+        return out           # consistent, or nothing recognisable
+
+    majority_is_abbrev = len(abbreviated) >= len(full)
+    minority = full if majority_is_abbrev else abbreviated
+    style = "abbreviated" if majority_is_abbrev else "spelled out in full"
+    other = "spelled out in full" if majority_is_abbrev else "abbreviated"
+    for i, field in minority:
+        out.append(ProofFinding(
+            "reference.journal_abbreviation", "warning", i,
+            f"journal name is {other} here, but {len(abbreviated) if majority_is_abbrev else len(full)} "
+            f"of the other references are {style}",
+            field[:110],
+            f"use the same convention as the rest of the list ({style})"))
+    return out
 
 
 def _mentioned_numbers(label: str, text: str) -> set:

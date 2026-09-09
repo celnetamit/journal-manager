@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import datetime
 import difflib
+import proofread as _proofread
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 
 import docx
+from docx import shared as _docx_shared
 import docxmodel as _docxmodel
 import usage as _usage
 import hyperlinks as _hyperlinks
@@ -1687,10 +1689,21 @@ def generate_redline_docx(
         for idx, notes in query_map.items():
             if 0 <= idx < len(paragraphs):
                 p = paragraphs[idx]
-                anchor = p.add_run("")  # invisible anchor at paragraph end
+                # A query on a reference is a different job from a query on the prose:
+                # it is usually a style or completeness point somebody checks against a
+                # list, not a wording decision. The team asked for those to stand out,
+                # so they are marked in brown and attributed to a second author name —
+                # Word colours comments per author, so the two kinds separate in the
+                # review pane as well as on the page.
+                in_references = _proofread._is_reference_block(p.text or "")
+                marker = p.add_run("◆" if in_references else "")
+                if in_references:
+                    marker.font.color.rgb = _docx_shared.RGBColor(0x8B, 0x45, 0x13)
+                    marker.font.size = _docx_shared.Pt(9)
                 doc.add_comment(
-                    anchor, text="\n".join(notes),
-                    author="AI Editor", initials="AE",
+                    marker, text="\n".join(notes),
+                    author="AI Editor — Reference" if in_references else "AI Editor",
+                    initials="AER" if in_references else "AE",
                 )
 
     # Make DOIs, URLs and e-mail addresses clickable. Last, so it sees the finished
