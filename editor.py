@@ -10,6 +10,8 @@ import copy
 import datetime
 import difflib
 import proofread as _proofread
+# Only stdlib below it, so this cannot close an import cycle back to here.
+from edit_guards import _front_matter_end
 import json
 import os
 import re
@@ -437,9 +439,71 @@ Input JSON dictionary (Key = Index, Value = Paragraph Text):
         return paras
 
 
+#: A superscript run that is nothing but citation numbers — `45,` `48` `51, 54` `7–9`.
+_SUPERSCRIPT_CITATION = re.compile(r"^[\s,;]*\d{1,3}(?:\s*[,;–—-]\s*\d{1,3})*[\s,;.]*$")
+
+
+def _render_superscripts(p) -> str:
+    """A paragraph's text, with superscript citation markers written as `[45, 48]`.
+
+    `p.text` throws formatting away, and a superscript reference number survives that as
+    a bare digit glued to the previous word: job #52's `...was allowed to react` with a
+    superscript 45 arrives as `react45`. Nothing downstream can see a citation there —
+    not the reference rules, not the citation-spacing rules, not the reference checker —
+    which is why the team's superscript references came back untouched. Worse, the
+    copyeditor is free to read `react45` as a typo and quietly reshape it.
+
+    What is *not* converted matters as much as what is. An exponent (`10⁵`, `cm³`) is
+    also a superscript number, so a run is only taken as a citation when the character
+    before it is a letter or sentence punctuation — never a digit, and never inside the
+    front matter, where superscript numbers are affiliation markers.
+    """
+    runs = list(p.runs)
+    out: List[str] = []
+    i = 0
+    while i < len(runs):
+        text = runs[i].text or ""
+        if not (runs[i].font.superscript and text.strip()
+                and _SUPERSCRIPT_CITATION.match(text)):
+            out.append(text)
+            i += 1
+            continue
+
+        # Word splits one citation across several runs — a spell-check boundary, an
+        # edit, a change of colour — so `45, 48, 49, 51, 54` arrives as five runs.
+        # Bracketing each on its own produced `[15, [45] [48] [49]` on the real file:
+        # markers nested inside each other and a reference list nobody could follow.
+        # Consecutive superscript number runs are therefore one citation.
+        group, j = [], i
+        while (j < len(runs) and runs[j].font.superscript
+               and (runs[j].text or "").strip()
+               and _SUPERSCRIPT_CITATION.match(runs[j].text or "")):
+            group.append(runs[j].text or "")
+            j += 1
+
+        prev = "".join(out).rstrip()
+        nums = re.findall(r"\d{1,3}", "".join(group))
+        # An open bracket already in the text means the author started the citation and
+        # only its digits are superscript; adding another `[` would double it.
+        open_bracket = prev.count("[") > prev.count("]")
+        if nums and not open_bracket and prev and (prev[-1].isalpha()
+                                                   or prev[-1] in ".,;:)]"):
+            out.append(f" [{', '.join(nums)}]")
+        else:
+            out.extend(group)
+        i = j
+    return "".join(out)
+
+
 def read_docx(file_path: str) -> List[str]:
     doc = docx.Document(file_path)
-    return [p.text for p in doc.paragraphs]
+    paras = list(doc.paragraphs)
+    plain = [p.text for p in paras]
+    # Superscript numbers before the abstract are affiliation markers — "Susan Kumar2"
+    # is not a citation of reference 2 — so conversion starts after the front matter.
+    start = _front_matter_end(plain)
+    return [_render_superscripts(p) if i >= start else plain[i]
+            for i, p in enumerate(paras)]
 
 
 # --- Serper.dev (Google Scholar) DOI fallback — OPTIONAL ---
@@ -1546,6 +1610,36 @@ def is_editable_cell(text: str) -> bool:
     # Three real words. "4.5 N/mm2" has none, "Standard deviation" has two (a label),
     # "Table 1 Number of Ranks Given by Sample Respondents" has seven.
     return len(_WORD.findall(t)) >= 3
+
+
+def collect_table_texts_for_proofing(structure) -> List[Tuple[TableAddress, str]]:
+    """Cell text worth *reading* — a wider net than what is worth copyediting.
+
+    `is_editable_cell` demands three real words before a cell is sent to the copyeditor,
+    for a good measured reason: a model asked to copyedit `0.15` may hand back `0.150`,
+    and a silently altered number in a results table is the worst thing this tool could
+    do. But that threshold also means a column heading is checked by nothing at all, and
+    job #52 shipped with `CONCETRATION (M)` across the top of Table 2 — a misspelling in
+    the largest type on the page, which no reader could miss and no check could see.
+
+    The proofreader only reports, so the reason for the narrow threshold does not apply
+    to it: nothing here can rewrite a number. One word of four or more letters is enough
+    to be worth reading, which takes in headings and labels and leaves out the numbers.
+    """
+    out: List[Tuple[TableAddress, str]] = []
+    seen: set = set()
+    for t in structure.tables:
+        for row in t.grid:
+            for cell in row:
+                for pi, para in enumerate(cell.paragraphs):
+                    text = (para.text or "").strip()
+                    if not re.search(r"[A-Za-z]{4,}", text):
+                        continue
+                    if text.lower() in seen:      # a heading repeated down a column
+                        continue
+                    seen.add(text.lower())
+                    out.append(((t.index, cell.row, cell.col, pi), text))
+    return out
 
 
 def collect_table_texts(structure) -> List[Tuple[TableAddress, str]]:

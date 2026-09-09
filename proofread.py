@@ -678,6 +678,50 @@ def _cross_reference_findings(paragraphs: List[str], joined: str) -> List[ProofF
             out.append(ProofFinding(
                 f"crossref.{label.lower()}-uncited", "warning", None,
                 f"{label} {n} is captioned but never referred to in the text"))
+
+    out.extend(_equation_number_findings(paragraphs))
+    return out
+
+
+#: An equation's own number, which sits at the end of its line in brackets: `… (2)`.
+#: Anchored to the end because a bracketed number mid-sentence is a citation.
+_EQUATION_NUMBER = re.compile(r"\(\s*(\d{1,2}[a-z]?)\s*\)\s*$")
+
+#: A reference to one — `Eq. (2)`, `Eqn 2`, `equation 2`, `Equations 2 and 3`.
+_EQUATION_CITED = re.compile(r"(?i)\beq(?:n|uation)?s?\b\.?\s*\(?\s*(\d{1,2}[a-z]?)\s*\)?")
+
+
+def _equation_number_findings(paragraphs: List[str]) -> List["ProofFinding"]:
+    """The text sends the reader to an equation that carries no number.
+
+    Job #52 argued from "equation 2" and no equation in the manuscript was numbered at
+    all — the display lines are bare, like `k2 = k1/[Thiourea]`. Figures and tables have
+    been cross-checked for a long time; equations were not, because their number is not
+    a caption at the front of a line but a bracket at the end of one, so the caption
+    scan walked straight past them.
+
+    Only the direction that strands a reader is reported. An unnumbered equation that
+    nothing refers to is a house-style matter, not a broken reference, and flagging
+    every display line in a chemistry paper would bury the one that matters.
+    """
+    numbered = set()
+    for text in paragraphs:
+        m = _EQUATION_NUMBER.search((text or "").strip())
+        if m:
+            numbered.add(m.group(1).lower())
+
+    cited: Dict[str, int] = {}
+    for i, text in enumerate(paragraphs):
+        for n in _EQUATION_CITED.findall(text or ""):
+            cited.setdefault(n.lower(), i)
+
+    out: List[ProofFinding] = []
+    for n in sorted(set(cited) - numbered, key=lambda x: (len(x), x)):
+        out.append(ProofFinding(
+            "crossref.equation-unnumbered", "warning", cited[n],
+            f"the text refers to Equation {n}, but no equation in the manuscript "
+            f"carries the number ({n})",
+            "", f"number the equation ({n}) at the right-hand end of its line"))
     return out
 
 

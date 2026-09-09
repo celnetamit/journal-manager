@@ -55,6 +55,7 @@ from editor import (
     build_journal_report,
     build_plagiarism_report,
     collect_table_texts,
+    collect_table_texts_for_proofing,
     enforce_author_limit,
     enforce_drop_redundant_paren_citation,
     enforce_element_citation_brackets,
@@ -492,6 +493,35 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         ]
     except Exception as proof_exc:                               # noqa: BLE001
         warnings.append(f"Proofreading pass failed: {proof_exc}")
+
+    # The same reading applied to what is inside the tables. Job #52 printed
+    # `CONCETRATION (M)` as a column heading of Table 2 and every check missed it: the
+    # copyeditor is only given cells with three or more words (so it can never be handed
+    # a bare number to "correct"), and the proofreader was only ever given body text.
+    #
+    # Reported, never rewritten — findings come back as table queries, which is why it
+    # is safe to look at cells the copyeditor is deliberately kept away from.
+    if structure is not None:
+        try:
+            cells = collect_table_texts_for_proofing(structure)
+            if cells:
+                cell_findings = run_proofread(
+                    [t for _a, t in cells],
+                    generate=_generate_text if ai_review_enabled else None,
+                    settings=llm_settings, use_llm=ai_review_enabled,
+                    lang_type=lang_type)
+                for f in cell_findings:
+                    if f.paragraph is None or f.paragraph >= len(cells):
+                        continue
+                    (_t, _r, _c, _p), _text = cells[f.paragraph]
+                    table_queries.append({
+                        "index": None,
+                        "query": (f"[Table {_t + 1}, row {_r + 1}, column {_c + 1}] "
+                                  f"{f.message}"),
+                        "suggestion": f.suggestion,
+                    })
+        except Exception as cell_exc:                            # noqa: BLE001
+            warnings.append(f"Table proofreading failed: {cell_exc}")
 
     # OPTIONAL preliminary originality scan (web verbatim matches via Serper).
     # Only runs when Serper is active AND the user enabled it. Scans the author's
