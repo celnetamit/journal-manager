@@ -95,9 +95,19 @@ def test_a_suggestion_never_quotes_the_mask():
 
 def test_double_space_suggestion_is_the_real_text():
     findings = rules("The result  was significant.", "space.double")
-    # The match is one character either side of the run, so the suggestion is the
-    # collapsed `t  w` — real characters, not mask filler.
-    assert findings and findings[0].suggestion == "t w"
+    assert findings
+    suggestion = findings[0].suggestion
+
+    # The point this test was written for: real characters, never mask filler. The mask
+    # is equal-length so offsets stay usable, but the characters under it are made up,
+    # and quoting them puts `xxxxxxxx` in front of the editor as the correction.
+    assert "x" * 4 not in suggestion
+    assert "result" in suggestion and "significant" in suggestion
+
+    # And it is the sentence the editor is reading, with the gap closed — not the three
+    # characters around it. `t  w` → `t w` was true and unplaceable by eye.
+    assert "  " not in suggestion
+    assert suggestion == findings[0].fragment.replace("  ", " ")
 
 
 # ------------------------------------------------------------------- collapsing

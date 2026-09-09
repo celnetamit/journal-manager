@@ -266,15 +266,19 @@ def mechanical_findings(paragraphs: List[str],
         scan = _mask_opaque(text)
 
         for m in re.finditer(r"\S(  +)\S", scan):
+            # Sliced out of `text`, never quoted from `scan`. The mask is equal-length
+            # precisely so offsets stay usable, but the characters under it are filler —
+            # quoting them puts a run of `xxxxxxxx` in front of the editor as the
+            # suggested correction.
+            window = text[max(0, m.start() - 22):m.end() + 22].strip()
             out.append(ProofFinding(
                 "space.double", "warning", i,
                 "two or more spaces between words",
-                text[max(0, m.start() - 22):m.end() + 22].strip(),
-                # Sliced out of `text`, never quoted from `scan`. The mask is
-                # equal-length precisely so offsets stay usable, but the characters
-                # under it are filler — quoting them puts a run of `xxxxxxxx` in
-                # front of the editor as the suggested correction.
-                re.sub(r"  +", " ", text[m.start():m.end()])))
+                window,
+                # The same window, corrected — not the three characters around the gap.
+                # "L  o" → "L o" is a true suggestion and a useless one: an editor
+                # reading it beside the quoted sentence cannot see where it goes.
+                re.sub(r"  +", " ", window)))
 
         if not is_ref:
             for m in re.finditer(r"\s+([,.;:!?])", scan):
@@ -569,11 +573,19 @@ def _acronym_findings(paragraphs: List[str]) -> List["ProofFinding"]:
                     f"“{acr}” alone afterwards"))
                 break         # one finding per acronym, at its first use
         if len(where) > 1:
-            rest = ", ".join(str(w + 1) for w in where[1:])
+            # Both expansions can sit in the same paragraph, and "paragraphs 2 and 2"
+            # reads as a tool that cannot count. Say how many times and where, using
+            # the paragraphs that are actually distinct.
+            elsewhere = sorted({w + 1 for w in where})
+            if len(elsewhere) == 1:
+                located = f"{len(where)} times in paragraph {elsewhere[0]}"
+            else:
+                located = "paragraphs " + (
+                    " and ".join(str(w) for w in elsewhere) if len(elsewhere) == 2
+                    else ", ".join(str(w) for w in elsewhere[:-1]) + f" and {elsewhere[-1]}")
             out.append(ProofFinding(
                 "acronym.defined_twice", "warning", where[1],
-                f"“{acr}” is expanded more than once (paragraphs "
-                f"{first_def + 1} and {rest})",
+                f"“{acr}” is expanded more than once ({located})",
                 (paragraphs[where[1]] or "")[:120],
                 f"keep the expansion at its first use and write “{acr}” alone here"))
 

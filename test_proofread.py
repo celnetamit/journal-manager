@@ -204,3 +204,51 @@ def test_an_unrecognised_rule_is_treated_as_notable():
     import house_layout
     routine, notable = house_layout.split_routine([{"rule": "brand.new.rule"}])
     assert notable and not routine
+
+
+# ----------------------------------------------------------------------------------
+# Findings a person has to read
+# ----------------------------------------------------------------------------------
+
+
+def _find(findings, rule):
+    return [f for f in findings if f.rule == rule]
+
+
+def test_two_expansions_in_one_paragraph_do_not_read_as_two_paragraphs():
+    """"paragraphs 2 and 2" reads as a tool that cannot count."""
+    paras = [
+        "Introduction",
+        "Information and Communication Technology (ICT) matters here, and "
+        "Information and Communication Technology (ICT) matters again in this same "
+        "paragraph.",
+    ]
+    found = _find(P._acronym_findings(paras), "acronym.defined_twice")
+
+    assert found, "an abbreviation expanded twice in one paragraph is still a finding"
+    assert "2 times in paragraph 2" in found[0].message
+    assert "and 2" not in found[0].message
+
+
+def test_two_expansions_in_different_paragraphs_name_both():
+    paras = [
+        "Information and Communication Technology (ICT) is introduced here.",
+        "Nothing in this one.",
+        "Information and Communication Technology (ICT) is expanded again here.",
+    ]
+    found = _find(P._acronym_findings(paras), "acronym.defined_twice")
+
+    assert found
+    assert "paragraphs 1 and 3" in found[0].message
+
+
+def test_the_double_space_suggestion_is_the_sentence_not_three_characters():
+    """"L  o" → "L o" is true and useless: it cannot be placed by eye."""
+    paras = ["The sample was analysed at 37 degrees using  five millilitres of buffer."]
+    found = _find(P.mechanical_findings(paras), "space.double")
+
+    assert found
+    assert "  " not in found[0].suggestion, "the correction must have the gap closed"
+    assert len(found[0].suggestion) > 10, (
+        "an editor has to be able to see where the correction goes")
+    assert found[0].suggestion == found[0].fragment.replace("  ", " ")
