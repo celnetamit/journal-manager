@@ -318,6 +318,80 @@ def test_text_with_no_abbreviations_is_untouched():
     assert out == paras and queries == []
 
 
+# --- a paragraph that defines the same term twice on its own --------------------
+#
+# Job #66's opening paragraph, verbatim. Both definitions came back untouched and the
+# rule reported itself applied: the repeat branch only ever looked at *later*
+# paragraphs, so a second definition beside the one we keep was a repeat to nobody.
+
+_JOB66_PARA = (
+    "Information and Communication Technology (ICT) was analyzed at 37°C using 5mL  "
+    "of buffer, and the the yield was 45 % over 2010-2015. Information and "
+    "Communication Technology (ICT) appears again here.")
+
+
+def test_a_second_definition_in_the_same_paragraph_becomes_the_short_form():
+    paras = ["1. Introduction", _JOB66_PARA, "2. Results"]
+    out, queries = enforce_abbreviation_first_use(paras, list(paras))
+    assert out[1] == (
+        "Information and Communication Technology (ICT) was analyzed at 37°C using "
+        "5mL  of buffer, and the the yield was 45 % over 2010-2015. ICT appears "
+        "again here.")
+    assert queries, "the editor is told the repeat was shortened"
+
+
+def test_a_stray_expansion_later_in_the_defining_paragraph_is_still_stray():
+    """The definition being in this paragraph was excusing every expansion after it."""
+    paras = ["Using acoustic-emission (AE) sensors, the acoustic emission counts rose."]
+    out, _ = enforce_abbreviation_first_use(paras, list(paras))
+    assert out[0] == "Using acoustic-emission (AE) sensors, the AE counts rose."
+
+
+def test_an_abbreviation_bracketed_in_square_brackets_is_already_defined():
+    """Job #59 ¶96 came back as `OER [OER]`. The author bracketed the abbreviation
+    with square brackets, the guard did not recognise that as a definition, and
+    shortened the expansion in front of its own bracket."""
+    paras = ["Open Educational Resources (OER) are widely adopted in schools.",
+             "Teachers reported that Open Educational Resources [OER] improved access.",
+             "Further OER work follows."]
+    out, _ = enforce_abbreviation_first_use(paras, list(paras))
+    assert "OER [OER]" not in out[1]
+    assert out[1] == "Teachers reported that OER improved access.", (
+        "a repeat definition is shortened, once — bracket and all, not doubled")
+
+
+def test_mismatched_brackets_do_not_define_anything():
+    """`Resources (OER]` is a typo, not a definition — treating it as one would leave
+    the expansion standing where the rule says the short form belongs."""
+    paras = ["Open Educational Resources (OER) are adopted.",
+             "Open Educational Resources (OER] again."]
+    out, _ = enforce_abbreviation_first_use(paras, list(paras))
+    assert out[1] == "OER (OER] again."
+
+
+def test_one_definition_in_a_paragraph_is_left_exactly_alone():
+    """The negative case that matters: a term defined once, correctly, must not be
+    touched — this is the ordinary paragraph in every manuscript."""
+    paras = ["Open Educational Resources (OER) are widely adopted.",
+             "OER policy follows."]
+    out, queries = enforce_abbreviation_first_use(paras, list(paras))
+    assert out == paras and queries == []
+
+
+def test_the_abstract_and_the_body_may_each_define_it_once():
+    """Jobs #45 and #62 both do this and are correct: the abstract is read apart from
+    the body, so each defines the term at its own first use. Collapsing the body's
+    definition would leave the term defined only in an abstract the body never sees."""
+    paras = ["Abstract",
+             "Open Educational Resources (OER) improve access.",
+             "Keywords: OER, access",
+             "1. Introduction",
+             "Open Educational Resources (OER) improve access.",
+             "OER are discussed below."]
+    out, queries = enforce_abbreviation_first_use(paras, list(paras))
+    assert out == paras and queries == []
+
+
 # --- the author byline and the bibliography's numbering -------------------------
 #
 # Job 51, and the reason it matters: the SAME manuscript ran correctly on the previous

@@ -387,6 +387,14 @@ def _initials(phrase: str, skip_joiners: bool = False) -> str:
     return "".join(w[0] for w in words)
 
 
+def _sub_after_first(rx: "re.Pattern[str]", replacement: str, text: str) -> str:
+    """Leave the first match where it is; replace every later one."""
+    first = rx.search(text)
+    if first is None:
+        return text
+    return text[:first.end()] + rx.sub(replacement, text[first.end():])
+
+
 def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
     """`{ABBR: expansion}` for every pair the author defined in their own text.
 
@@ -503,7 +511,13 @@ def enforce_abbreviation_first_use(
         # as a stray expansion and replaced it — leaving **"OER (OERs)"**, an acronym
         # followed by its own plural. Anything that reads as this abbreviation in
         # brackets counts as already defined.
-        defined = rf"\(\s*{re.escape(abbr)}(?:['’]?s)?\s*\)"
+        # Square brackets are the same statement. Job #59 ¶96 came back as
+        # **`OER [OER]`**: the author had written `Open Educational Resources [OER]`,
+        # the lookahead only excused round brackets, so the guard read a defined term
+        # as a stray expansion and shortened it in front of its own bracket. The
+        # brackets have to match each other — `Resources (OER]` defines nothing.
+        _a = rf"{re.escape(abbr)}(?:['’]?s)?"
+        defined = rf"(?:\(\s*{_a}\s*\)|\[\s*{_a}\s*\])"
         rx = re.compile(rf"\b{body}\b(?!\s*{defined})", re.I)
         def_rx = re.compile(rf"\b{body}\b\s*{defined}", re.I)
         # If the author already defined it, that definition stands and no second one
@@ -524,16 +538,32 @@ def enforce_abbreviation_first_use(
                 if not already_defined_here:
                     already_defined_here = True             # the definition we keep
                     seen_definition = True
-                    continue
-                # A second, third, seventh definition of the same term. Job #60 expanded
-                # ICT at seven paragraphs and OER at eight, because this branch marked
-                # the term "seen" and moved on without touching the repeat — so every
-                # redundant definition after the first survived every pass. The rule is
-                # full form once, short form thereafter; the later ones become the short
-                # form, and the author's first mention is left exactly where it was.
-                out[i] = def_rx.sub(abbr, para)
-                redefined.append(i)
-                continue
+                    # A paragraph can define the same term twice on its own, and the
+                    # branch below only ever looked at *later* paragraphs — so a repeat
+                    # sitting beside the definition we keep was a repeat to nobody.
+                    # Job #66 opened with two `Information and Communication Technology
+                    # (ICT)` in one paragraph and both survived, with the rule reporting
+                    # itself as applied. The author's first mention stands; everything
+                    # after it in the paragraph is governed like the rest of the paper.
+                    kept = _sub_after_first(def_rx, abbr, para)
+                else:
+                    # A second, third, seventh definition of the same term. Job #60
+                    # expanded ICT at seven paragraphs and OER at eight, because this
+                    # branch marked the term "seen" and moved on without touching the
+                    # repeat — so every redundant definition after the first survived
+                    # every pass. The rule is full form once, short form thereafter; the
+                    # later ones become the short form, and the author's first mention is
+                    # left exactly where it was.
+                    kept = def_rx.sub(abbr, para)
+                if kept != para:
+                    out[i] = kept
+                    redefined.append(i)
+                    para = kept
+                # No `continue`: a bare expansion further down the same paragraph is a
+                # stray expansion like any other, and was being skipped for the whole
+                # paragraph merely because the paragraph also held the definition. The
+                # definition we kept carries its brackets, so `rx`'s lookahead passes
+                # over it.
             if not rx.search(para):
                 continue
 
