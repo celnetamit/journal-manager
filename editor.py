@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import datetime
 import difflib
+from collections import Counter
 import proofread as _proofread
 # Only stdlib below it, so this cannot close an import cycle back to here.
 from edit_guards import _front_matter_end
@@ -337,8 +338,8 @@ def test_embedding(text: str, settings: Optional[Dict[str, Any]] = None) -> List
 _REF_LINE = re.compile(r"^\s*\[?(\d{1,3})[\].)]\s")
 
 
-def _bibliography_census(paras: List[str]) -> Tuple[int, int]:
-    """(how many numbered entries, how many distinct ones).
+def _bibliography_census(paras: List[str]) -> "Counter[Tuple[str, str]]":
+    """Which works the bibliography lists, and how many times each lists them.
 
     Identity is the first author's surname and the year, not the entry's own wording.
 
@@ -353,16 +354,37 @@ def _bibliography_census(paras: List[str]) -> Tuple[int, int]:
     Surname and year survive every reformat this pass performs — abbreviating the
     journal, capping the author list at six, dropping the month — which is exactly the
     property an identity needs and the wording does not have.
+
+    Two things this returns that the pair of integers before it did not, and both were
+    letting the RRB manuscript (jobs #67, #69, #70) through three times running:
+
+    * **The works themselves, not how many there are.** Counting answers "is the list
+      the same size", and a swap is the one failure that keeps the size. Only comparing
+      the works can say that Barman (2025) left and a second Virani arrived.
+    * **An entry that never carried a number.** The old detector was "the paragraph
+      starts with `1.` or `[1]`", which is also how it found the bibliography at all —
+      so on a manuscript whose reference list is unnumbered until this very pass
+      numbers it, the census saw nothing, reported zero entries, and the gate switched
+      itself off. That is not a quiet failure to notice a swap; it is no gate at all,
+      and it is why the loss was left for the end-of-pipeline guard to catch.
+
+    The bibliography is located the way every other reference guard locates it — by its
+    heading — and only falls back to numbered lines when there is no heading to find.
     """
-    ids = []
-    for p in paras:
-        if p and _REF_LINE.match(p):
-            body = _REF_LINE.sub("", p)
-            surname = re.match(r"\s*([A-Za-zÀ-ÿ'\-]{3,})", body)
-            year = re.search(r"\b(?:19|20)\d{2}\b", body)
-            ids.append((surname.group(1).lower() if surname else "?",
-                        year.group(0) if year else "?"))
-    return len(ids), len(set(ids))
+    from edit_guards import _references_start, _reference_identity
+
+    start = _references_start(paras)
+    if start is not None:
+        entries = [p for p in paras[start + 1:] if len((p or "").strip()) > 40]
+    else:
+        entries = [p for p in paras if p and _REF_LINE.match(p)]
+
+    counts: "Counter[Tuple[str, str]]" = Counter()
+    for p in entries:
+        ident = _reference_identity(p)
+        if ident:
+            counts[ident] += 1
+    return counts
 
 
 def align_global_citations(
@@ -427,14 +449,18 @@ Input JSON dictionary (Key = Index, Value = Paragraph Text):
             if 0 <= idx < len(new_paras):
                 new_paras[idx] = new_text
 
-        before_n, before_distinct = _bibliography_census(paras)
-        after_n, after_distinct = _bibliography_census(new_paras)
-        if before_n and (after_n != before_n or after_distinct != before_distinct):
+        before = _bibliography_census(paras)
+        after = _bibliography_census(new_paras)
+        if before and after != before:
+            lost = sorted((before - after).elements())
+            gained = sorted((after - before).elements())
+            named = "; ".join(f"{s.title()} ({y})" for s, y in lost[:5]) or "none"
+            extra = "; ".join(f"{s.title()} ({y})" for s, y in gained[:5])
             msg = (f"The reference list was left in its original order: re-sorting it "
-                   f"would have changed it from {before_n} entries "
-                   f"({before_distinct} distinct) to {after_n} ({after_distinct}), "
-                   f"so an entry was being lost or duplicated. The in-text citations "
-                   f"were not renumbered either — the two have to match.")
+                   f"would have dropped {named}"
+                   f"{f' and duplicated {extra}' if extra else ''}. "
+                   f"The in-text citations were not renumbered either — the two have "
+                   f"to match.")
             print(msg)
             if warnings is not None:
                 warnings.append(msg)

@@ -896,8 +896,32 @@ def preserve_author_hyphenation(
 _REF_IDENTITY = re.compile(r"^\s*(?:\[?\d{1,3}[\].)]{0,2}\s*)?([A-Za-zÀ-ÿ'\-]{3,})")
 
 
+#: Given-name initials at the head of an entry — `H. `, `A. B. `, `K.K. `.
+#:
+#: An IEEE-style list writes `H. Jamil, M. Faizan, …`, initials first. The identity
+#: above starts at the first run of three or more letters and does not scan forward, so
+#: every entry in such a list came back with no identity at all — and an identity of
+#: None is an entry the census cannot see. On jobs #45 and #68 that was the *whole*
+#: bibliography: `verify_reference_block` found nothing to compare and returned
+#: silently, the same shape of failure as the `References:` heading job #60 arrived
+#: with. A guard that cannot read the list is not a guard that passed it.
+#:
+#: Vancouver moves the initials behind the surname, so `H. Jamil` and `Jamil H` have to
+#: fingerprint alike — which they do once the initials are stepped over. Only a single
+#: capital followed by a full stop counts, so `UNESCO I.` and `SRIKANTH, H.` keep their
+#: own first word.
+_LEADING_INITIALS = re.compile(r"^\s*(?:[A-ZÀ-Þ]\.\s*){1,4}")
+
+_ENTRY_NUMBER_HEAD = re.compile(r"^\s*\[?\d{1,3}[\].)]{0,2}\s*")
+
+
 def _reference_identity(entry: str) -> Optional[Tuple[str, str]]:
-    surname = _REF_IDENTITY.match(entry or "")
+    text = _LEADING_INITIALS.sub("", _ENTRY_NUMBER_HEAD.sub("", entry or ""))
+    # Two letters, not three. `Q. Li`, `J. Du` and `X. Xu` are ordinary names in this
+    # literature and every one of them was unreadable, which on job #45 left seven
+    # entries outside the census — the guard reads the list it is given, not the
+    # convenient part of it.
+    surname = re.match(r"\s*([A-Za-zÀ-ÿ'\-]{2,})", text)
     year = re.search(r"\b(?:19|20)\d{2}\b", entry or "")
     if not surname or not year:
         return None
