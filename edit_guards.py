@@ -520,12 +520,22 @@ def enforce_abbreviation_first_use(
         defined = rf"(?:\(\s*{_a}\s*\)|\[\s*{_a}\s*\])"
         rx = re.compile(rf"\b{body}\b(?!\s*{defined})", re.I)
         def_rx = re.compile(rf"\b{body}\b\s*{defined}", re.I)
+        # An author may define a term the other way round, short form first, and job
+        # #68 ¶370 did: `MAPE (mean absolute percentage error)`. Only the expansion
+        # was looked for, so the guard read the author's own gloss as a stray
+        # expansion and shortened it inside its own brackets — **`MAPE (MAPE)`**,
+        # which took the definition out of the paper entirely. This is a definition
+        # and it is the author's; it is never rewritten, and it counts as the term
+        # having been defined.
+        rev_rx = re.compile(
+            rf"\b{re.escape(abbr)}(?:['’]?s)?\s*(?:\(\s*{body}\s*\)|\[\s*{body}\s*\])",
+            re.I)
         # If the author already defined it, that definition stands and no second one
         # is invented — every stray expansion simply becomes the short form. Adding
         # our own earlier definition would leave the paper defining the same term
         # twice, and would move the author's chosen first mention.
-        seen_definition = bool(def_rx.search(
-            "\n".join(p or "" for p in original[body_from:body_end])))
+        whole = "\n".join(p or "" for p in original[body_from:body_end])
+        seen_definition = bool(def_rx.search(whole) or rev_rx.search(whole))
         first_index: Optional[int] = None
         already_defined_here = False
         redefined: List[int] = []
@@ -567,8 +577,15 @@ def enforce_abbreviation_first_use(
             if not rx.search(para):
                 continue
 
+            # The expansion inside the author's own `MAPE (mean absolute percentage
+            # error)` is not loose text to be shortened; it is the definition.
+            protected = [m.span() for m in rev_rx.finditer(para)]
+
             def replace(m: "re.Match[str]") -> str:
                 nonlocal seen_definition
+                if any(a <= m.start() and m.end() <= b for a, b in protected):
+                    seen_definition = True
+                    return m.group(0)
                 if not seen_definition:
                     seen_definition = True
                     return f"{m.group(0)} ({abbr})"

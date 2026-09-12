@@ -360,6 +360,30 @@ def test_an_abbreviation_bracketed_in_square_brackets_is_already_defined():
         "a repeat definition is shortened, once — bracket and all, not doubled")
 
 
+def test_the_short_form_first_is_still_the_author_defining_the_term():
+    """Job #68 ¶370, verbatim. The author glossed their own abbreviation the other way
+    round and the guard shortened the gloss inside its own brackets — `MAPE (MAPE)` —
+    which is the one place the paper said what MAPE stood for."""
+    paras = [
+        "Mean Absolute Percentage Error (MAPE) was computed for every model.",
+        "Finally, the olive bars indicate the MAPE in percent. MAPE (mean absolute "
+        "percentage error) is a normalized measure of prediction error.",
+    ]
+    out, _ = enforce_abbreviation_first_use(paras, list(paras))
+    assert "MAPE (MAPE)" not in out[1]
+    assert out[1] == paras[1], "the author's own gloss is left exactly alone"
+
+
+def test_a_stray_expansion_beside_a_reverse_definition_is_still_shortened():
+    """Protecting the gloss must not excuse the rest of the paragraph."""
+    paras = ["Mean Absolute Percentage Error (MAPE) was computed.",
+             "MAPE (mean absolute percentage error) is normalized, and the mean "
+             "absolute percentage error is reported per model."]
+    out, _ = enforce_abbreviation_first_use(paras, list(paras))
+    assert out[1] == ("MAPE (mean absolute percentage error) is normalized, and the "
+                      "MAPE is reported per model.")
+
+
 def test_mismatched_brackets_do_not_define_anything():
     """`Resources (OER]` is a typo, not a definition — treating it as one would leave
     the expansion standing where the rule says the short form belongs."""
