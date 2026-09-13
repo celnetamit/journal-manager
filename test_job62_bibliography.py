@@ -179,4 +179,18 @@ def test_the_pipeline_asks_again_before_writing_the_redline():
     """A guard in the middle of a long chain leaves every later step unguarded."""
     src = open("pipeline.py").read()
     before_redline = src[:src.index('progress(0.68, "Generating redline')]
-    assert before_redline.count("verify_reference_block(") == 2
+    assert before_redline.count("verify_reference_block(") == 3
+
+
+def test_the_pipeline_asks_before_the_re_sort_too():
+    """Jobs #71 and #72 lost a reference in the copyedit, before the re-sort ran. The
+    re-sort's own gate compares its input with its output and both were already wrong,
+    so it passed; the end guard restored the list, by which time the in-text citations
+    had been renumbered to an order that list no longer has.
+
+    Restoring before the re-sort hands it the author's own list, so the numbering it
+    produces still matches what the reader gets.
+    """
+    src = open("pipeline.py").read()
+    before_sort = src[:src.index("align_global_citations(\n")]
+    assert before_sort.count("verify_reference_block(") == 1

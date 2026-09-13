@@ -18,7 +18,7 @@ import uuid
 import zipfile
 
 from docx.opc.exceptions import PackageNotFoundError
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import config as app_config
 import losscheck as _losscheck
@@ -348,7 +348,30 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         except Exception as table_exc:                           # noqa: BLE001
             warnings.append(f"Table copyediting was skipped: {table_exc}")
 
+    # Filled by every guard from here to the redline. Declared before the first of
+    # them rather than at the first assignment, so a guard added earlier in the chain
+    # has somewhere to put its queries.
+    guard_queries: List[Dict[str, object]] = []
+
     if reorder_citations:
+        # Ask before the re-sort, not only after it.
+        #
+        # Jobs #71 and #72 each lost a reference and the re-sort's own gate said
+        # nothing, correctly: that gate compares what it was handed with what it
+        # produced, and by the time it ran the copyedit had already replaced an entry
+        # with a copy of another. Both sides were equally wrong, so it passed.
+        #
+        # The end-of-pipeline guard then caught it and restored the author's list — but
+        # by then the in-text citations had been renumbered to match a re-sorted order
+        # the restored list does not have, which is why those two reports say the
+        # numbering needs a human eye. Restoring here means the re-sort is handed the
+        # author's own list and the numbering it produces still matches it.
+        #
+        # It costs nothing when the copyedit is clean: the guard is idempotent and
+        # says nothing on a bibliography that still holds every work it started with.
+        edited_paragraphs, _pre_sort_queries = verify_reference_block(
+            original_paragraphs, edited_paragraphs)
+        guard_queries.extend(_pre_sort_queries)
         progress(0.62, "Aligning citations & sorting bibliography...")
         edited_paragraphs = align_global_citations(
             edited_paragraphs, llm_settings, ref_style, enabled_rule_ids,
@@ -376,14 +399,14 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # line that lost its day and month, an algorithm step that lost its number. Each
     # restoration raises its own query: a guard that quietly overrules the copyedit is
     # the same failure as a copyedit that quietly overrules the author.
-    edited_paragraphs, guard_queries = restore_protected_text(
+    edited_paragraphs, _protected_queries = restore_protected_text(
         original_paragraphs, edited_paragraphs)
+    guard_queries += _protected_queries
     guard_queries += orphaned_formula_queries(
         original_paragraphs, edited_paragraphs)
 
     # Runs after the language-variant pass, so a re-spelling cannot re-close a hyphen
-    # this just kept, and after `guard_queries` exists — inserting it beside the
-    # variant pass put an `.extend` seven lines above the list it extends.
+    # this just kept.
     edited_paragraphs, _hyphen_queries = preserve_author_hyphenation(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_hyphen_queries)
