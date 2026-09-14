@@ -256,6 +256,7 @@ class ProgressReporter:
         # the one that turns "With ce4" into a moving bar.
         self.last_sent = None
         self.observations: list = []
+        self.recent: list = []
         self.failures = 0
 
     def note(self, events) -> None:
@@ -265,6 +266,12 @@ class ProgressReporter:
             para = event.get("para") or 0
             for old, new in pairs_from_spans(event.get("spans")):
                 self.observations.append((para, old, new))
+        if events:
+            # Held, not just forwarded. Only the copyediting stage produces edits; the
+            # stages after it (proofreading, references, the report) produce none, and a
+            # panel that emptied itself at 60% looked like a job that had stopped doing
+            # anything. The last few changes stay on screen until the file comes back.
+            self.recent = (self.recent + list(events))[-6:]
 
     def due(self) -> bool:
         return (self.last_sent is None
@@ -280,7 +287,7 @@ class ProgressReporter:
         body = json.dumps({
             "progress": progress,
             "stage": stage,
-            "events": list(events or [])[-6:],
+            "events": self.recent,
             "patterns": group_changes(self.observations),
         }).encode()
         path = f"/api/v1/copyedit/bridge/progress/{self.remote_id}/"

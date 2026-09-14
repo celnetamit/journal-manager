@@ -98,6 +98,17 @@ def test_nothing_is_lost_by_being_throttled(wired):
     assert patterns[0]["from"] == "shows" and patterns[0]["to"] == "show"
 
 
+def test_the_last_edits_stay_on_screen_after_the_copyedit_stage(wired):
+    """Proofreading produces no edits; a panel that empties itself looks stopped."""
+    r, clock = reporter()
+    r.send(0.4, "Copyediting — paragraph 4 of 9", [EVENT])
+    clock.t += 5
+    r.send(0.7, "Proofreading...", [])
+
+    assert wired[-1]["body"]["stage"] == "Proofreading..."
+    assert wired[-1]["body"]["events"][0]["para"] == 4, "the last change is still shown"
+
+
 def test_an_unreachable_platform_does_not_raise(monkeypatch, wired):
     def explode(*_a, **_k):
         raise mng_bridge.requests.RequestException("connection refused")
