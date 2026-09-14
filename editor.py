@@ -3572,18 +3572,63 @@ def _edit_summary(before: str, after: str, limit: int = 70) -> str:
         return f"…{pre} “{old}” → “{new}”" if pre else f"“{old}” → “{new}”"
     return ""
 
-def _chunk_edits(paras, edited_paras, chunk_inds, cap: int = 4) -> list:
-    """What visibly changed in this chunk, as feed lines.
+#: How much of a paragraph travels in the live feed. Long enough to read the sentence a
+#: change sits in, short enough that forty of them do not turn a progress row into a
+#: second copy of the manuscript — the row is read every two seconds.
+FEED_TEXT_LIMIT = 700
 
-    Capped: a chunk of five long paragraphs can produce five long lines faster than
-    anyone can read them, and the feed's job is to show that work is happening and what
-    kind — not to be the redline. The redline is the download.
+
+def word_spans(before: str, after: str, limit: int = FEED_TEXT_LIMIT) -> list:
+    """The paragraph as a list of {op, text} — "same", "del", "ins".
+
+    Diffed on **words**, never characters: a character diff renders "H2O" → "H₂O" as
+    `"2" → "₂"`, which tells a reader nothing. Words are also what a copy editor argues
+    about.
+
+    Returned as spans rather than HTML so the caller decides how to paint them, and so a
+    manuscript's own text can never carry markup into the page.
+    """
+    import difflib
+
+    a = re.findall(r"\S+\s*", before or "")
+    b = re.findall(r"\S+\s*", after or "")
+    spans, used = [], 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+        parts = []
+        if tag in ("equal", "delete", "replace"):
+            parts.append(("same" if tag == "equal" else "del", "".join(a[i1:i2])))
+        if tag in ("insert", "replace"):
+            parts.append(("ins", "".join(b[j1:j2])))
+        for op, text in parts:
+            if not text:
+                continue
+            if used + len(text) > limit:
+                spans.append({"op": op, "text": text[: max(0, limit - used)] + "…"})
+                return spans
+            used += len(text)
+            spans.append({"op": op, "text": text})
+    return spans
+
+
+def _chunk_edits(paras, edited_paras, chunk_inds, cap: int = 4) -> list:
+    """What this chunk did, as feed entries a reader can actually check.
+
+    Each entry carries the paragraph number, the one-line summary, and the paragraph
+    itself as diff spans — so the screen can show the sentence being changed instead of
+    only reporting that something was. Capped at `cap` paragraphs: five long ones arrive
+    faster than anyone reads them, and the redline download is still the record.
     """
     out = []
     for idx in chunk_inds:
-        summary = _edit_summary(paras[idx], edited_paras[idx] or paras[idx])
+        before = paras[idx]
+        after = edited_paras[idx] or paras[idx]
+        summary = _edit_summary(before, after)
         if summary:
-            out.append({"para": idx + 1, "change": summary})
+            out.append({
+                "para": idx + 1,
+                "change": summary,
+                "spans": word_spans(before, after),
+            })
         if len(out) >= cap:
             break
     return out

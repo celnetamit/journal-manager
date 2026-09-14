@@ -8,6 +8,7 @@ This module wires together:
 from __future__ import annotations
 
 import importlib
+import html
 import json
 import os
 import re
@@ -980,8 +981,26 @@ def _render_job_usage(job: dict, live: bool = False) -> None:
 
 
 
-def _render_live_feed(job: dict, limit: int = 12) -> None:
-    """The copyedit's own commentary while it runs: paragraph number and what changed."""
+#: Deletions red and struck through, insertions green — the two colours every reviewer
+#: already reads that way, in Word and in a code diff alike.
+_SPAN_STYLE = {
+    "del": "background:rgba(248,81,73,.18);color:#ff9d96;text-decoration:line-through",
+    "ins": "background:rgba(63,185,80,.18);color:#7ee787",
+    "same": "opacity:.75",
+}
+
+
+def _render_live_feed(job: dict, limit: int = 6) -> None:
+    """The copyedit as it happens: the paragraph being changed, and the change inside it.
+
+    A progress bar answers "is it finished". This answers "what is it doing to my
+    manuscript", which is the question somebody watching actually has — and it is the
+    same redline they will open in Word afterwards, only sooner.
+
+    Newest first, so nobody has to chase a scrolling tail. The paragraph text arrives
+    already split into diff spans; this only paints them, and escapes every one, because
+    the text is a stranger's manuscript.
+    """
     raw = job.get("live_json")
     if not raw:
         return
@@ -991,16 +1010,31 @@ def _render_live_feed(job: dict, limit: int = 12) -> None:
         return
     if not events:
         return
-    st.caption(f"Live edits · {len(events)} shown of this run")
+
+    st.caption(f"Live edits · newest first · {len(events)} recorded this run")
     for ev in reversed(events[-limit:]):
         para = ev.get("para")
         change = (ev.get("change") or "").strip()
-        if not change:
+        spans = ev.get("spans") or []
+        if not change and not spans:
             continue
+
+        if spans:
+            body = "".join(
+                f"<span style='{_SPAN_STYLE.get(s.get('op'), '')}'>"
+                f"{html.escape(s.get('text') or '')}</span>"
+                for s in spans)
+        else:
+            # Older jobs, queued before the feed carried text, still render.
+            body = f"<span style='opacity:.75'>{html.escape(change)}</span>"
+
         st.markdown(
-            f"<div style='font-size:13px;line-height:1.5;padding:4px 0;"
-            f"border-bottom:1px solid rgba(255,255,255,.07)'>"
-            f"<span style='opacity:.55'>¶{para}</span> {change}</div>",
+            f"<div style='border:1px solid rgba(255,255,255,.08);border-radius:8px;"
+            f"padding:8px 10px;margin-bottom:8px;background:rgba(255,255,255,.02)'>"
+            f"<div style='font-size:11px;opacity:.5;margin-bottom:4px'>"
+            f"¶{para} · {html.escape(change)}</div>"
+            f"<div style='font-size:13.5px;line-height:1.6;white-space:pre-wrap'>{body}</div>"
+            f"</div>",
             unsafe_allow_html=True)
 
 
