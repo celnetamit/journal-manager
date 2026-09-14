@@ -78,6 +78,7 @@ from editor import (
     recurring_changes,
     validate_jats,
     verify_serper_key,
+    word_spans,
 )
 
 
@@ -186,6 +187,105 @@ def describe_unopenable(path: str) -> str:
             "in Word and use File > Save As to write a fresh copy, then upload that.")
 
 
+#: How long a paused job waits with nobody touching it before it decides for itself.
+#: Amit, 15 Sep 2026: "30 sec wait krega, jawab na milne par automatic AI decision le
+#: lega." Measured from the **last decision**, not from the start — 30 seconds is long
+#: enough to answer a paragraph and far too short to review twenty, so a hard deadline
+#: would take the panel away from the one person actually using it. Answer anything and
+#: the clock restarts; walk away and the job finishes on its own.
+REVIEW_IDLE_SECONDS = 30
+#: The ceiling on the whole gate, however busy the reviewer is. The worker thread is
+#: held for this long and other people's jobs queue behind it, so "as long as you like"
+#: is not on offer. Ten minutes is far past any real review of one manuscript.
+REVIEW_MAX_SECONDS = 600
+#: Paragraph text carried into the question, per paragraph. Same cap as the live feed:
+#: this row is read every couple of seconds.
+REVIEW_TEXT_LIMIT = 700
+
+
+def review_gate(job_id, originals, edited, progress=None, *,
+                idle_seconds: float = REVIEW_IDLE_SECONDS,
+                max_seconds: float = REVIEW_MAX_SECONDS,
+                auth_mod=None, sleep=time.sleep,
+                clock=time.monotonic) -> tuple:
+    """Manual mode: show every proposed change and let a person refuse any of them.
+
+    Returns `(paragraphs, summary)`. A rejected paragraph is put back to exactly what
+    the author wrote, which is the only honest meaning of "no" here — the later stages
+    then treat it as a paragraph the copyedit did not touch, and the redline shows no
+    change for it.
+
+    The waiting rule is the whole design: **the job never blocks on a human.** It waits
+    `idle_seconds` from the last decision, and whatever is still undecided when the
+    clock runs out is applied as proposed. That is the same outcome as auto mode, so
+    the worst case of nobody watching is simply the default behaviour arriving late.
+
+    Deliberately one gate after the copyedit rather than a pause per paragraph: the
+    chunks run several at a time in a thread pool, so a pause inside that pool would
+    mean four questions at once, each holding a worker. Here the work is done, nothing
+    has been written, and the reviewer sees the whole manuscript's changes together —
+    which is also the only way to spot the one wrong change among forty right ones.
+    """
+    auth_mod = auth_mod if auth_mod is not None else auth
+    edited = list(edited)
+    changed = [i for i, (a, b) in enumerate(zip(originals, edited))
+               if (b or "").strip() and (b or "").strip() != (a or "").strip()]
+    summary = {"asked": len(changed), "accepted": 0, "rejected": 0,
+               "decided_by": "nobody", "waited_seconds": 0.0}
+    if not changed:
+        return edited, summary
+
+    auth_mod.ask_job(job_id, {
+        "kind": "review_changes",
+        "idle_seconds": idle_seconds,
+        "paragraphs": [
+            {"index": i, "para": i + 1,
+             "spans": word_spans(originals[i], edited[i], limit=REVIEW_TEXT_LIMIT)}
+            for i in changed
+        ],
+    })
+
+    started = clock()
+    last_activity = started
+    answers: Dict[str, str] = {}
+    try:
+        while True:
+            if auth_mod.job_is_cancelled(job_id):
+                raise JobCancelled()
+            fresh = auth_mod.read_job_answer(job_id)
+            # None is "could not read", which is not the same as "taken back" — a
+            # transient error must neither reset the clock nor drop a decision.
+            if fresh is not None and fresh != answers:
+                answers = fresh
+                last_activity = clock()
+            if len(answers) >= len(changed):
+                summary["decided_by"] = "reviewer"
+                break
+            idle = clock() - last_activity
+            if idle >= idle_seconds:
+                summary["decided_by"] = "timeout" if not answers else "partly reviewed"
+                break
+            if clock() - started >= max_seconds:
+                summary["decided_by"] = "time limit"
+                break
+            if progress:
+                left = int(idle_seconds - idle) + 1
+                progress(0.60, f"Your review — {len(answers)} of {len(changed)} "
+                               f"decided · applying the rest in {left}s")
+            sleep(1)
+    finally:
+        auth_mod.clear_job_ask(job_id)
+
+    for i in changed:
+        if answers.get(str(i)) == "reject":
+            edited[i] = originals[i]
+            summary["rejected"] += 1
+        else:
+            summary["accepted"] += 1
+    summary["waited_seconds"] = round(clock() - started, 1)
+    return edited, summary
+
+
 def run_pipeline(opts: Dict[str, Any], input_path: str,
                  progress_cb: Optional[Callable[[float, str], None]] = None,
                  job_id: Optional[Any] = None,
@@ -234,6 +334,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     journals_enabled = opts.get("journals_enabled", True)
     cover_letter_enabled = opts.get("cover_letter_enabled", True)
     polish_enabled = opts.get("polish_enabled", False)
+    # "auto" unless asked for: a mode that waits for a person has to be chosen by the
+    # person who intends to wait. `.get` with a default also keeps every job queued
+    # before this existed — and every bridge job — running exactly as it did.
+    review_mode = (opts.get("review_mode") or "auto").strip().lower()
     user_id = opts["user_id"]
     filename = opts.get("filename", "manuscript.docx")
 
@@ -358,6 +462,20 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
             f"{'…' if len(skipped_paragraphs) > 12 else ''}). "
             f"Reason: {reasons[0]}"
         )
+
+    # Manual mode: nothing is written yet, so this is the last moment a person can
+    # still say no to a change cheaply. Auto is the default and skips this entirely —
+    # every job that arrives over the manuscript-ngine bridge is auto, because nobody
+    # is sitting in front of ce4 when one lands.
+    review_summary = None
+    if review_mode == "manual" and job_id is not None:
+        progress(0.60, "Waiting for your review of the proposed changes...")
+        edited_paragraphs, review_summary = review_gate(
+            job_id, original_paragraphs, edited_paragraphs, progress)
+        if review_summary["rejected"]:
+            warnings.append(
+                f"{review_summary['rejected']} of {review_summary['asked']} proposed "
+                f"changes were rejected in review and those paragraphs are unchanged.")
 
     # The 11.3%. Table cells are not in `doc.paragraphs`, so nothing has ever
     # copyedited them. Sent through the same pass as the body, then written back by
@@ -809,6 +927,11 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
             for f in proof_findings
         ],
         "tables_edited": len(table_edits),
+        # Present only on a manual run. Kept in the result because "who decided this"
+        # is part of the record of the job, not decoration: a manuscript where four
+        # changes were refused by a person reads differently from one where the timer
+        # ran out.
+        "review": review_summary,
         "skipped_paragraphs": skipped_paragraphs,
         "table_queries": table_queries,
     }

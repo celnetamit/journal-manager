@@ -171,6 +171,11 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         # overwritten in place — this is a view onto a job in flight, not a record. The
         # record is the redline.
         ("live_json", "TEXT"),
+        # Manual review: the question a paused job is asking, and the answers given
+        # back. Two columns rather than one because the worker owns the first and the
+        # reader owns the second — neither ever overwrites what the other wrote.
+        ("ask_json", "TEXT"),
+        ("answer_json", "TEXT"),
     ):
         try:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
@@ -270,6 +275,8 @@ def _ensure_schema_pg(cur: Any) -> None:
         ("cost_usd", "DOUBLE PRECISION"),
         ("usage_json", "TEXT"),
         ("live_json", "TEXT"),
+        ("ask_json", "TEXT"),
+        ("answer_json", "TEXT"),
     ):
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {decl}")
 
@@ -830,6 +837,100 @@ def append_job_events(job_id: int, events) -> None:
             conn.commit()
     except Exception as e:  # noqa: BLE001
         print(f"[auth.append_job_events] error: {e}")
+
+
+# --- Manual review: a running job asking, and being answered ---
+#
+# The job stays `status='running'` the whole time it is waiting. That is deliberate:
+# `job_is_cancelled` reads "anything other than running" as cancelled, so a separate
+# `awaiting_input` status would have made every paused job look cancelled to its own
+# worker. The question lives in a column instead, and the job's own timeout guarantees
+# it can never wait forever — which is what an `awaiting_input` state would have had to
+# answer for anyway.
+
+def ask_job(job_id: int, payload: Dict[str, Any]) -> None:
+    """Post the question a paused job is waiting on, and clear any previous answer.
+
+    Unlike the live feed, a failure here is NOT swallowed: if the question never
+    reaches the page, nobody can answer it, and the job would sit out its whole
+    timeout pretending to have asked.
+    """
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE jobs SET ask_json={ph}, answer_json=NULL WHERE id={ph}",
+            (json.dumps(payload), job_id),
+        )
+        conn.commit()
+
+
+def clear_job_ask(job_id: int) -> None:
+    """Take the question down — the job is no longer waiting on anybody."""
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE jobs SET ask_json=NULL, answer_json=NULL WHERE id={ph}",
+                (job_id,),
+            )
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"[auth.clear_job_ask] error: {e}")
+
+
+def read_job_answer(job_id: int) -> Optional[Dict[str, str]]:
+    """The decisions recorded so far, or None if they could not be read.
+
+    None, not `{}`: the worker treats a changed answer set as "somebody is still
+    working" and resets its idle timer, so a transient read error must not look like
+    an edit — nor like an answer being taken back.
+    """
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT answer_json FROM jobs WHERE id={ph}", (job_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            raw = dict(row).get("answer_json")
+            if not raw:
+                return {}
+            data = json.loads(raw)
+            return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception as e:  # noqa: BLE001
+        print(f"[auth.read_job_answer] error: {e}")
+        return None
+
+
+def answer_job(job_id: int, decisions: Dict[Any, str]) -> Dict[str, str]:
+    """Record decisions on a waiting job and return the full answer set.
+
+    **Merged into what is already there, never written over it.** The reader answers a
+    paragraph at a time across page reloads; a rewrite would drop every earlier
+    decision on each click and the reviewer would never see their own work stick.
+    """
+    ph = "%s" if _is_postgres() else "?"
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT answer_json FROM jobs WHERE id={ph}", (job_id,))
+        row = cur.fetchone()
+        merged: Dict[str, str] = {}
+        raw = dict(row).get("answer_json") if row else None
+        if raw:
+            try:
+                existing = json.loads(raw)
+                if isinstance(existing, dict):
+                    merged = {str(k): str(v) for k, v in existing.items()}
+            except Exception:  # noqa: BLE001
+                merged = {}
+        merged.update({str(k): str(v) for k, v in decisions.items()})
+        cur.execute(f"UPDATE jobs SET answer_json={ph} WHERE id={ph}",
+                    (json.dumps(merged), job_id))
+        conn.commit()
+        return merged
 
 
 def update_job_progress(job_id: int, progress: float, stage: str) -> None:

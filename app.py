@@ -517,6 +517,21 @@ if is_authenticated:
             "Auto-Number & Sort Citations", value=True,
             help="Converts author-date citations to [1], [2] and sorts bibliography to match the order of appearance.",
         )
+        # Auto first in the list, so it is what an untouched form submits.
+        review_mode = st.radio(
+            "Decision mode",
+            ["Auto — apply the changes", "Manual — ask me first"],
+            index=0, horizontal=False,
+            help=(
+                "Auto runs the whole manuscript and hands you the tracked-changes "
+                "redline, which you accept or reject in Word as usual. Manual stops "
+                "once, after the copyedit and before anything is written, and shows "
+                "you every proposed change to keep or undo. It waits 30 seconds after "
+                "your last decision and then applies whatever is left — so a job can "
+                "never sit waiting for somebody who has gone home."
+            ),
+        )
+        review_mode = "manual" if review_mode.startswith("Manual") else "auto"
         use_crossref = st.checkbox(
             "Live Crossref DOI Validation", value=True,
             help="Scans bibliography for verified DOIs.",
@@ -905,6 +920,15 @@ def _render_result(result: dict, kp: str) -> None:
     """Render a completed job's reports and downloads. `kp` keys the widgets."""
     for _w in result.get("warnings") or []:
         st.warning(_w)
+    # Who decided, on a manual run. Shown because "the timer ran out" and "a person
+    # read all forty and kept them" produce the same manuscript and are not the same
+    # event.
+    _rv = result.get("review") or {}
+    if _rv.get("asked"):
+        st.caption(
+            f"Manual review · {_rv.get('accepted', 0)} kept, {_rv.get('rejected', 0)} "
+            f"undone of {_rv['asked']} proposed changes · decided by "
+            f"{_rv.get('decided_by', 'nobody')}")
     _render_downloads(result, kp)
     _render_house_panel(result, kp)
 
@@ -1069,12 +1093,97 @@ def _render_live_feed(job: dict, limit: int = 6) -> None:
 
 
 
+def _paint_spans(spans) -> str:
+    """Diff spans → HTML. Every piece escaped: this is a stranger's manuscript."""
+    return "".join(
+        f"<span style='{_SPAN_STYLE.get(s.get('op'), '')}'>"
+        f"{html.escape(s.get('text') or '')}</span>"
+        for s in spans)
+
+
+#: How many proposed changes the review panel shows at once. More than this on one
+#: screen and nobody reads any of them; "show more" is a click, and a click is also
+#: activity, which restarts the job's idle clock.
+REVIEW_PAGE = 25
+
+
+def _render_review_panel(job: dict) -> bool:
+    """The manual-mode question: every proposed change, with a yes and a no.
+
+    Returns True when a question was shown. The job behind it is running and counting
+    down — anything left undecided is applied as proposed, so this panel can be
+    ignored or closed without stranding anything.
+    """
+    raw = job.get("ask_json")
+    if not raw:
+        return False
+    try:
+        ask = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return False
+    items = ask.get("paragraphs") or []
+    if not items:
+        return False
+
+    try:
+        answers = json.loads(job.get("answer_json") or "{}")
+    except Exception:  # noqa: BLE001
+        answers = {}
+    pending = [it for it in items if str(it.get("index")) not in answers]
+
+    jid = job["id"]
+    st.warning(
+        f"**Your review** — {len(items) - len(pending)} of {len(items)} decided. "
+        f"Anything you leave is applied as proposed about "
+        f"{int(ask.get('idle_seconds') or 30)} seconds after your last decision.")
+
+    cols = st.columns(2)
+    if cols[0].button("✅ Accept all remaining", key=f"acc_all_{jid}",
+                      use_container_width=True):
+        auth.answer_job(jid, {str(it["index"]): "accept" for it in pending})
+        st.rerun()
+    if cols[1].button("↩️ Reject all remaining", key=f"rej_all_{jid}",
+                      use_container_width=True):
+        auth.answer_job(jid, {str(it["index"]): "reject" for it in pending})
+        st.rerun()
+
+    shown = st.session_state.get(f"review_shown_{jid}", REVIEW_PAGE)
+    for it in pending[:shown]:
+        idx = it["index"]
+        st.markdown(
+            f"<div style='border:1px solid rgba(255,255,255,.08);border-radius:8px;"
+            f"padding:8px 10px;margin-bottom:6px;background:rgba(255,255,255,.02)'>"
+            f"<div style='font-size:11px;opacity:.5;margin-bottom:4px'>¶{it['para']}</div>"
+            f"<div style='font-size:13.5px;line-height:1.6;white-space:pre-wrap'>"
+            f"{_paint_spans(it.get('spans') or [])}</div></div>",
+            unsafe_allow_html=True)
+        c1, c2, _ = st.columns([1, 1, 6])
+        if c1.button("Keep", key=f"acc_{jid}_{idx}",
+                     help="Apply this change"):
+            auth.answer_job(jid, {str(idx): "accept"})
+            st.rerun()
+        if c2.button("Undo", key=f"rej_{jid}_{idx}",
+                     help="Leave this paragraph exactly as the author wrote it"):
+            auth.answer_job(jid, {str(idx): "reject"})
+            st.rerun()
+
+    if len(pending) > shown:
+        if st.button(f"Show {min(REVIEW_PAGE, len(pending) - shown)} more "
+                     f"({len(pending) - shown} left)", key=f"more_{jid}"):
+            st.session_state[f"review_shown_{jid}"] = shown + REVIEW_PAGE
+            st.rerun()
+    return True
+
+
 def _render_job(job: dict) -> None:
     """Render a job's live status (auto-refreshing) or its final result."""
     status = job["status"]
     if status in ("queued", "running"):
         st.info(f"**{job.get('stage', 'Queued')}** — job #{job['id']} · {job['filename']}")
         st.progress(float(job.get("progress") or 0.0))
+        # Asked first, above everything else: it is the only part of this page with a
+        # clock on it.
+        _render_review_panel(job)
         # A bar says the job is alive; it does not say what the job is doing. The feed
         # below is the actual work — the edits as they are made, newest first — because
         # "is it doing anything useful?" is the question a bar cannot answer, and the
@@ -1159,6 +1268,7 @@ with tab_editor:
             "journals_enabled": journals_enabled,
             "cover_letter_enabled": cover_letter_enabled,
             "polish_enabled": polish_enabled,
+            "review_mode": review_mode,
         }
         job_id = auth.create_job(
             st.session_state.user_id, uploaded_file.name, str(input_path),
