@@ -873,12 +873,42 @@ def _render_downloads(result: dict, kp: str) -> None:
     st.divider()
 
 
+def _render_patterns(result: dict) -> None:
+    """The changes that repeat, counted once, with the paragraphs to check them in.
+
+    This is the shortest read in the whole report: forty occurrences of "Fig." → "Figure"
+    is one habit of the author's, and seeing it as one line is the difference between
+    reviewing a manuscript and clicking through it. Nothing here is a new finding — every
+    row is already in the redline; it is the same work, grouped.
+    """
+    patterns = result.get("patterns") or []
+    if not patterns:
+        return
+    st.subheader("🔁 Repeated changes")
+    st.caption("The same edit, made more than twice. Each row is one habit, not one edit.")
+    for pattern in patterns:
+        paras = ", ".join(f"¶{n}" for n in pattern.get("paragraphs", [])[:8])
+        more = "…" if pattern["count"] > len(pattern.get("paragraphs", [])) else ""
+        st.markdown(
+            f"<div style='font-size:13.5px;padding:5px 0;border-bottom:1px solid "
+            f"rgba(255,255,255,.07)'>"
+            f"<span style='background:rgba(248,81,73,.18);color:#ff9d96;"
+            f"text-decoration:line-through'>{html.escape(pattern['from'])}</span> → "
+            f"<span style='background:rgba(63,185,80,.18);color:#7ee787'>"
+            f"{html.escape(pattern['to'])}</span> "
+            f"<strong>×{pattern['count']}</strong> "
+            f"<span style='opacity:.5;font-size:12px'>{paras}{more}</span></div>",
+            unsafe_allow_html=True)
+
+
 def _render_result(result: dict, kp: str) -> None:
     """Render a completed job's reports and downloads. `kp` keys the widgets."""
     for _w in result.get("warnings") or []:
         st.warning(_w)
     _render_downloads(result, kp)
     _render_house_panel(result, kp)
+
+    _render_patterns(result)
 
     st.subheader("📊 Editorial Report")
     st.markdown(result.get("report_md", ""))

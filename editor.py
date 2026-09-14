@@ -3610,6 +3610,76 @@ def word_spans(before: str, after: str, limit: int = FEED_TEXT_LIMIT) -> list:
     return spans
 
 
+#: How often a change must recur before it is called a pattern rather than an edit.
+#: Two is a coincidence on a long manuscript; three is a habit worth one line instead of
+#: three.
+PATTERN_MIN = 3
+
+#: Changes this short are noise — a comma, a space, a full stop. They recur constantly and
+#: reporting them as "patterns" would bury the ones worth reading.
+PATTERN_MIN_CHARS = 2
+
+
+def recurring_changes(paras: list, edited_paras: list, limit: int = 12) -> list:
+    """The same change, made over and over — reported once with its count.
+
+    Amit, 15 Sep 2026: "pattern recognition daal do, isse kaam aur asaan ho jayega". He is
+    right about where the work is. A manuscript that writes "Fig." forty times does not
+    have forty problems; it has one, and a reviewer asked to approve it forty times will
+    stop reading by the sixth.
+
+    Deliberately literal and countable: pairs of (what was there, what replaced it) taken
+    from the word diff, normalised only for case-folding of the first letter so that a
+    sentence-initial occurrence groups with the rest. No model is asked to name the
+    pattern — a "pattern" here is a thing that provably happened N times, with the
+    paragraph numbers to check it in, not a description somebody has to trust.
+    """
+    import collections
+    import difflib
+
+    counts: dict = collections.defaultdict(list)
+    spellings: dict = collections.defaultdict(list)
+    for idx, (before, after) in enumerate(zip(paras, edited_paras)):
+        after = after or before
+        if before == after:
+            continue
+        a = re.findall(r"\S+\s*", before)
+        b = re.findall(r"\S+\s*", after)
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+            if tag != "replace":
+                # Only substitutions: a pure insertion or deletion has no "from → to"
+                # shape and lists badly ("added ‘the’ ×40" tells nobody anything).
+                continue
+            old = "".join(a[i1:i2]).strip()
+            new = "".join(b[j1:j2]).strip()
+            if len(old) < PATTERN_MIN_CHARS or len(new) < PATTERN_MIN_CHARS:
+                continue
+            if len(old) > 60 or len(new) > 60:
+                continue          # a rewritten sentence is not a pattern
+            # Grouped case-insensitively on the first letter so a sentence-initial
+            # occurrence counts with the rest — but *displayed* as it was actually
+            # written. The first version grouped and reported the folded form, so
+            # "Fig." came back as "fig.", which is not a change anybody made.
+            key = (old[:1].lower() + old[1:], new[:1].lower() + new[1:])
+            if key[0] == key[1]:
+                continue
+            counts[key].append(idx + 1)
+            spellings[key].append((old, new))
+
+    patterns = []
+    for key, paras_hit in counts.items():
+        if len(paras_hit) < PATTERN_MIN:
+            continue
+        # The spelling this pattern most often had on the page.
+        shown = collections.Counter(spellings[key]).most_common(1)[0][0]
+        patterns.append({
+            "from": shown[0], "to": shown[1], "count": len(paras_hit),
+            "paragraphs": sorted(set(paras_hit))[:12],
+        })
+    patterns.sort(key=lambda p: (-p["count"], p["from"]))
+    return patterns[:limit]
+
+
 def _chunk_edits(paras, edited_paras, chunk_inds, cap: int = 4) -> list:
     """What this chunk did, as feed entries a reader can actually check.
 

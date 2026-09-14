@@ -51,8 +51,8 @@ from science_format import (
     enforce_unit_case,
 )
 from editor import (
+    _generate_text,
     align_global_citations,
-    fetch_crossref_record,
     build_jats_xml,
     build_journal_report,
     build_plagiarism_report,
@@ -64,17 +64,18 @@ from editor import (
     enforce_keywords_format,
     enforce_reference_year_only,
     enforce_temperature_spacing,
+    fetch_crossref_record,
     generate_ai_review,
     generate_cover_letter,
-    generate_report,
     generate_redline_docx,
+    generate_report,
     generate_title_abstract_polish,
     markdown_to_docx,
     plagiarism_scan,
     process_document_async,
     read_docx,
-    _generate_text,
     recommend_journals,
+    recurring_changes,
     validate_jats,
     verify_serper_key,
 )
@@ -785,6 +786,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "edit_style": edit_style,
         "filename": filename,
         "paras_count": paras_count,
+        # The same change made over and over, counted once. A manuscript that writes
+        # "Fig." forty times has one habit, not forty problems, and a reviewer asked to
+        # approve it forty times stops reading by the sixth.
+        "patterns": recurring_changes(original_paragraphs, edited_paragraphs),
         "duration": round(duration, 1),
         "warnings": warnings,
         "plagiarism": plagiarism,
