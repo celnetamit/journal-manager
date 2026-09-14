@@ -2032,6 +2032,34 @@ def cosine_similarity(v1, v2) -> float:
     return float(np.dot(v1, v2) / (n1 * n2))
 
 
+#: How much of a journal's scope goes into its embedding. Four thousand characters is
+#: roughly the whole of one — the cap is there so a journal that pastes its entire author
+#: guidelines into the field does not drown out its own subject areas.
+SCOPE_EMBED_CHARS = 4000
+
+
+def _journal_embed_text(journal: Dict[str, Any]) -> str:
+    """The text that represents one journal to the embedding model.
+
+    It used to be the name plus `topics`, and topics were one word for 232 of the 274
+    journals — "computer" for all twenty-eight computer titles. Nothing in that could tell
+    two of them apart, so the only real signal was the journal's name.
+
+    Now it is the name, the journal's own subject areas, and its focus and scope: the same
+    text the editorial team writes and an author reads on the journal's page. Subject areas
+    come before the scope prose on purpose — they are the journal's remit stated in the
+    editors' own words, and the first tokens of a long text carry the most weight in every
+    embedding model we might use.
+    """
+    parts = [journal.get("name", "")]
+    parts.extend(journal.get("subject_areas") or [])
+    parts.extend(journal.get("topics") or [])
+    scope = (journal.get("scope") or "").strip()
+    if scope:
+        parts.append(scope[:SCOPE_EMBED_CHARS])
+    return " ".join(p for p in parts if p)
+
+
 def _build_journal_embeddings(settings: Dict[str, Any]) -> str:
     in_path = app_config.journals_path()
     out_path = app_config.journals_embedded_path_for_settings(settings)
@@ -2039,7 +2067,7 @@ def _build_journal_embeddings(settings: Dict[str, Any]) -> str:
     with in_path.open("r") as f:
         journals = json.load(f)
 
-    texts = [j["name"] + " " + " ".join(j.get("topics", [])) for j in journals]
+    texts = [_journal_embed_text(j) for j in journals]
     embeddings = []
     for i in range(0, len(texts), 100):
         batch = texts[i:i + 100]
@@ -2153,8 +2181,9 @@ def _explain_journal_match(abstract: str, journal: Dict[str, Any], rank: int = 1
     records `matched_topics`, `matched_keywords`, `fit_label`, and `rank` on the
     journal dict so the UI and report can surface them directly."""
     score = journal.get("score", 0) or 0
-    topics = journal.get("topics", [])
-    hits = _topic_keyword_hits(abstract, topics)
+    # The journal's own subject areas, not just its one-word domain — that is what a
+    # reader can check the recommendation against.
+    hits = _topic_keyword_hits(abstract, _journal_terms(journal))
     matched = list(hits.keys())
     keywords = sorted({w for ws in hits.values() for w in ws})
     journal["matched_topics"] = matched
@@ -2281,12 +2310,27 @@ def _names_match(a: str, b: str) -> bool:
     return False
 
 
+def _journal_terms(journal: Dict[str, Any]) -> List[str]:
+    """The phrases a manuscript can literally match against, best first.
+
+    Subject areas are what a journal says it publishes; `topics` is the one broad domain
+    label, kept because it is still true and costs nothing. The scope prose is deliberately
+    not turned into terms here — it is sentences, not a remit, and every long scope would
+    otherwise match every paper on ordinary words.
+    """
+    areas = [a for a in (journal.get("subject_areas") or []) if isinstance(a, str)]
+    return areas + [t for t in (journal.get("topics") or []) if t]
+
+
 def _prescreen_score(journal: Dict[str, Any], abstract: str) -> float:
     """Cheap heuristic prior (0-100): semantic cosine (dominant) plus a bonus for
-    literal overlap between the manuscript and the journal's focus topics."""
+    literal overlap between the manuscript and what the journal says it publishes."""
     cosine = max(0.0, journal.get("score", 0) or 0)
-    topics = journal.get("topics", [])
-    overlap = len(_topic_keyword_hits(abstract, topics)) / len(topics) if topics else 0
+    terms = _journal_terms(journal)
+    # Divided by a floor of eight rather than by the number of terms: a journal listing
+    # three areas would otherwise score 0.33 for one weak hit while a journal listing
+    # thirty, which has said far more about itself, could not reach the same fraction.
+    overlap = min(1.0, len(_topic_keyword_hits(abstract, terms)) / max(8, 1)) if terms else 0
     return round(min(100.0, cosine * 80 + overlap * 20), 1)
 
 
@@ -2302,6 +2346,11 @@ def _llm_rank_journals(abstract: str, candidates: List[Dict[str, Any]],
             "id": c["_cid"],
             "name": c["name"],
             "topics": c.get("topics", []),
+            # Without this the model was ranking twenty-eight identically-labelled
+            # journals by their titles. Trimmed hard: the whole scope for every candidate
+            # would be tens of thousands of tokens per recommendation.
+            "subject_areas": (c.get("subject_areas") or [])[:18],
+            "scope": (c.get("scope") or "")[:700],
             "publisher": c.get("publisher"),
             "impact_factor": c.get("impact_factor"),
             "preScreenScore": c.get("prescreen_score", 0),
