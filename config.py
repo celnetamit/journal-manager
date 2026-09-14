@@ -78,24 +78,35 @@ def output_retention_days() -> int:
 
 
 def purge_old_outputs(ttl_days: Optional[int] = None) -> int:
-    """Delete files in the output directory older than the retention window.
-    Returns the number of files removed. Never raises (best-effort cleanup)."""
+    """Delete files older than the retention window. Returns how many were removed.
+    Never raises (best-effort cleanup).
+
+    The bridge's inbox is swept on the same window as the outputs. A failed job now
+    keeps its input so somebody can open the file that would not open, and a manuscript
+    that arrives over the bridge is written there rather than to the output directory —
+    so without this the one directory nothing ever cleared is the one collecting every
+    failure. Nothing queued can be caught by a 30-day cutoff; a job claimed from the
+    bridge runs within minutes of its file being written.
+    """
     if ttl_days is None:
         ttl_days = output_retention_days()
     if ttl_days <= 0:
         return 0
     cutoff = time.time() - ttl_days * 86400
     removed = 0
-    try:
-        for entry in output_dir().iterdir():
-            try:
-                if entry.is_file() and entry.stat().st_mtime < cutoff:
-                    entry.unlink()
-                    removed += 1
-            except OSError:
-                continue
-    except OSError as e:
-        print(f"[config.purge_old_outputs] error: {e}")
+    for directory in (output_dir(), data_dir() / "mng-inbox"):
+        if not directory.is_dir():
+            continue
+        try:
+            for entry in directory.iterdir():
+                try:
+                    if entry.is_file() and entry.stat().st_mtime < cutoff:
+                        entry.unlink()
+                        removed += 1
+                except OSError:
+                    continue
+        except OSError as e:
+            print(f"[config.purge_old_outputs] error: {e}")
     return removed
 
 

@@ -143,7 +143,31 @@ def test_a_healthy_row_is_untouched(tmp_path):
 
 def test_a_corrupt_docx_is_explained_in_words_an_author_can_act_on(tmp_path):
     """3 of 400 have a bad CRC on an embedded image. The author used to be shown
-    "Bad CRC-32 for file 'word/media/image1.png'" — true, and no help at all."""
+    "Bad CRC-32 for file 'word/media/image1.png'" — true, and no help at all.
+
+    The fixture is a Word document, because that is what this case is. It used to be
+    `b"this is not a zip archive"`, which is not a damaged Word file and never was —
+    so the test passed while the message it asserted was being given to PDFs, to Word
+    97 files and to uploads that never arrived.
+    """
+    import pipeline
+
+    bad = tmp_path / "corrupt.docx"
+    with zipfile.ZipFile(bad, "w") as z:
+        z.writestr("word/document.xml", "<w:document/>")
+
+    with pytest.raises(ValueError) as exc:
+        pipeline.run_pipeline(_OPTS, str(bad), lambda *a, **k: None)
+
+    msg = str(exc.value)
+    assert "Word document" in msg
+    assert "Save As" in msg
+    assert not isinstance(exc.value, zipfile.BadZipFile)
+
+
+def test_a_file_that_is_not_a_word_document_is_told_what_it_is(tmp_path):
+    """The same bytes the test above used to carry. They are not a damaged Word file,
+    and saying so sends the author somewhere they can actually go."""
     import pipeline
 
     bad = tmp_path / "corrupt.docx"
@@ -152,10 +176,7 @@ def test_a_corrupt_docx_is_explained_in_words_an_author_can_act_on(tmp_path):
     with pytest.raises(ValueError) as exc:
         pipeline.run_pipeline(_OPTS, str(bad), lambda *a, **k: None)
 
-    msg = str(exc.value)
-    assert "damaged" in msg
-    assert "Save As" in msg
-    assert not isinstance(exc.value, zipfile.BadZipFile)
+    assert "not a Word .docx" in str(exc.value)
 
 
 # ------------------------------------------------- the warning that said nothing

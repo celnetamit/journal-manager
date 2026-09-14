@@ -116,6 +116,75 @@ def skip_reason(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+#: What a file says it is, in its first bytes. A `.docx` is a zip whose first two
+#: bytes are `PK`; everything else here is a file that was given a `.docx` name.
+_SIGNATURES = [
+    (b"%PDF", "a PDF"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "an old Word 97–2003 .doc"),
+    (b"{\\rtf", "an RTF"),
+    (b"<?xml", "an XML file"),
+    (b"<html", "an HTML page"),
+    (b"<!DOCTYPE", "an HTML page"),
+]
+
+
+def describe_unopenable(path: str) -> str:
+    """Why this file could not be opened as a .docx — the actual reason, in words.
+
+    `python-docx` raises one exception, with one wording, for at least six different
+    causes. Measured in the running container, `Package not found at '<path>'` is what
+    comes back for a file that is not there, for a PDF, for a Word 97 `.doc`, for RTF,
+    for HTML and for a truncated zip. We picked one of those causes and told the author
+    it as fact — "the file appears to be damaged, open it in Word and use Save As".
+
+    Jobs #76, #77 and #78 are the same person acting on that advice three times in
+    twenty minutes. #76 was a PDF (`…Formatted (2).docx.pdf`), and no amount of
+    re-saving a PDF in Word produces a `.docx`. Advice that cannot work reads exactly
+    like advice that has not been followed.
+    """
+    if not os.path.exists(path):
+        return ("the uploaded file did not arrive on the server. Please upload it "
+                "again.")
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError as e:
+        return f"the file could not be read on the server ({e})."
+    if size == 0:
+        return "the uploaded file is empty (0 bytes). Please upload it again."
+    for magic, what in _SIGNATURES:
+        if head.startswith(magic):
+            if magic == b"%PDF":
+                # Job #76 was a PDF export of a manuscript that exists as a .docx
+                # somewhere. Asking for the original is the short road; converting the
+                # PDF is the long one, and it loses the tracked-changes the redline
+                # needs anyway.
+                return ("this is a PDF, not a Word .docx. Please upload the Word "
+                        "original — a PDF cannot carry the tracked changes the "
+                        "redline is written in.")
+            return (f"this is {what}, not a Word .docx. Open it in Word and use "
+                    f"File > Save As with 'Word Document (.docx)', then upload that.")
+    if not head.startswith(b"PK"):
+        return ("this is not a Word .docx — it does not begin like one. Open it in "
+                "Word and use File > Save As with 'Word Document (.docx)'.")
+    # It is a zip. Which kind, and is it whole?
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return ("the file is a damaged Word document — it did not finish "
+                "downloading or was truncated. Please upload it again, or open it "
+                "in Word and use File > Save As to write a fresh copy.")
+    if "word/document.xml" not in names:
+        for prefix, what in (("ppt/", "a PowerPoint file"), ("xl/", "an Excel file")):
+            if any(n.startswith(prefix) for n in names):
+                return (f"this is {what}, not a Word .docx.")
+        return "this is an Office file but not a Word document."
+    return ("the file is a Word document whose contents could not be read. Open it "
+            "in Word and use File > Save As to write a fresh copy, then upload that.")
+
+
 def run_pipeline(opts: Dict[str, Any], input_path: str,
                  progress_cb: Optional[Callable[[float, str], None]] = None,
                  job_id: Optional[Any] = None,
@@ -177,10 +246,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         # A .docx is a zip. Three of 400 real manuscripts had a corrupt embedded
         # image, and the author got the raw "Bad CRC-32 for file 'word/media/
         # image1.png'" — true, and meaningless to the person who has to act on it.
+        # The replacement was meaningful and, for most of these, wrong: see
+        # `describe_unopenable`, which asks the file what it is instead.
         raise ValueError(
-            "This .docx could not be opened — the file appears to be damaged "
-            f"({open_exc}). Open it in Word and use File > Save As to write a fresh "
-            "copy, then upload that."
+            f"This file could not be opened: {describe_unopenable(input_path)}"
         ) from open_exc
     paras_count = len(original_paragraphs)
 
@@ -770,12 +839,14 @@ def _process_job(job: Dict[str, Any]) -> None:
             auth.append_job_events(job_id, events)
 
     meter = _usage.Meter()
+    failed = False
     try:
         result = run_pipeline(opts, job["input_path"], cb, job_id=job_id, meter=meter)
         auth.complete_job(job_id, json.dumps(result))
     except JobCancelled:
         print(f"[worker] job {job_id} cancelled; stopping work")
     except Exception as exc:
+        failed = True
         traceback.print_exc()
         # `skip_reason`, not `str(exc)`. This message is rendered straight into
         # "Processing failed for **paper.docx**: {error_message}", and `str()` is
@@ -800,10 +871,17 @@ def _process_job(job: Dict[str, Any]) -> None:
             auth.record_job_usage(job_id, meter.snapshot())
         except Exception:
             traceback.print_exc()
-        # The uploaded input file is no longer needed once the job is done.
+        # The uploaded input file is no longer needed once the job is done — but a job
+        # that FAILED is not done with, and this deleted the one thing anybody could
+        # look at. Jobs #76, #77 and #78 all failed on "could not be opened" and by the
+        # time the question was asked there was nothing left to open; the cause had to
+        # be inferred from a filename. A failed job keeps its input, and the retention
+        # sweep clears it with everything else.
         path = job.get("input_path")
         try:
-            if path and os.path.exists(path):
+            if failed:
+                print(f"[job {job_id}] failed — input kept at {path}", flush=True)
+            elif path and os.path.exists(path):
                 os.remove(path)
         except OSError:
             pass

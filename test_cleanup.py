@@ -37,6 +37,25 @@ def test_purge_disabled_when_ttl_zero(tmp_path, monkeypatch):
     assert f.exists()
 
 
+def test_purge_sweeps_the_bridge_inbox_too(tmp_path, monkeypatch):
+    """A failed job keeps its input, and a bridge manuscript is written to the inbox —
+    so the inbox is where failures collect and it was the one directory never swept."""
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "outbound"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    inbox = tmp_path / "mng-inbox"
+    inbox.mkdir()
+    old = inbox / "abc-manuscript.docx"
+    new = inbox / "def-manuscript.docx"
+    old.write_text("old")
+    new.write_text("new")
+    old_time = time.time() - 40 * 86400
+    os.utime(old, (old_time, old_time))
+
+    assert config.purge_old_outputs(ttl_days=30) == 1
+    assert not old.exists()
+    assert new.exists(), "a file waiting for its job must survive"
+
+
 def test_retention_days_env(monkeypatch):
     monkeypatch.setenv("OUTPUT_RETENTION_DAYS", "7")
     assert config.output_retention_days() == 7
