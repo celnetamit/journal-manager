@@ -207,11 +207,31 @@ REVIEW_MAX_SECONDS = 600
 REVIEW_TEXT_LIMIT = 700
 
 
+def _remote_review(reporter, stage: str, *, force: bool = False, **fields) -> Dict[str, str]:
+    """Show the question on the platform, and take whatever has been decided there.
+
+    Every part of this is optional decoration over a pass that is already running, so it
+    is swallowed whole: a platform that has gone away during a review must cost the
+    manuscript nothing. What it cannot do is invent a decision — a failure here returns
+    no answers, and no answers means the change is applied as proposed, which is the
+    same thing that happens when nobody is watching.
+    """
+    if reporter is None:
+        return {}
+    try:
+        reporter.update_ask(**fields)
+        reporter.send(0.60, stage, [], force=force)
+        return reporter.take_answers()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bridge] review report raised, ignored: {exc}", flush=True)
+        return {}
+
+
 def review_gate(job_id, originals, edited, progress=None, *,
                 idle_seconds: float = REVIEW_IDLE_SECONDS,
                 max_seconds: float = REVIEW_MAX_SECONDS,
                 auth_mod=None, sleep=time.sleep,
-                clock=time.monotonic) -> tuple:
+                clock=time.monotonic, reporter=None) -> tuple:
     """Manual mode: show every proposed change and let a person refuse any of them.
 
     Returns `(paragraphs, summary)`. A rejected paragraph is put back to exactly what
@@ -239,15 +259,25 @@ def review_gate(job_id, originals, edited, progress=None, *,
     if not changed:
         return edited, summary
 
-    auth_mod.ask_job(job_id, {
+    ask = {
         "kind": "review_changes",
         "idle_seconds": idle_seconds,
+        "asked": len(changed),
+        "decided": 0,
+        "seconds_left": int(idle_seconds),
         "paragraphs": [
             {"index": i, "para": i + 1,
              "spans": word_spans(originals[i], edited[i], limit=REVIEW_TEXT_LIMIT)}
             for i in changed
         ],
-    })
+    }
+    auth_mod.ask_job(job_id, ask)
+    if reporter is not None:
+        # Asked on the platform too, and asked there *first*: the manuscript arrived from
+        # it, so that is where the person who can answer is sitting. ce4's own panel stays
+        # exactly as it was — the same question, in two places, answered into one row.
+        reporter.set_ask(ask)
+        _remote_review(reporter, f"Your review — 0 of {len(changed)} decided", force=True)
 
     started = clock()
     last_activity = started
@@ -272,13 +302,35 @@ def review_gate(job_id, originals, edited, progress=None, *,
             if clock() - started >= max_seconds:
                 summary["decided_by"] = "time limit"
                 break
+            # Rounded up, never up-a-whole-second: at the moment of asking this said
+            # "31s" for a thirty-second wait, and a countdown that starts a second past
+            # what was promised is the first thing a reviewer notices.
+            left = max(0, -int(-(idle_seconds - idle) // 1))
+            stage = (f"Your review — {len(answers)} of {len(changed)} decided · "
+                     f"applying the rest in {left}s")
             if progress:
-                left = int(idle_seconds - idle) + 1
-                progress(0.60, f"Your review — {len(answers)} of {len(changed)} "
-                               f"decided · applying the rest in {left}s")
+                progress(0.60, stage)
+            # Decisions taken on the platform, written into the same row ce4's own panel
+            # writes to. They are not merged into `answers` here: the next pass round the
+            # loop reads the row, and one source of truth for "what has been decided"
+            # is worth the second it costs.
+            remote = _remote_review(reporter, stage, decided=len(answers),
+                                    seconds_left=left)
+            if remote:
+                try:
+                    auth_mod.answer_job(job_id, remote)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[review] could not record a platform decision: {exc}",
+                          flush=True)
             sleep(1)
     finally:
         auth_mod.clear_job_ask(job_id)
+        if reporter is not None:
+            # Taken off the platform's screen whatever happened — including the cancelled
+            # path. A question still standing under a job that has moved on is the one
+            # way this panel could ask for a decision that can no longer be applied.
+            reporter.set_ask(None)
+            _remote_review(reporter, "Applying your decisions...", force=True)
 
     for i in changed:
         if answers.get(str(i)) == "reject":
@@ -293,10 +345,15 @@ def review_gate(job_id, originals, edited, progress=None, *,
 def run_pipeline(opts: Dict[str, Any], input_path: str,
                  progress_cb: Optional[Callable[[float, str], None]] = None,
                  job_id: Optional[Any] = None,
-                 meter: Optional[_usage.Meter] = None) -> Dict[str, Any]:
+                 meter: Optional[_usage.Meter] = None,
+                 reporter: Optional[Any] = None) -> Dict[str, Any]:
     """Run the full manuscript pipeline. `opts` carries non-secret options;
     LLM settings (incl. the API key) are resolved server-side, never stored on
-    the job. Returns a JSON-serializable result dict."""
+    the job. Returns a JSON-serializable result dict.
+
+    `reporter` is the manuscript-ngine progress channel, when this job came from there.
+    It is passed rather than rebuilt because manual review needs to *ask on it* and read
+    the answer — the progress callback only carries text one way."""
     def progress(frac: float, stage: str, events: Optional[list] = None) -> None:
         if not progress_cb:
             return
@@ -468,14 +525,15 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         )
 
     # Manual mode: nothing is written yet, so this is the last moment a person can
-    # still say no to a change cheaply. Auto is the default and skips this entirely —
-    # every job that arrives over the manuscript-ngine bridge is auto, because nobody
-    # is sitting in front of ce4 when one lands.
+    # still say no to a change cheaply. Auto is the default and skips this entirely.
+    # A job from manuscript-ngine may ask for it too — the question then appears on the
+    # manuscript's own screen over there, because that is where the editor is; nobody is
+    # sitting in front of ce4 when one lands.
     review_summary = None
     if review_mode == "manual" and job_id is not None:
         progress(0.60, "Waiting for your review of the proposed changes...")
         edited_paragraphs, review_summary = review_gate(
-            job_id, original_paragraphs, edited_paragraphs, progress)
+            job_id, original_paragraphs, edited_paragraphs, progress, reporter=reporter)
         if review_summary["rejected"]:
             warnings.append(
                 f"{review_summary['rejected']} of {review_summary['asked']} proposed "
@@ -987,7 +1045,8 @@ def _process_job(job: Dict[str, Any]) -> None:
     meter = _usage.Meter()
     failed = False
     try:
-        result = run_pipeline(opts, job["input_path"], cb, job_id=job_id, meter=meter)
+        result = run_pipeline(opts, job["input_path"], cb, job_id=job_id, meter=meter,
+                              reporter=reporter)
         auth.complete_job(job_id, json.dumps(result))
     except JobCancelled:
         print(f"[worker] job {job_id} cancelled; stopping work")

@@ -17,21 +17,38 @@ from editor import group_changes, pairs_from_spans, recurring_changes
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, text="ok"):
+    def __init__(self, status_code=200, text="ok", payload=None):
         self.status_code = status_code
         self.text = text
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json here")
+        return self._payload
 
 
 @pytest.fixture
 def wired(monkeypatch):
-    """A configured bridge whose HTTP calls are recorded instead of made."""
+    """A configured bridge whose HTTP calls are recorded instead of made.
+
+    `wired.reply` is what the platform answers with next — the decisions channel rides
+    home on the response to our own report, so a test that cares about answers sets it.
+    """
     monkeypatch.setattr(mng_bridge, "base_url", lambda: "https://mng.example")
     monkeypatch.setattr(mng_bridge, "secret", lambda: "s3cret")
-    sent = []
+
+    class Sent(list):
+        reply = {"ok": True}
+        status = 200          # set to 500 to make the platform refuse the next report
+
+    sent = Sent()
 
     def fake_post(url, data=None, timeout=None, headers=None):
         sent.append({"url": url, "body": json.loads(data.decode()), "headers": headers})
-        return FakeResponse()
+        if sent.status != 200:
+            return FakeResponse(sent.status, "gateway")
+        return FakeResponse(payload=sent.reply)
 
     monkeypatch.setattr(mng_bridge.requests, "post", fake_post)
     return sent
@@ -141,6 +158,116 @@ def test_an_unconfigured_bridge_gives_no_reporter(monkeypatch):
     monkeypatch.setattr(mng_bridge, "base_url", lambda: "")
     monkeypatch.setattr(mng_bridge, "secret", lambda: "")
     assert mng_bridge.reporter_for({"mng_job_id": "abc"}) is None
+
+
+# ----------------------------------------------------------------------------------
+# Asking the platform, and being answered by it
+# ----------------------------------------------------------------------------------
+
+
+ASK = {"kind": "review_changes", "idle_seconds": 30, "asked": 2, "decided": 0,
+       "paragraphs": [{"index": 3, "para": 4, "spans": [{"op": "del", "text": "Fig. "}]}]}
+
+
+def test_the_question_travels_on_the_progress_report(wired):
+    r, _ = reporter()
+    r.set_ask(ASK)
+    r.send(0.6, "Your review", [], force=True)
+
+    ask = wired[-1]["body"]["ask"]
+    assert ask["asked"] == 2
+    assert ask["paragraphs"][0]["para"] == 4, "the first report carries the paragraphs"
+
+
+def test_the_paragraphs_are_sent_once_not_every_second(wired):
+    """Forty paragraphs of somebody's manuscript, every 1.5s for ten minutes, otherwise."""
+    r, clock = reporter()
+    r.set_ask(ASK)
+    r.send(0.6, "a", [], force=True)
+    clock.t += 2
+    r.send(0.6, "b", [])
+
+    assert "paragraphs" not in wired[-1]["body"]["ask"]
+    assert wired[-1]["body"]["ask"]["asked"] == 2, "the tally still goes every time"
+
+
+def test_a_question_the_platform_never_received_is_sent_again(wired):
+    """A report that failed did not ask anybody anything."""
+    r, clock = reporter()
+    r.set_ask(ASK)
+    wired.status = 500
+    r.send(0.6, "a", [], force=True)
+
+    wired.status = 200                       # the platform comes back
+    clock.t += 2
+    r.send(0.6, "b", [], force=True)
+    assert "paragraphs" in wired[-1]["body"]["ask"]
+
+
+def test_the_countdown_is_refreshed_without_resending_the_question(wired):
+    r, clock = reporter()
+    r.set_ask(ASK)
+    r.send(0.6, "a", [], force=True)
+    r.update_ask(seconds_left=11, decided=1)
+    clock.t += 2
+    r.send(0.6, "b", [])
+
+    assert wired[-1]["body"]["ask"]["seconds_left"] == 11
+    assert wired[-1]["body"]["ask"]["decided"] == 1
+
+
+def test_a_standing_question_makes_this_side_speak_more_often(wired):
+    """Three seconds is fine for a bar and far too slow for a countdown."""
+    r, clock = reporter()
+    r.set_ask(ASK)
+    r.send(0.6, "a", [], force=True)
+    clock.t += 1.6
+    assert r.send(0.6, "b", []) is True, "1.6s is enough while somebody is being asked"
+
+    r.set_ask(None)
+    clock.t += 1.6
+    assert r.send(0.7, "c", []) is False, "and not enough once the question is gone"
+
+
+def test_the_question_is_taken_off_the_screen_when_it_ends(wired):
+    r, clock = reporter()
+    r.set_ask(ASK)
+    r.send(0.6, "a", [], force=True)
+    r.set_ask(None)
+    clock.t += 5
+    r.send(0.62, "Applying your decisions...", [])
+
+    assert "ask" not in wired[-1]["body"], (
+        "no key at all — a question carried forward is one that can still be answered")
+
+
+def test_decisions_come_back_on_the_response(wired):
+    r, _ = reporter()
+    wired.reply = {"ok": True, "answers": {"3": "reject", "5": "keep"}}
+    r.send(0.6, "a", [], force=True)
+
+    assert r.take_answers() == {"3": "reject", "5": "keep"}
+    assert r.take_answers() == {}, "taken once; the gate records them itself"
+
+
+def test_only_the_two_words_the_gate_acts_on_are_kept(wired):
+    """A platform answering with anything else must not be able to invent a decision."""
+    r, _ = reporter()
+    wired.reply = {"ok": True, "answers": {"3": "maybe", "4": {"op": "drop"}, "5": "keep"}}
+    r.send(0.6, "a", [], force=True)
+
+    assert r.take_answers() == {"5": "keep"}
+
+
+def test_a_platform_that_answers_with_a_login_page_costs_nothing(monkeypatch):
+    monkeypatch.setattr(mng_bridge, "base_url", lambda: "https://mng.example")
+    monkeypatch.setattr(mng_bridge, "secret", lambda: "s3cret")
+    monkeypatch.setattr(mng_bridge.requests, "post",
+                        lambda *a, **k: FakeResponse(200, "<html>Sign in</html>"))
+    r, _ = reporter()
+
+    assert r.send(0.6, "a", [], force=True) is True
+    assert r.take_answers() == {}
 
 
 # ----------------------------------------------------------------------------------

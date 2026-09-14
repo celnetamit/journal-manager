@@ -208,6 +208,11 @@ def _options_for(claimed: dict, remote_id: str, name: str = "manuscript.docx") -
         # Kept so the finished job can say where it came from without another lookup.
         "source": "manuscript-ngine",
         "mng_job_id": remote_id,
+        # Manual mode, when the editor asked for it on the platform. The review panel
+        # then appears there rather than here — see `ProgressReporter.set_ask`. Anything
+        # this side does not recognise is auto, which is the mode that needs nobody.
+        "review_mode": ("manual" if str(claimed.get("review_mode") or "") == "manual"
+                        else "auto"),
         "manuscript_number": claimed.get("manuscript_number", ""),
         "journal_code": claimed.get("journal_code", ""),
         "variant": variant,
@@ -235,6 +240,11 @@ PROGRESS_EVERY_SECONDS = 3.0
 #: so a platform that has stopped answering must cost seconds, not the two minutes the
 #: file transfers are allowed.
 PROGRESS_TIMEOUT = 8
+#: The floor while a question is on the platform's screen. A countdown that jumps three
+#: seconds at a time under a browser that polls every two is a clock nobody can trust, and
+#: the answer coming back rides on the same call — so while somebody is being asked, this
+#: side speaks more often. It is bounded: the question lasts as long as the review does.
+PROGRESS_WHILE_ASKING = 1.5
 
 
 class ProgressReporter:
@@ -258,6 +268,12 @@ class ProgressReporter:
         self.observations: list = []
         self.recent: list = []
         self.failures = 0
+        #: The question currently on the platform's screen, or None. Attached to every
+        #: report while it is set, because the report is the only channel there is.
+        self.ask: Optional[Dict[str, Any]] = None
+        #: What came back on the last accepted report. Read and cleared by the gate.
+        self.answers: Dict[str, str] = {}
+        self._ask_delivered = False
 
     def note(self, events) -> None:
         from editor import pairs_from_spans
@@ -273,9 +289,49 @@ class ProgressReporter:
             # anything. The last few changes stay on screen until the file comes back.
             self.recent = (self.recent + list(events))[-6:]
 
+    # ------------------------------------------------------------------
+    # Asking, and being answered
+    # ------------------------------------------------------------------
+    #
+    # Manual mode pauses the pass and asks whether each proposed change should stand.
+    # ce4's own screen can show that panel, but nobody is sitting in front of ce4 when a
+    # manuscript arrives over the bridge — the editor is on the platform, looking at the
+    # manuscript. So the question travels out on the progress report and the decisions
+    # come back in its response: no new endpoint on either side, and no polling channel
+    # that could be up while the reporting one is down.
+
+    def set_ask(self, payload: Optional[Dict[str, Any]]) -> None:
+        """Put a question on the platform's screen, or take it away."""
+        self.ask = dict(payload) if payload else None
+        self._ask_delivered = False
+
+    def update_ask(self, **fields: Any) -> None:
+        """Change the countdown and the tally without resending the paragraphs."""
+        if self.ask is not None:
+            self.ask.update(fields)
+
+    def take_answers(self) -> Dict[str, str]:
+        """The decisions that arrived since this was last called."""
+        answers, self.answers = self.answers, {}
+        return answers
+
+    def _ask_for_the_wire(self) -> Optional[Dict[str, Any]]:
+        """The question as it should be sent now.
+
+        The paragraphs go once and are then left out — they are the bulk of it, and a
+        forty-paragraph review would otherwise put its text on the wire every second and a
+        half for ten minutes. They keep going until a report is actually accepted: a
+        question the platform never received is not a question.
+        """
+        if self.ask is None:
+            return None
+        if self._ask_delivered:
+            return {k: v for k, v in self.ask.items() if k != "paragraphs"}
+        return dict(self.ask)
+
     def due(self) -> bool:
-        return (self.last_sent is None
-                or (self.clock() - self.last_sent) >= PROGRESS_EVERY_SECONDS)
+        every = PROGRESS_WHILE_ASKING if self.ask is not None else PROGRESS_EVERY_SECONDS
+        return self.last_sent is None or (self.clock() - self.last_sent) >= every
 
     def send(self, progress: float, stage: str, events, force: bool = False) -> bool:
         from editor import group_changes
@@ -284,12 +340,16 @@ class ProgressReporter:
         if not force and not self.due():
             return False
         self.last_sent = self.clock()
-        body = json.dumps({
+        payload = {
             "progress": progress,
             "stage": stage,
             "events": self.recent,
             "patterns": group_changes(self.observations),
-        }).encode()
+        }
+        ask = self._ask_for_the_wire()
+        if ask is not None:
+            payload["ask"] = ask
+        body = json.dumps(payload).encode()
         path = f"/api/v1/copyedit/bridge/progress/{self.remote_id}/"
         try:
             stamp = str(int(time.time()))
@@ -300,12 +360,34 @@ class ProgressReporter:
                          "X-CE4-Signature": _signature("POST", path, stamp, body)})
         except requests.RequestException as exc:
             self._failed(f"{type(exc).__name__}: {exc}")
+            self._ask_delivered = False
             return False
         if response.status_code != 200:
             self._failed(f"{response.status_code} {response.text[:120]}")
+            self._ask_delivered = False
             return False
         self.failures = 0
+        self._ask_delivered = self.ask is not None
+        self._read_answers(response)
         return True
+
+    def _read_answers(self, response) -> None:
+        """Decisions the editor has taken, out of the response to our own report.
+
+        Defensive to the point of dullness on purpose: this is parsed inside the worker
+        thread between two chunks of real work, and a platform that answers with a login
+        page must cost nothing at all. Only the two words the gate acts on are kept —
+        anything else is somebody else's idea of a decision.
+        """
+        try:
+            answers = (response.json() or {}).get("answers")
+        except ValueError:
+            return
+        if not isinstance(answers, dict):
+            return
+        for key, value in answers.items():
+            if str(value) in ("keep", "reject"):
+                self.answers[str(key)] = str(value)
 
     def _failed(self, why: str) -> None:
         # Said once per job, not once per tick: a platform that is down would otherwise
@@ -361,6 +443,10 @@ def return_one(local_job: dict, remote_id: str) -> bool:
         # without a hanging indent — are about the document rather than any span of it.
         # Sending only the marked-up file loses all fourteen, silently.
         "findings": result.get("findings") or {},
+        # What the review came to, when there was one. Afterwards, a manuscript somebody
+        # actually looked at and one whose thirty seconds ran out unwatched are otherwise
+        # indistinguishable — and only one of those is a reviewed manuscript.
+        "review": result.get("review") or {},
     }
     # Named for the manuscript, not for the run that produced it. `run_pipeline` writes
     # `user_None_2_redline.docx`, which is fine inside ce4 and meaningless on somebody's
