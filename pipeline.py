@@ -1033,9 +1033,26 @@ def _process_job(job: Dict[str, Any]) -> None:
             pass
 
 
+#: How often a worker looks for jobs whose process died. Cheap: one indexed query.
+STALL_SWEEP_SECONDS = 120
+
+
 def _worker_loop() -> None:
+    last_sweep = 0.0
     while True:
         try:
+            # Startup re-queueing is not enough on its own. A rolling deploy runs both
+            # containers at once for a few seconds, so a job can be claimed *after* the
+            # new process has already swept the table — and then be killed with the old
+            # one. It stays `running` with nobody working on it, which reads as a busy
+            # job for ever. Any worker may sweep; the re-queue is guarded on the status
+            # it expects, so two of them racing is harmless.
+            if time.monotonic() - last_sweep > STALL_SWEEP_SECONDS:
+                last_sweep = time.monotonic()
+                stalled = auth.requeue_stalled_jobs()
+                if stalled:
+                    print(f"[worker] re-queued stalled job(s): {stalled}", flush=True)
+
             job = auth.claim_next_job()
             if not job:
                 time.sleep(2)

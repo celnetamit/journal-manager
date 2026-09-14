@@ -176,6 +176,10 @@ def _ensure_schema_sqlite(conn: sqlite3.Connection) -> None:
         # reader owns the second — neither ever overwrites what the other wrote.
         ("ask_json", "TEXT"),
         ("answer_json", "TEXT"),
+        # When the worker last said anything about this job. The difference between a
+        # job that is working and a job whose process died is silence, and silence needs
+        # a timestamp to be measurable.
+        ("heartbeat_at", "TEXT"),
     ):
         try:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
@@ -277,6 +281,7 @@ def _ensure_schema_pg(cur: Any) -> None:
         ("live_json", "TEXT"),
         ("ask_json", "TEXT"),
         ("answer_json", "TEXT"),
+        ("heartbeat_at", "TIMESTAMPTZ"),
     ):
         cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {decl}")
 
@@ -941,7 +946,7 @@ def update_job_progress(job_id: int, progress: float, stage: str) -> None:
         with _connect() as conn:
             cur = conn.cursor()
             cur.execute(
-                f"UPDATE jobs SET progress={ph}, stage={ph} "
+                f"UPDATE jobs SET progress={ph}, stage={ph}, heartbeat_at={_now_sql()} "
                 f"WHERE id={ph} AND status='running'",
                 (float(progress), stage, job_id),
             )
@@ -1103,6 +1108,56 @@ def requeue_running_jobs() -> int:
     except Exception as e:
         print(f"[auth.requeue_running_jobs] error: {e}")
         return 0
+
+
+#: How long a running job may say nothing before it is presumed dead. Generous on
+#: purpose: the pipeline reports at every stage boundary and on every chunk, so a quarter
+#: of an hour of silence is a process that is gone, not one that is thinking. Re-queueing
+#: a job that is genuinely running would copy edit the same manuscript twice and pay for
+#: it twice, so this errs long.
+STALLED_MINUTES = 15
+
+
+def requeue_stalled_jobs(minutes: int = STALLED_MINUTES) -> list:
+    """Return jobs whose worker died mid-run to the queue. Gives back the ids.
+
+    `requeue_running_jobs()` runs once, at startup, and that is not enough. A rolling
+    deploy runs both containers for a few seconds: on 14 Sep the new one swept the table
+    clean at 20:24:29 and the old one claimed a job at 20:24:38, nine seconds later, then
+    was stopped. The job stayed `running` with nobody working on it, the platform showed
+    "With ce4" indefinitely, and nothing anywhere was wrong enough to notice — every
+    thread was idle and the row looked busy.
+
+    Measured from the heartbeat rather than from `started_at`, so a long job is never
+    taken away from the worker that is still reporting on it.
+    """
+    stale = (f"heartbeat_at < now() - interval '{int(minutes)} minutes'"
+             if _is_postgres() else
+             f"heartbeat_at < datetime('now', '-{int(minutes)} minutes')")
+    # A job that has never reported is judged on when it started instead, or it would be
+    # immune: NULL compares false to everything.
+    started = (f"(heartbeat_at IS NULL AND started_at < now() - interval "
+               f"'{int(minutes)} minutes')"
+               if _is_postgres() else
+               f"(heartbeat_at IS NULL AND started_at < datetime('now', "
+               f"'-{int(minutes)} minutes'))")
+    try:
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT id FROM jobs WHERE status='running' "
+                        f"AND ({stale} OR {started})")
+            ids = [dict(r)["id"] for r in cur.fetchall()]
+            if ids:
+                marks = ",".join("%s" if _is_postgres() else "?" for _ in ids)
+                cur.execute(
+                    f"UPDATE jobs SET status='queued', stage='Re-queued after a stall', "
+                    f"progress=0, started_at=NULL WHERE id IN ({marks}) "
+                    f"AND status='running'", tuple(ids))
+            conn.commit()
+            return ids
+    except Exception as e:  # noqa: BLE001
+        print(f"[auth.requeue_stalled_jobs] error: {e}")
+        return []
 
 
 # --- Per-user publisher / house rules ---
