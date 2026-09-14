@@ -24,6 +24,10 @@ import config as app_config
 import losscheck as _losscheck
 import usage as _usage
 import auth
+# Only for the progress reports a platform job sends back while it runs. `mng_bridge`
+# imports `auth` and `config` and nothing from here, so there is no cycle — and an
+# unconfigured bridge simply hands back no reporter.
+import mng_bridge
 from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
@@ -955,6 +959,15 @@ def _process_job(job: Dict[str, Any]) -> None:
     except Exception:
         opts = {}
 
+    # Only for a job that came from manuscript-ngine, and only while it runs: the
+    # platform's screen shows the same work this app's live feed shows. None of it can
+    # fail the job — see `ProgressReporter`.
+    reporter = None
+    try:
+        reporter = mng_bridge.reporter_for(opts)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bridge] no progress reporter for job {job_id}: {exc}", flush=True)
+
     def cb(frac: float, stage: str, events=None) -> None:
         # Cooperative cancellation: bail before doing more LLM work if the job
         # was cancelled out from under us.
@@ -965,6 +978,11 @@ def _process_job(job: Dict[str, Any]) -> None:
         # what changed can never fail the job that changed it.
         if events:
             auth.append_job_events(job_id, events)
+        if reporter is not None:
+            try:
+                reporter.send(frac, stage, events)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[bridge] progress report raised, ignored: {exc}", flush=True)
 
     meter = _usage.Meter()
     failed = False

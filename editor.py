@@ -3620,6 +3620,92 @@ PATTERN_MIN = 3
 PATTERN_MIN_CHARS = 2
 
 
+def change_pairs(before: str, after: str) -> list:
+    """(what was there, what replaced it) for one paragraph — substitutions only.
+
+    Word-level, like everything else that compares two versions of a paragraph here. A
+    pure insertion or deletion is skipped: it has no "from → to" shape and lists badly
+    ("added 'the' ×40" tells nobody anything). So is a pair where either side is longer
+    than 60 characters — a rewritten sentence is not a pattern.
+    """
+    import difflib
+
+    a = re.findall(r"\S+\s*", before or "")
+    b = re.findall(r"\S+\s*", after or "")
+    pairs = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+        if tag != "replace":
+            continue
+        old = "".join(a[i1:i2]).strip()
+        new = "".join(b[j1:j2]).strip()
+        if len(old) < PATTERN_MIN_CHARS or len(new) < PATTERN_MIN_CHARS:
+            continue
+        if len(old) > 60 or len(new) > 60:
+            continue
+        pairs.append((old, new))
+    return pairs
+
+
+def pairs_from_spans(spans) -> list:
+    """The same pairs, read back out of diff spans.
+
+    The live feed has already diffed the paragraph and thrown the two versions away; all
+    that survives on the wire is the spans. A deletion immediately followed by an
+    insertion is exactly the `replace` opcode the pairs above come from, so reading them
+    back costs nothing and means the running job and the finished report count patterns
+    with **one** implementation rather than two that drift.
+    """
+    pairs = []
+    previous = None
+    for span in spans or []:
+        op, text = span.get("op"), (span.get("text") or "").strip()
+        if op == "del":
+            previous = text
+        elif op == "ins" and previous is not None:
+            if (PATTERN_MIN_CHARS <= len(previous) <= 60
+                    and PATTERN_MIN_CHARS <= len(text) <= 60):
+                pairs.append((previous, text))
+            previous = None
+        else:
+            previous = None
+    return pairs
+
+
+def group_changes(observations, limit: int = 12) -> list:
+    """Count the pairs that keep coming back. `observations` is (paragraph, old, new).
+
+    Grouped case-insensitively on the first letter so a sentence-initial occurrence
+    counts with the rest — but **displayed as it was actually written**. The first
+    version grouped and reported the folded form, so "Fig." came back as "fig.", which is
+    not a change anybody made.
+    """
+    import collections
+
+    counts: dict = collections.defaultdict(list)
+    spellings: dict = collections.defaultdict(list)
+    for para, old, new in observations:
+        key = (old[:1].lower() + old[1:], new[:1].lower() + new[1:])
+        if key[0] == key[1]:
+            continue
+        counts[key].append(para)
+        spellings[key].append((old, new))
+
+    patterns = []
+    for key, paras_hit in counts.items():
+        # Occurrences, not distinct paragraphs: three of the same substitution inside one
+        # paragraph is still a habit, and counting paragraphs would hide exactly the kind
+        # of within-paragraph repetition a reviewer most wants named once.
+        if len(paras_hit) < PATTERN_MIN:
+            continue
+        shown = collections.Counter(spellings[key]).most_common(1)[0][0]
+        patterns.append({
+            "from": shown[0], "to": shown[1], "count": len(paras_hit),
+            "paragraphs": sorted(set(paras_hit))[:12],
+        })
+    patterns.sort(key=lambda p: (-p["count"], p["from"]))
+    return patterns[:limit]
+
+
 def recurring_changes(paras: list, edited_paras: list, limit: int = 12) -> list:
     """The same change, made over and over — reported once with its count.
 
@@ -3628,56 +3714,17 @@ def recurring_changes(paras: list, edited_paras: list, limit: int = 12) -> list:
     have forty problems; it has one, and a reviewer asked to approve it forty times will
     stop reading by the sixth.
 
-    Deliberately literal and countable: pairs of (what was there, what replaced it) taken
-    from the word diff, normalised only for case-folding of the first letter so that a
-    sentence-initial occurrence groups with the rest. No model is asked to name the
-    pattern — a "pattern" here is a thing that provably happened N times, with the
-    paragraph numbers to check it in, not a description somebody has to trust.
+    Deliberately literal and countable: a "pattern" here is a thing that provably happened
+    N times, with the paragraph numbers to check it in — not a description somebody has to
+    trust. No model is asked to name it.
     """
-    import collections
-    import difflib
-
-    counts: dict = collections.defaultdict(list)
-    spellings: dict = collections.defaultdict(list)
+    observations = []
     for idx, (before, after) in enumerate(zip(paras, edited_paras)):
         after = after or before
         if before == after:
             continue
-        a = re.findall(r"\S+\s*", before)
-        b = re.findall(r"\S+\s*", after)
-        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
-            if tag != "replace":
-                # Only substitutions: a pure insertion or deletion has no "from → to"
-                # shape and lists badly ("added ‘the’ ×40" tells nobody anything).
-                continue
-            old = "".join(a[i1:i2]).strip()
-            new = "".join(b[j1:j2]).strip()
-            if len(old) < PATTERN_MIN_CHARS or len(new) < PATTERN_MIN_CHARS:
-                continue
-            if len(old) > 60 or len(new) > 60:
-                continue          # a rewritten sentence is not a pattern
-            # Grouped case-insensitively on the first letter so a sentence-initial
-            # occurrence counts with the rest — but *displayed* as it was actually
-            # written. The first version grouped and reported the folded form, so
-            # "Fig." came back as "fig.", which is not a change anybody made.
-            key = (old[:1].lower() + old[1:], new[:1].lower() + new[1:])
-            if key[0] == key[1]:
-                continue
-            counts[key].append(idx + 1)
-            spellings[key].append((old, new))
-
-    patterns = []
-    for key, paras_hit in counts.items():
-        if len(paras_hit) < PATTERN_MIN:
-            continue
-        # The spelling this pattern most often had on the page.
-        shown = collections.Counter(spellings[key]).most_common(1)[0][0]
-        patterns.append({
-            "from": shown[0], "to": shown[1], "count": len(paras_hit),
-            "paragraphs": sorted(set(paras_hit))[:12],
-        })
-    patterns.sort(key=lambda p: (-p["count"], p["from"]))
-    return patterns[:limit]
+        observations.extend((idx + 1, old, new) for old, new in change_pairs(before, after))
+    return group_changes(observations, limit=limit)
 
 
 def _chunk_edits(paras, edited_paras, chunk_inds, cap: int = 4) -> list:

@@ -215,6 +215,110 @@ def _options_for(claimed: dict, remote_id: str, name: str = "manuscript.docx") -
 
 
 # ----------------------------------------------------------------------------------
+# Saying what is happening, while it happens
+# ----------------------------------------------------------------------------------
+#
+# A copy edit takes minutes, and for all of them the platform's screen said "With ce4"
+# and nothing else — while this side knew the paragraph number, the change being made and
+# the patterns building up. The same signed channel carries it back, so the editor
+# watches the work on the manuscript they are already looking at.
+#
+# None of it is required for the copy edit. If the platform is unreachable, or refuses
+# the report, the pass runs to the end and the file still goes back — which is why every
+# failure here is logged and swallowed. A progress bar must never be able to fail a job.
+
+#: The floor between two reports for the same job. The chunk pool can finish several
+#: paragraphs a second on a short manuscript; the screen polls far slower than that, so
+#: anything more often is writes nobody reads.
+PROGRESS_EVERY_SECONDS = 3.0
+#: Short on purpose. This call sits in the worker thread between two chunks of real work,
+#: so a platform that has stopped answering must cost seconds, not the two minutes the
+#: file transfers are allowed.
+PROGRESS_TIMEOUT = 8
+
+
+class ProgressReporter:
+    """Per-job throttle and accumulator for what ce4 is doing.
+
+    It carries the patterns as well as the last few edits, because the patterns are the
+    part that is worth interrupting for: "this manuscript writes Fig. everywhere" is
+    knowable at paragraph ten and useful there, not only in the report at the end. They
+    are counted from the diff spans the feed already produced, through the *same*
+    grouping the finished report uses — one implementation, so the running number and the
+    final number cannot disagree.
+    """
+
+    def __init__(self, remote_id: str, clock=time.monotonic) -> None:
+        self.remote_id = str(remote_id)
+        self.clock = clock
+        # None, not 0.0: "never reported" has to be a state of its own, or the first
+        # report of a job is held back for the throttle interval — and the first one is
+        # the one that turns "With ce4" into a moving bar.
+        self.last_sent = None
+        self.observations: list = []
+        self.failures = 0
+
+    def note(self, events) -> None:
+        from editor import pairs_from_spans
+
+        for event in events or []:
+            para = event.get("para") or 0
+            for old, new in pairs_from_spans(event.get("spans")):
+                self.observations.append((para, old, new))
+
+    def due(self) -> bool:
+        return (self.last_sent is None
+                or (self.clock() - self.last_sent) >= PROGRESS_EVERY_SECONDS)
+
+    def send(self, progress: float, stage: str, events, force: bool = False) -> bool:
+        from editor import group_changes
+
+        self.note(events)
+        if not force and not self.due():
+            return False
+        self.last_sent = self.clock()
+        body = json.dumps({
+            "progress": progress,
+            "stage": stage,
+            "events": list(events or [])[-6:],
+            "patterns": group_changes(self.observations),
+        }).encode()
+        path = f"/api/v1/copyedit/bridge/progress/{self.remote_id}/"
+        try:
+            stamp = str(int(time.time()))
+            response = requests.post(
+                base_url() + path, data=body, timeout=PROGRESS_TIMEOUT,
+                headers={"Content-Type": "application/json",
+                         "X-CE4-Timestamp": stamp,
+                         "X-CE4-Signature": _signature("POST", path, stamp, body)})
+        except requests.RequestException as exc:
+            self._failed(f"{type(exc).__name__}: {exc}")
+            return False
+        if response.status_code != 200:
+            self._failed(f"{response.status_code} {response.text[:120]}")
+            return False
+        self.failures = 0
+        return True
+
+    def _failed(self, why: str) -> None:
+        # Said once per job, not once per tick: a platform that is down would otherwise
+        # write a line every three seconds for the length of the manuscript, and bury the
+        # log line that matters.
+        self.failures += 1
+        if self.failures == 1:
+            print(f"[bridge] progress for {self.remote_id} not accepted ({why}); "
+                  f"the pass continues", flush=True)
+
+
+def reporter_for(options: Dict[str, Any]) -> Optional[ProgressReporter]:
+    """A reporter for a job that came from the platform, or None for a local upload."""
+    remote_id = (options or {}).get("mng_job_id")
+    if not remote_id or not configured():
+        return None
+    return ProgressReporter(str(remote_id))
+
+
+# ----------------------------------------------------------------------------------
 # Sending it back
 # ----------------------------------------------------------------------------------
 
