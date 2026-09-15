@@ -72,17 +72,26 @@ nothing — nobody's workflow breaks — but the editorial team never needs to o
 - **The LLM settings stay in ce4.** They are a credential and a cost lever, not an
   editorial choice.
 
-## Order of work
+## Order of work — all five done, 16 Sep 2026
 
-1. `copyedit_options` on the settings registry + on `Journal` (migration, admin screen).
-2. Send form: show the resolved options, allow a per-manuscript override, store on the job.
-3. Bridge: carry them in the claim payload; ce4 reads them with today's values as the
-   fallback. Tests both sides, including a job sent by an older platform.
-4. Loose-file page: `manuscript = null` jobs, upload, download, listing.
-5. A note on ce4's screen saying where the editorial controls now live.
+1. ✅ `copyedit.*` in the settings registry, `Journal.copyedit_options`, and real controls
+   on the journal admin (a "use the house setting" choice per field, so an untouched
+   journal stores nothing and keeps following the house).
+2. ✅ Send form shows "Change how it is copy edited"; what is chosen is resolved and
+   **frozen on the job**, because the settings will move and a returned file has to stay
+   explainable.
+3. ✅ Carried in the claim payload. ce4 keeps its own values for anything absent — the
+   compatibility promise, with its own test on both sides.
+4. ✅ "Send a file": jobs with `manuscript = null`, the bytes on the job row rather than
+   as a `ManuscriptFile` (a file with no manuscript would be a row every manuscript
+   screen has to remember to skip). Manual review works there too, on the same panel.
+5. ✅ A caption on ce4's Style Settings saying what it now applies to.
 
-Steps 1–3 are the ones that change what the team can do; 4 is the one that lets ce4's
-screen be retired for them. 5 is a paragraph.
+Proved on the live systems rather than in tests alone: a manuscript sent with the
+journal's Harvard override reached ce4 as Harvard; a loose `.docx` came back with 32
+tracked insertions and 29 deletions and downloaded from the page that sent it; a loose
+file sent with "Ask me first" stopped, asked on that same page, and returned with all
+nine changes undone.
 
 ## Open question for Amit
 
