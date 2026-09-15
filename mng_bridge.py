@@ -40,6 +40,7 @@ import requests
 
 import auth
 import config
+from editor import HOUSE_RULE_IDS
 
 #: How long to wait between asking the platform whether anything is waiting. The work
 #: itself takes minutes, so polling faster buys nothing and only makes the log noisier.
@@ -191,17 +192,37 @@ def collect_one(remote: dict) -> Optional[int]:
 #: copy-editing return is a report nobody commissioned.
 def _options_for(claimed: dict, remote_id: str, name: str = "manuscript.docx") -> dict:
     variant = (claimed.get("variant") or "british").lower()
+    # What the platform asked for — style, references, spelling, which house rules to
+    # skip. Every one of these used to be decided here and could not be reached from the
+    # platform at all; a law journal running Vancouver numbering was the cost. Anything
+    # the platform does not send keeps the value this side has always used, so an older
+    # platform is unaffected.
+    sent = claimed.get("options") or {}
+    language = str(sent.get("language") or "").strip()
+    if not language or language == "auto":
+        # "Auto" is the platform's way of saying *follow the manuscript*, which this side
+        # spells differently; the journal's own spelling is the fallback, as before.
+        language = "Auto — follow the manuscript" if language == "auto" else (
+            "US English" if variant == "american" else "UK English")
     return {
         # No ce4 account is behind this: the platform is the publisher's own system,
         # not a tenant. `token_cap_for(None)` is already "no limit", which is the right
         # answer — the house's own manuscripts must not be stopped by a per-user quota.
         "user_id": None,
         "filename": name,
-        "edit_style": "Chicago Manual of Style (CMOS)",
+        "edit_style": str(sent.get("edit_style") or "Chicago Manual of Style (CMOS)"),
         # The platform's own reference checker reads against Vancouver and tells authors
-        # so on the public page. The two must not disagree.
-        "ref_style": "Vancouver",
-        "lang_type": "US English" if variant == "american" else "UK English",
+        # so on the public page, so that stays the fallback — but a journal that has said
+        # otherwise is the one that knows.
+        "ref_style": str(sent.get("ref_style") or "Vancouver"),
+        "lang_type": language,
+        "edit_tables": bool(sent.get("edit_tables", True)),
+        "reorder_citations": bool(sent.get("reorder_citations", True)),
+        "use_crossref": bool(sent.get("use_crossref", True)),
+        # The house rules to run: everything except what the platform asked to skip.
+        "enabled_rule_ids": [rule for rule in HOUSE_RULE_IDS
+                             if rule not in set(sent.get("skip_rules") or [])],
+        "custom_rules": str(sent.get("extra_rules") or ""),
         "journals_enabled": False,
         "cover_letter_enabled": False,
         "ai_review_enabled": False,

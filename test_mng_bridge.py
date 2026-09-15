@@ -368,3 +368,69 @@ def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
     importlib.reload(mng_bridge)
 
     assert mng_bridge.secret() == "from-the-environment"
+
+
+# ----------------------------------------------------------------------------------
+# What the platform asks for
+# ----------------------------------------------------------------------------------
+#
+# Stage 3, 16 Sep 2026. Style, references, spelling and the house rules used to be decided
+# here and could not be reached from the platform at all — a law journal running Vancouver
+# numbering was the price. They now travel with the job, and this side keeps its old
+# values for anything the platform does not send, so an older platform is unaffected.
+
+
+def _claim(**options):
+    import mng_bridge
+
+    claimed = {"variant": "british", "manuscript_number": "X-1", "journal_code": "X"}
+    if options:
+        claimed["options"] = options
+    return mng_bridge._options_for(claimed, "remote-1")          # noqa: SLF001
+
+
+def test_the_platforms_choices_are_used():
+    opts = _claim(edit_style="APA", ref_style="Harvard", language="Australian English",
+                  edit_tables=False, reorder_citations=False, use_crossref=False)
+
+    assert opts["edit_style"] == "APA"
+    assert opts["ref_style"] == "Harvard"
+    assert opts["lang_type"] == "Australian English"
+    assert opts["edit_tables"] is False
+    assert opts["reorder_citations"] is False
+    assert opts["use_crossref"] is False
+
+
+def test_a_platform_that_sends_nothing_gets_what_it_always_got():
+    """The whole compatibility promise in one test."""
+    opts = _claim()
+
+    assert opts["edit_style"] == "Chicago Manual of Style (CMOS)"
+    assert opts["ref_style"] == "Vancouver"
+    assert opts["lang_type"] == "UK English"          # from the journal's spelling
+    assert opts["edit_tables"] is True
+    assert opts["use_crossref"] is True
+
+
+def test_auto_spelling_means_follow_the_manuscript():
+    """The platform says "auto"; this side spells it differently and must translate."""
+    opts = _claim(language="auto")
+
+    assert opts["lang_type"].startswith("Auto")
+
+
+def test_skipped_rules_are_removed_and_the_rest_stay():
+    from editor import HOUSE_RULE_IDS
+
+    opts = _claim(skip_rules=["keywords", "abstract"])
+
+    assert "keywords" not in opts["enabled_rule_ids"]
+    assert "abstract" not in opts["enabled_rule_ids"]
+    assert len(opts["enabled_rule_ids"]) == len(HOUSE_RULE_IDS) - 2
+    assert "reference" in opts["enabled_rule_ids"], "the rest are untouched"
+
+
+def test_extra_house_rules_reach_the_pipeline():
+    opts = _claim(extra_rules="Never hyphenate 'coauthor'.")
+
+    assert opts["custom_rules"] == "Never hyphenate 'coauthor'."
