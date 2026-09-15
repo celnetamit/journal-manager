@@ -66,7 +66,11 @@ def _entries(paras: List[str]) -> List[str]:
     start = _references_start(paras)
     if start is None:
         return []
-    return [p for p in paras[start + 1:] if len((p or "").strip()) > 40]
+    # Twenty, matching the guard: the test is only here to keep the heading out, and
+    # at forty an entry the copyedit had shortened dropped out of the census and was
+    # reported as a work that had gone missing. Job #91 ¶211 is thirty-four
+    # characters once its link is deleted, and the work is still there.
+    return [p for p in paras[start + 1:] if len((p or "").strip()) > 20]
 
 
 def reference_census(paras: List[str]) -> "Counter[Tuple[str, str]]":
@@ -117,6 +121,25 @@ def caption_labels(paras: List[str]) -> "Counter[Tuple[str, str]]":
     return found
 
 
+_URL = re.compile(r"https?://\S+|\bwww\.\S+", re.I)
+
+
+def links_lost(before: List[str], after: List[str]) -> List[str]:
+    """Reference entries that arrived with a link and were delivered without one.
+
+    Job #91 ¶211 was delivered as `Unesco.org. 2026. Available from: ` — an entry that
+    still reads like a reference, still says where to look, and no longer says where.
+    Nothing reported it: the work was still listed, so the census was satisfied, and
+    `restore_reference_urls` is a guard in the middle of the chain. A reference the
+    reader cannot follow is a loss whatever the census thinks.
+    """
+    out: List[str] = []
+    for i in range(min(len(before), len(after))):
+        if _URL.search(before[i] or "") and not _URL.search(after[i] or ""):
+            out.append(f"¶{i + 1}: {(after[i] or '').strip()[:80]}")
+    return out
+
+
 def check(path: str) -> Dict[str, object]:
     before, after = paragraphs(path, "original"), paragraphs(path, "edited")
     refs_before, refs_after = reference_census(before), reference_census(after)
@@ -126,6 +149,7 @@ def check(path: str) -> Dict[str, object]:
         "entries": (len(_entries(before)), sum(refs_before.values())),
         "references_lost": sorted((refs_before - refs_after).elements()),
         "references_duplicated": sorted((refs_after - refs_before).elements()),
+        "links_lost": links_lost(before, after),
         "figures_orphaned": orphan_media(path),
         "captions_lost": sorted((caps_before - caps_after).elements()),
     }
@@ -138,8 +162,8 @@ def main(paths: List[str]) -> int:
         readable, counted = r["entries"]
         print(f"=== {path}")
         print(f"  references : {counted} of {readable} entries readable")
-        for key in ("references_lost", "references_duplicated", "figures_orphaned",
-                    "captions_lost"):
+        for key in ("references_lost", "references_duplicated", "links_lost",
+                    "figures_orphaned", "captions_lost"):
             if r[key]:
                 clean = False
                 print(f"  {key:<22}: {r[key]}")

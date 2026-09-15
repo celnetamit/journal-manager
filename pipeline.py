@@ -848,6 +848,27 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     for _q in _final_ref_queries:
         editor_queries = list(editor_queries) + [_q]
 
+    # And the link, for the same reason and in the same place.
+    #
+    # Job #91 ¶211 was delivered as `Unesco.org. 2026. Available from: ` with the
+    # address gone — the identical symptom job #61 had, six days after it was written
+    # down as fixed. The guard for it sits in the middle of the chain, and handed job
+    # #91's own paragraphs it restores the link correctly; the list still has the link
+    # when that guard has finished. Something between there and here takes it off, and
+    # which step that is is not yet known.
+    #
+    # Asking again where nothing can follow both puts the author's link back and says
+    # so: this call is silent unless the link had actually gone by this point, which
+    # is the measurement the middle of the chain cannot make.
+    edited_paragraphs, _final_url_queries = restore_reference_urls(
+        original_paragraphs, edited_paragraphs)
+    for _q in _final_url_queries:
+        editor_queries = list(editor_queries) + [_q]
+    if _final_url_queries:
+        print(f"[job {job_id}] a reference link was missing at the redline and was "
+              f"put back ({len(_final_url_queries)}) — the middle-of-chain guard had "
+              f"already restored it, so a later step removes it", flush=True)
+
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()
     # Unique per-job token so concurrent jobs never overwrite each other's

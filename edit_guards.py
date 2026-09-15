@@ -957,7 +957,15 @@ def verify_reference_block(
     def census(paras: List[str]) -> Dict[Tuple[str, str], int]:
         counts: Dict[Tuple[str, str], int] = {}
         for p in paras:
-            if len((p or "").strip()) <= 40:
+            # Twenty characters, not forty. The length test is only here to keep the
+            # heading and stray blank lines out; an identity already needs a surname
+            # and a year, which no heading has. At forty it did something else as
+            # well: job #91 ¶211 came back as `Unesco.org. 2026. Available from: `
+            # — thirty-four characters — and the entry fell out of the *edited*
+            # census while staying in the original's, so a work that was still on the
+            # page was reported as having gone missing. A guard that loses sight of
+            # an entry because the copyedit shortened it is measuring length.
+            if len((p or "").strip()) <= 20:
                 continue
             ident = _reference_identity(p)
             if ident:
