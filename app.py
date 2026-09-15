@@ -492,6 +492,16 @@ if is_authenticated:
 
         st.divider()
         st.header("🛠️ Style Settings")
+        # 16 Sep 2026: these are no longer the only place the choices live. A manuscript
+        # sent from manuscript-ngine carries its journal's own answers, resolved there;
+        # what is set here applies to work started on this screen. Said out loud because
+        # the opposite assumption — "I changed it in ce4, so the journals changed" — is
+        # the one somebody will make.
+        st.caption(
+            "These apply to manuscripts uploaded here. Work that arrives from "
+            "manuscript-ngine carries its own journal's settings, chosen there under "
+            "Settings → Copy editing and on each journal."
+        )
         edit_style = st.selectbox(
             "Copyediting Style",
             ["Chicago Manual of Style (CMOS)", "APA", "MLA", "IEEE"],
