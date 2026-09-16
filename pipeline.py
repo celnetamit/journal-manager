@@ -41,6 +41,7 @@ from edit_guards import (
     _references_start,
     fix_trailing_citations,
     follow_the_author_on_invisible_twins,
+    keep_every_equation,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
     preserve_author_hyphenation,
@@ -75,6 +76,7 @@ from editor import (
     enforce_reference_year_only,
     enforce_temperature_spacing,
     fetch_crossref_record,
+    for_display,
     generate_ai_review,
     generate_cover_letter,
     generate_redline_docx,
@@ -273,7 +275,8 @@ def review_gate(job_id, originals, edited, progress=None, *,
         "seconds_left": int(idle_seconds),
         "paragraphs": [
             {"index": i, "para": i + 1,
-             "spans": word_spans(originals[i], edited[i], limit=REVIEW_TEXT_LIMIT)}
+             "spans": word_spans(for_display(originals[i]), for_display(edited[i]),
+                                 limit=REVIEW_TEXT_LIMIT)}
             for i in changed
         ],
     }
@@ -655,6 +658,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # line that lost its day and month, an algorithm step that lost its number. Each
     # restoration raises its own query: a guard that quietly overrules the copyedit is
     # the same failure as a copyedit that quietly overrules the author.
+    # First of the guards, so everything after it is comparing the author's paragraph
+    # with an edit of that paragraph rather than with a sentence the copyedit invented
+    # around a missing equation.
+    edited_paragraphs, _equation_queries = keep_every_equation(
+        original_paragraphs, edited_paragraphs)
+    guard_queries += _equation_queries
+
     edited_paragraphs, _protected_queries = restore_protected_text(
         original_paragraphs, edited_paragraphs)
     guard_queries += _protected_queries

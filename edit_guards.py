@@ -1222,3 +1222,42 @@ def undo_broken_subscripts(
         if was and was == fixed:
             queries[-1]["query"] += " (This is the author's own text, put back.)"
     return out, queries
+
+
+#: The stand-in for an equation or embedded object — U+FFFC, kept in step with
+#: `editor.OBJECT_PLACEHOLDER`. Defined here as well rather than imported, because
+#: `editor` imports `docx` and these guards are meant to run without it.
+OBJECT_PLACEHOLDER = "￼"
+
+
+def keep_every_equation(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Every equation the author wrote is still in the paragraph it was written in.
+
+    The placeholder is a character like any other by the time the copyedit sees it, so
+    a model is free to drop it, double it, or replace it with its own idea of what the
+    equation said. Job #100 is what that costs: `K_IC ≈ 0.7 MPa·m^1/2` and `a = 50 nm`
+    became `K_Ic` and `a`, and neither value appears anywhere in the returned file.
+
+    Where the count no longer matches, the author's paragraph is restored whole. A
+    partial repair would need to know where the missing equation belonged, and a
+    sentence built around an equation is not a sentence that survives a guess.
+    """
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i in range(min(len(original), len(edited))):
+        was, now = original[i] or "", out[i] or ""
+        expected = was.count(OBJECT_PLACEHOLDER)
+        if not expected or now.count(OBJECT_PLACEHOLDER) == expected:
+            continue
+        out[i] = was
+        queries.append({
+            "index": i,
+            "snippet": was.replace(OBJECT_PLACEHOLDER, "[equation]")[:200],
+            "query": ("This paragraph contains an equation, and the copyedit did not "
+                      "return it intact. The author's paragraph has been kept as it "
+                      "was — please edit it by hand around the equation."),
+            "suggestion": None,
+        })
+    return out, queries

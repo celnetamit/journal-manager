@@ -31,6 +31,10 @@ import hyperlinks as _hyperlinks
 import orcid as _orcid
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.text.run import Run
+
+#: `xml:space`, so a run that ends in a space keeps it when the paragraph is rebuilt.
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 import numpy as np
 import requests
 
@@ -476,6 +480,57 @@ Input JSON dictionary (Key = Index, Value = Paragraph Text):
 _SUPERSCRIPT_CITATION = re.compile(r"^[\s,;]*\d{1,3}(?:\s*[,;–—-]\s*\d{1,3})*[\s,;.]*$")
 
 
+#: Word writes an equation as OMML, which is not a run and carries no `w:t`. Nothing
+#: that reads a paragraph as text can see it — `python-docx`'s `Paragraph.text` walks
+#: the direct `w:r` children and steps straight over it.
+_MATH_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+_MATH_TAGS = (_MATH_NS + "oMath", _MATH_NS + "oMathPara")
+
+#: U+FFFC OBJECT REPLACEMENT CHARACTER — the character Unicode defines for exactly this
+#: job: an object that is present but is not text. One of these stands in for each
+#: equation from the moment the manuscript is read until the redline is written.
+#:
+#: Job #100 is why. The author wrote `where [K_IC ≈ 0.7 MPa·m^1/2] is the fracture
+#: toughness of silica, [Y] is a geometric factor … and [a = 50 nm] is the
+#: characteristic flaw size`, with each bracket an equation object. The copyedit was
+#: handed `where ⎵ is the fracture toughness of silica, ⎵ is a geometric factor …` and
+#: filled the gaps with its own guesses — `K_Ic`, `Y`, `a` — while the rewrite dropped
+#: the equations themselves. `0.7 MPa` and `50 nm` are nowhere in that redline.
+OBJECT_PLACEHOLDER = "￼"
+
+
+def for_display(text: str) -> str:
+    """Text fit for anything that is not the Word file: the report, the JATS, the
+    live view. The placeholder does its work between the reader and the writer and
+    has no business being seen — `[equation]` says what is actually there."""
+    return (text or "").replace(OBJECT_PLACEHOLDER, "[equation]")
+
+
+def _paragraph_pieces(p):
+    """The paragraph's direct children that carry text or an equation, in order.
+
+    Deliberately the same set `Paragraph.text` walks — direct `w:r` children — plus the
+    equations it ignores, so a character offset into the rendered string still maps back
+    to the run it came from.
+    """
+    for child in p._p:
+        if child.tag == qn("w:r"):
+            yield "run", Run(child, p)
+        elif child.tag in _MATH_TAGS:
+            yield "object", child
+
+
+def paragraph_objects(p) -> list:
+    """Every equation in the paragraph, in document order."""
+    return [el for kind, el in _paragraph_pieces(p) if kind == "object"]
+
+
+def paragraph_text_with_objects(p) -> str:
+    """`p.text`, with a placeholder standing where each equation is."""
+    return "".join(el.text or "" if kind == "run" else OBJECT_PLACEHOLDER
+                   for kind, el in _paragraph_pieces(p))
+
+
 def _render_superscripts(p) -> str:
     """A paragraph's text, with superscript citation markers written as `[45, 48]`.
 
@@ -491,10 +546,18 @@ def _render_superscripts(p) -> str:
     before it is a letter or sentence punctuation — never a digit, and never inside the
     front matter, where superscript numbers are affiliation markers.
     """
-    runs = list(p.runs)
+    # Runs and equations together, in order: an equation contributes its placeholder
+    # and can never be a citation, so it simply breaks a group of superscript runs —
+    # which is right, because a citation does not continue across one.
+    pieces = list(_paragraph_pieces(p))
+    runs = [el if kind == "run" else None for kind, el in pieces]
     out: List[str] = []
     i = 0
     while i < len(runs):
+        if runs[i] is None:
+            out.append(OBJECT_PLACEHOLDER)
+            i += 1
+            continue
         text = runs[i].text or ""
         if not (runs[i].font.superscript and text.strip()
                 and _SUPERSCRIPT_CITATION.match(text)):
@@ -508,7 +571,7 @@ def _render_superscripts(p) -> str:
         # markers nested inside each other and a reference list nobody could follow.
         # Consecutive superscript number runs are therefore one citation.
         group, j = [], i
-        while (j < len(runs) and runs[j].font.superscript
+        while (j < len(runs) and runs[j] is not None and runs[j].font.superscript
                and (runs[j].text or "").strip()
                and _SUPERSCRIPT_CITATION.match(runs[j].text or "")):
             group.append(runs[j].text or "")
@@ -531,7 +594,9 @@ def _render_superscripts(p) -> str:
 def read_docx(file_path: str) -> List[str]:
     doc = docx.Document(file_path)
     paras = list(doc.paragraphs)
-    plain = [p.text for p in paras]
+    # `paragraph_text_with_objects`, not `p.text`, so an equation is a character the
+    # copyedit can see rather than a hole it feels obliged to fill.
+    plain = [paragraph_text_with_objects(p) for p in paras]
     # Superscript numbers before the abstract are affiliation markers — "Susan Kumar2"
     # is not a citation of reference 2 — so conversion starts after the front matter.
     start = _front_matter_end(plain)
@@ -1378,6 +1443,7 @@ EDIT CONSERVATIVELY — this is the most important rule:
 - PRESERVE the author's original wording, phrasing, sentence structure, and voice wherever the text is already correct. Do NOT rewrite, rephrase, reorder, or "improve" sentences for style, flow, or conciseness.
 - If a sentence is awkward but grammatically correct and unambiguous, leave it unchanged.
 - When a fix is needed, change only the specific words that are wrong; keep the rest of the sentence intact.
+- The character  ￼  stands for an equation or an embedded object that is already in the manuscript. Keep it EXACTLY where it is, once for each one, and never write anything in its place: it is not a gap, it is not a typo, and the thing it stands for carries its own symbols and values (e.g. "where ￼ is the fracture toughness of silica" is a complete sentence). Do not describe it, do not guess what it contains, do not add or remove one.
 - NEVER delete a citation, an author name, or a sentence's grammatical subject. If a sentence begins with an author-date citation followed by a numeric marker (e.g. "Hasan et al. (2025) [1] ..."), KEEP BOTH the author-date AND the [n] marker exactly — they are not duplicates. Never remove the "Author et al. (Year)" part and never leave a sentence starting with a bare "[1] ..." that has no subject. To make a fragment like "Smith et al. (2020) [3] Offering an example." grammatical, change only the verb ("Offering" -> "offered"), keeping the author-date subject: "Smith et al. (2020) [3] offered an example."
 
 {house_rules}
@@ -1721,12 +1787,18 @@ def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
         return tc_id
 
     # The formatting of every character, captured before the paragraph is cleared.
-    # `p.text` is the concatenation of the direct `w:r` children, so a character
-    # offset maps straight back to the run it came from.
+    # `orig` is the concatenation of the direct `w:r` children with one placeholder per
+    # equation, so a character offset maps straight back to the piece it came from — and
+    # an equation's placeholder carries no formatting of its own, which is what puts it
+    # in a run by itself and makes it findable again afterwards.
     char_rpr = []
-    for run in p.runs:
-        rpr = run._r.find(qn("w:rPr"))
-        char_rpr.extend([rpr] * len(run.text or ""))
+    equations = []
+    for kind, el in _paragraph_pieces(p):
+        if kind == "run":
+            char_rpr.extend([el._r.find(qn("w:rPr"))] * len(el.text or ""))
+        else:
+            char_rpr.append(None)
+            equations.append(el)
 
     # Anything in this paragraph that is not text has to be carried across the clear()
     # by hand, because `Paragraph.clear()` removes every child element — including the
@@ -1811,7 +1883,73 @@ def _mark_up_paragraph(p, orig: str, edited: str, tc_id: int) -> int:
             tc_id += 1
 
     _reattach_graphics(p, graphics)
+    _restore_equations(p, equations)
     return tc_id
+
+
+def _restore_equations(p, equations: list) -> None:
+    """Put each equation back where its placeholder ended up, and take the
+    placeholder out.
+
+    Position is exact rather than approximate — unlike a figure, an inline equation is
+    *in* the sentence (`where [K_IC ≈ 0.7 MPa·m^1/2] is the fracture toughness`), and
+    "somewhere at the end of the paragraph" would be a different sentence.
+
+    An equation is never left out, even if the copyedit deleted its placeholder: it is
+    the author's own notation and its loss is silent, so the one safe reading of a
+    missing placeholder is that something went wrong upstream.
+    """
+    if not equations:
+        return
+    pending = list(equations)
+    for run in list(p._p.iter(qn("w:r"))):
+        if not pending:
+            break
+        node = run.find(qn("w:t"))
+        if node is None:
+            node = run.find(qn("w:delText"))
+        if node is None or OBJECT_PLACEHOLDER not in (node.text or ""):
+            continue
+        parts = (node.text or "").split(OBJECT_PLACEHOLDER)
+        wrapper = run
+        while (wrapper.getparent() is not None
+               and wrapper.getparent() is not p._p):
+            wrapper = wrapper.getparent()
+        if wrapper is not run:
+            # The placeholder came back inside a `w:ins` or `w:del`, where OMML is not
+            # allowed. The equation goes immediately after the whole revision — the
+            # nearest legal position, and never nowhere.
+            after = wrapper
+            for _ in range(len(parts) - 1):
+                if not pending:
+                    break
+                el = pending.pop(0)
+                after.addnext(el)
+                after = el
+            node.text = "".join(parts)
+            continue
+        # The ordinary case: one run of unchanged text carrying the placeholders.
+        # It is split so each equation lands exactly where it was written, which for
+        # an inline equation is the difference between the author's sentence and a
+        # different one.
+        at = list(p._p).index(run)
+        rebuilt = []
+        for i, part in enumerate(parts):
+            if i and pending:
+                rebuilt.append(pending.pop(0))
+            if part:
+                clone = copy.deepcopy(run)
+                clone_text = clone.find(qn("w:t"))
+                clone_text.text = part
+                clone_text.set(_XML_SPACE, "preserve")
+                rebuilt.append(clone)
+        for el in rebuilt:
+            p._p.insert(at, el)
+            at += 1
+        p._p.remove(run)
+    # Whatever is left had no placeholder to land on. It still belongs to the author.
+    for el in pending:
+        p._p.append(el)
 
 
 #: Run-level content that carries a picture or an embedded object. `w:drawing` is the
@@ -1951,7 +2089,7 @@ def generate_redline_docx(
     strip_heading_numbering(doc)
 
     for p, edited in zip(doc.paragraphs, edited_paragraphs):
-        tc_id = _mark_up_paragraph(p, p.text, edited, tc_id)
+        tc_id = _mark_up_paragraph(p, paragraph_text_with_objects(p), edited, tc_id)
 
     # Table cells, addressed rather than zipped. They are not in `doc.paragraphs`, so
     # the body list above keeps exactly the meaning it always had and an edit here
@@ -1968,7 +2106,8 @@ def generate_redline_docx(
             # Skipped rather than raised: losing the whole redline over one cell is
             # the worse outcome, and writing into a neighbour is worse still.
             continue
-        tc_id = _mark_up_paragraph(para, para.text, edited, tc_id)
+        tc_id = _mark_up_paragraph(para, paragraph_text_with_objects(para), edited,
+                                   tc_id)
 
     # Anchor editor queries as native Word comments on their paragraphs. Done
     # after the edit loop so it covers both changed and unchanged paragraphs.
@@ -3396,7 +3535,9 @@ def build_jats_xml(
     adds article DOI, pub-date, copyright/license permissions, and funding.
     ElementTree escapes all special characters automatically."""
     metadata = metadata or {}
-    nonblank = [p.strip() for p in (paragraphs or []) if p and p.strip()]
+    # An equation's placeholder is a working character, not content: JATS is read by
+    # typesetters and indexers, and a stray U+FFFC in a <p> is a defect in the file.
+    nonblank = [for_display(p).strip() for p in (paragraphs or []) if p and p.strip()]
 
     article_title = title
     rest = nonblank
