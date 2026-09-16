@@ -43,6 +43,7 @@ from edit_guards import (
     follow_the_author_on_invisible_twins,
     keep_closed_compounds,
     keep_every_equation,
+    keep_subscript_markers,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
     preserve_author_hyphenation,
@@ -686,6 +687,12 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _compound_queries = keep_closed_compounds(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_compound_queries)
+
+    # After the science passes, so a subscript this pipeline legitimately converted to
+    # `H₂O` is not read as a marker that went missing.
+    edited_paragraphs, _marker_queries = keep_subscript_markers(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_marker_queries)
 
     # Body and table cells in ONE call, deliberately. The rule renders a superscript
     # only where the document gives evidence for it, and that evidence is document-wide:

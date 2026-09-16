@@ -1483,3 +1483,66 @@ def refuse_invented_expansions(
             "suggestion": None,
         })
     return out, queries
+
+
+#: A symbol the author marked with a subscript or superscript: `G_IC`, `G_(IC,healed)`,
+#: `m^1/2`. In a plain-text pipeline the marker is the only thing carrying that
+#: information, so removing it is not a tidy-up — it is the difference between
+#: *G*ᵢᴄ and a three-letter symbol called GIC.
+#: No `/` in the tail: `G_IC,healed/G_IC,pristine` is two symbols with a solidus
+#: between them, and a pattern that swallows the slash restores the first and leaves
+#: the second flattened — which is how this was caught.
+#: The bracket is matched as a pair or not at all. Optional on each side, the tail of
+#: `(G_IC,healed/G_IC,pristine)` matches as `G_IC,pristine)` — and putting that back
+#: writes a closing bracket the sentence already had.
+_MARKED_SYMBOL = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9]*[_^](?:\([A-Za-z0-9,.\-]+\)|[A-Za-z0-9,.\-]+)")
+
+
+def _flattened(symbol: str) -> str:
+    return re.sub(r"[_^()]", "", symbol)
+
+
+def keep_subscript_markers(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A subscript the author marked stays marked.
+
+    Job #104 returned `(G_IC,healed/G_IC,pristine)` as `(GIC,healed/GIC,pristine)` and
+    `(G_(IC,healed))` as `(GIC,healed)`. It reads like tidying and it is not: the
+    underscore is what says the letters are a subscript, and a typesetter given `GIC`
+    has no way back to *G*ᴵᶜ.
+
+    Unicode has no subscript `I` or `C`, so this cannot be fixed by converting it the
+    way `H₂O` is converted — the same wall the half-sized `₀.₀₁Hz` ran into. The
+    author's own notation is kept and the query asks for Word's subscript formatting,
+    which is the only thing that can actually carry it.
+    """
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i in range(min(len(original), len(edited))):
+        was, now = original[i] or "", out[i] or ""
+        if not was or was == now or ("_" not in was and "^" not in was):
+            continue
+        restored: List[str] = []
+        for symbol in dict.fromkeys(_MARKED_SYMBOL.findall(was)):
+            if symbol in now:
+                continue                      # the copyedit kept the marker
+            flat = _flattened(symbol)
+            if len(flat) < 3 or flat == symbol or flat not in now:
+                continue
+            now = now.replace(flat, symbol)
+            restored.append(symbol)
+        if restored:
+            out[i] = now
+            names = ", ".join(f"`{s}`" for s in restored)
+            queries.append({
+                "index": i,
+                "snippet": now[:200],
+                "query": (f"The copyedit removed the subscript marker from {names}. "
+                          f"The author's notation has been kept — please set the "
+                          f"subscript with Word's own formatting, which is the only "
+                          f"thing that can carry it."),
+                "suggestion": None,
+            })
+    return out, queries

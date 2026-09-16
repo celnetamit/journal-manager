@@ -972,3 +972,32 @@ def test_the_author_s_own_numbering_style_is_kept():
     edited = [original[0], "Blaiszik B. Microcapsules. Polymer. 2009."]
     out, _ = G.restore_reference_numbering(original, list(edited))
     assert out[1].startswith("3. ") and not out[1].startswith("[")
+
+
+# --- the subscript marker (job #104) -----------------------------------------
+
+def test_a_subscript_marker_the_author_wrote_is_kept():
+    """#104: `(G_IC,healed/G_IC,pristine)` came back as `(GIC,healed/GIC,pristine)`.
+    The underscore is what says the letters are a subscript; `GIC` is a different
+    symbol, and a typesetter given it has no way back."""
+    original = ["the percentage of recovery (G_IC,healed/G_IC,pristine) to identify"]
+    edited = ["the percentage of recovery (GIC,healed/GIC,pristine) to identify"]
+    out, queries = G.keep_subscript_markers(original, edited)
+    assert out == original
+    assert len(queries) == 1 and "Word's own formatting" in queries[0]["query"]
+
+
+def test_a_bracketed_subscript_keeps_its_brackets_and_no_others():
+    """The bracket is restored as a pair or not at all — matched loosely, the tail of
+    the pair puts back a closing bracket the sentence already had."""
+    original = ["after healing (G_(IC,healed)) and before damage (G_(IC,pristine))."]
+    edited = ["after healing (GIC,healed) and before damage (GIC,pristine)."]
+    out, _ = G.keep_subscript_markers(original, edited)
+    assert out == original
+    assert out[0].count("(") == out[0].count(")")
+
+
+def test_a_symbol_the_copyedit_left_alone_raises_nothing():
+    paras = ["the value of K_IC was measured."]
+    out, queries = G.keep_subscript_markers(paras, list(paras))
+    assert out == paras and queries == []

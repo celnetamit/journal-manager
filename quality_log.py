@@ -171,6 +171,22 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="`(G_IC,healed/G_IC,pristine)` came back as "
+                   "`(GIC,healed/GIC,pristine)`, and `(G_(IC,healed))` as "
+                   "`(GIC,healed)`.",
+        found_in="job #104",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.keep_subscript_markers",
+        proved_by="test_edit_guards.py::"
+                  "test_a_subscript_marker_the_author_wrote_is_kept",
+        now="The underscore is what says those letters are a subscript, and in a "
+            "plain-text pipeline it is the only thing carrying it — `GIC` is a "
+            "different symbol and a typesetter given it has no way back. Unicode has "
+            "no subscript `I` or `C`, so this cannot be converted the way `H₂O` is: "
+            "the author's notation is kept and the query asks for Word's own subscript "
+            "formatting.",
+    ),
+    Lesson(
         went_wrong="The copyedit wrote its own definition for `EDBEA` — "
                    "`N,N'-bis(2-aminoethyl)-1,3-benzenedicarboxamide` — which is a "
                    "different molecule from the author's "
