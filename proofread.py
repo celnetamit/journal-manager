@@ -80,6 +80,18 @@ class ProofFinding:
     fragment: str = ""
     suggestion: Optional[str] = None
 
+    #: Rules only the author can settle. Everything else here is a house-style or
+    #: production point the team resolves without troubling them — the split the
+    #: quality team asked for on 16 Sep, so an author's copy carries the questions
+    #: they are the one to answer and not the ones about our own conventions.
+    AUTHOR_RULES = frozenset({
+        "reference.duplicate",          # two entries for one work: which is meant
+        "punctuation.unbalanced",       # a bracket that never closes: what was intended
+        "acronym.used_before_definition",
+        "acronym.defined_twice",
+        "proofread.llm",                # the reading pass: meaning, not style
+    })
+
     def as_query(self) -> Dict[str, Any]:
         """The shape `generate_redline_docx` and `generate_report` already accept.
 
@@ -99,6 +111,7 @@ class ProofFinding:
             "snippet": self.fragment,
             "query": self.message,
             "suggestion": self.suggestion,
+            "audience": ("author" if self.rule in self.AUTHOR_RULES else "internal"),
         }
 
 

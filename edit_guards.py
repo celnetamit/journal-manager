@@ -1431,7 +1431,8 @@ def keep_closed_compounds(
                 "query": (f"The copyedit split {terms} into two words. The author "
                           f"writes it closed throughout, so it has been kept closed — "
                           f"please open it only if it is genuinely a slip."),
-                "suggestion": None,
+                "audience": "author",
+            "suggestion": None,
             })
     return out, queries
 
@@ -1540,7 +1541,8 @@ def refuse_invented_expansions(
                           f"not define it anywhere, so nothing in the file confirms "
                           f"the expansion is the right one — please check it against "
                           f"the author's field before accepting."),
-                "suggestion": None,
+                "audience": "author",
+            "suggestion": None,
             })
         if not refused:
             continue
@@ -1557,6 +1559,7 @@ def refuse_invented_expansions(
                       f"locant in front of the short form. It has been removed rather "
                       f"than corrected: after its first use the short form stands "
                       f"alone, and where {names} is defined is the author's decision."),
+            "audience": "author",
             "suggestion": None,
         })
     return out, queries
@@ -1716,6 +1719,7 @@ def keep_caption_values(
                       f"figure shows, so the author's have been put back — if the "
                       f"caption really does disagree with the text, that is a question "
                       f"for the author and the artwork, not a copyedit."),
+            "audience": "author",
             "suggestion": None,
         })
     return out, queries

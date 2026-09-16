@@ -1003,6 +1003,25 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         table_edits=table_edits,
     )
 
+    # The same manuscript and the same tracked changes, with only the questions the
+    # author is the one to answer — and every insertion highlighted, so the changes
+    # are visible whether or not they know where Word keeps the review pane.
+    #
+    # The quality team's own request, 16 Sep: they can read a redline carrying every
+    # guard note and every house-style point; an author opening the same file cannot.
+    # The decision stays theirs either way: a tracked change is accepted or rejected
+    # in Word, and nothing here changes that.
+    author_redline_path = out_dir / f"user_{user_id}_{ts}_author.docx"
+    try:
+        generate_redline_docx(
+            input_path, edited_paragraphs, str(author_redline_path),
+            queries=editor_queries, table_edits=table_edits, audience="author",
+        )
+    except Exception as _author_exc:                             # noqa: BLE001
+        author_redline_path = ""
+        warnings.append(f"The author's copy could not be written: "
+                        f"{skip_reason(_author_exc)}")
+
     progress(0.74, "Generating editorial report...")
     report = generate_report(
         edit_style, ref_style, lang_type, use_crossref, custom_dict,
@@ -1089,6 +1108,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         # report one; that must render as "not reported", never as zero.
         "usage": meter.snapshot(),
         "redline_path": str(redline_path),
+        "author_redline_path": str(author_redline_path),
         "journal_report_path": str(journal_report_path),
         "review_report_path": str(review_report_path),
         "ai_review_path": str(ai_review_path) if ai_review_path else "",

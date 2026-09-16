@@ -868,7 +868,11 @@ def _render_downloads(result: dict, kp: str) -> None:
     """
     stem = _safe_stem(result.get("filename", ""))
     downloads = [
-        ("redline_path", "📝 Redline Manuscript", f"{stem}_redline.docx", _DOCX_MIME, "primary"),
+        ("redline_path", "📝 Redline — internal", f"{stem}_redline.docx", _DOCX_MIME, "primary"),
+        # The same manuscript and the same tracked changes, carrying only the queries
+        # the author is the one to answer, with the changes highlighted.
+        ("author_redline_path", "✉️ Redline — for the author",
+         f"{stem}_for_author.docx", _DOCX_MIME, "primary"),
         ("review_report_path", "📑 Review Report", f"{stem}_editorial_report.docx", _DOCX_MIME, "secondary"),
         ("ai_review_path", "🧑‍⚖️ AI Peer Review", f"{stem}_ai_peer_review.docx", _DOCX_MIME, "secondary"),
         ("journal_report_path", "📚 Journal Recommendations", f"{stem}_journal_recommendations.docx", _DOCX_MIME, "secondary"),

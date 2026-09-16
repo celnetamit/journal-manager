@@ -173,8 +173,17 @@ def test_findings_convert_to_the_query_shape_the_redline_expects():
     q = f.as_query()
     # `index`, not `local_index`: both `generate_redline_docx` and `generate_report`
     # read `q["index"]`, and the wrong key makes the finding vanish without an error.
-    assert set(q) == {"index", "snippet", "query", "suggestion"}
+    assert set(q) == {"index", "snippet", "query", "suggestion", "audience"}
     assert q["index"] == 0
+    # Who the finding is for. A double space is the team's to fix; it is not a
+    # question anyone would put to an author.
+    assert q["audience"] == "internal"
+
+
+def test_a_finding_only_the_author_can_settle_is_marked_for_them():
+    """Two entries for one work: which one is meant is not a house-style decision."""
+    f = P.ProofFinding("reference.duplicate", "error", 3, "two entries for one work")
+    assert f.as_query()["audience"] == "author"
 
 
 # --- House panel: routine vs notable findings ---------------------------------

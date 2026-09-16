@@ -2083,10 +2083,55 @@ def _query_marker_kind(text: str) -> Tuple[str, Tuple[int, int, int]]:
     return "", (0, 0, 0)
 
 
+#: Who a query is for. A note that a guard put the author's caption values back is
+#: the production team's business; whether the caption or the body is the typo is the
+#: author's, and only they can answer it.
+#:
+#: Amit, 16 Sep 2026, relaying the quality team: the redline carries everything now,
+#: "team toh samajh rahi hai but unka kahna hai ki authors ke liye ye confusing ya
+#: tough ho jayega itna padhna". Two files, one manuscript, the same tracked changes —
+#: the author's copy carries only the questions they are the one to answer.
+AUTHOR = "author"
+INTERNAL = "internal"
+
+
+def _for_audience(queries, audience: Optional[str]):
+    if audience != AUTHOR:
+        return queries or []
+    return [q for q in (queries or []) if q.get("audience") == AUTHOR]
+
+
+#: Highlight on the author's copy. Tracked changes are already the mechanism that
+#: leaves the decision with them — every insertion and deletion is theirs to accept or
+#: reject in Word — but a manuscript read with markup off looks untouched, and the
+#: team's point is that an author should be able to *see* what was done without
+#: knowing where Word hides the review pane.
+_HIGHLIGHT = "yellow"
+
+
+def _highlight_insertions(doc) -> int:
+    """Mark every inserted run, so the changes are visible however the file is opened."""
+    marked = 0
+    for ins in doc.element.body.iter(qn("w:ins")):
+        for run in ins.iter(qn("w:r")):
+            rPr = run.find(qn("w:rPr"))
+            if rPr is None:
+                rPr = OxmlElement("w:rPr")
+                run.insert(0, rPr)
+            if rPr.find(qn("w:highlight")) is not None:
+                continue
+            h = OxmlElement("w:highlight")
+            h.set(qn("w:val"), _HIGHLIGHT)
+            rPr.append(h)
+            marked += 1
+    return marked
+
+
 def generate_redline_docx(
     original_path: str, edited_paragraphs: List[str], output_path: str,
     queries: Optional[List[Dict[str, Any]]] = None,
     table_edits: Optional[Dict[TableAddress, str]] = None,
+    audience: Optional[str] = None,
 ) -> None:
     doc = docx.Document(original_path)
     tc_id = 1
@@ -2120,6 +2165,7 @@ def generate_redline_docx(
 
     # Anchor editor queries as native Word comments on their paragraphs. Done
     # after the edit loop so it covers both changed and unchanged paragraphs.
+    queries = _for_audience(queries, audience)
     if queries:
         query_map: Dict[int, List[str]] = {}
         for q in queries:
@@ -2178,6 +2224,9 @@ def generate_redline_docx(
         # Loud on stderr, though — a link failure that leaves no trace is how this
         # would quietly stop working for every manuscript and nobody would know.
         print(f"redline: hyperlinking failed, links omitted: {exc!r}", file=_sys.stderr)
+
+    if audience == AUTHOR:
+        _highlight_insertions(doc)
 
     doc.save(output_path)
 

@@ -144,5 +144,7 @@ def missing_tokens(
                           f"meant to go — a unit, a subscript or a formula that "
                           f"disappears is rarely an improvement."),
                 "suggestion": None,
+                # Only the author knows whether a value was meant to go.
+                "audience": "author",
             })
     return queries
