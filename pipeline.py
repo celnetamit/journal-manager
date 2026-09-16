@@ -46,6 +46,7 @@ from edit_guards import (
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
     preserve_author_hyphenation,
+    refuse_invented_expansions,
     restore_front_matter_names,
     restore_protected_text,
     restore_reference_numbering,
@@ -737,6 +738,12 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         except Exception as fill_exc:                            # noqa: BLE001
             warnings.append(f"Reference completion was skipped: {skip_reason(fill_exc)}")
 
+    # Before the first-use rule, not after: that rule moves the author's own expansion
+    # about, and it should never be handed one the author did not write.
+    edited_paragraphs, _invented_queries = refuse_invented_expansions(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_invented_queries)
+
     edited_paragraphs, _abbr_queries = enforce_abbreviation_first_use(
         original_paragraphs, edited_paragraphs)
     for _q in _abbr_queries:
@@ -938,6 +945,15 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     for _q in _final_url_queries:
         editor_queries = list(editor_queries) + [_q]
     reference_trace["links_missing_at_redline"] = len(_final_url_queries)
+
+    # And the entry number, last of the three and for exactly the same reason. The
+    # middle-of-chain call runs before Crossref completion rewrites an entry, and job
+    # #104 delivered 12 of 21 entries unnumbered — every one of them an entry Crossref
+    # had filled out. Silent on a list that still has its numbers.
+    edited_paragraphs, _final_num_queries = restore_reference_numbering(
+        original_paragraphs, edited_paragraphs)
+    for _q in _final_num_queries:
+        editor_queries = list(editor_queries) + [_q]
     if _final_url_queries:
         print(f"[job {job_id}] a reference link was missing at the redline and was "
               f"put back ({len(_final_url_queries)}) — the middle-of-chain guard had "

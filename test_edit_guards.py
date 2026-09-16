@@ -898,3 +898,77 @@ def test_a_word_the_copyedit_kept_closed_raises_nothing():
     paras = ["The microcapsule shell is thin."]
     out, queries = G.keep_closed_compounds(paras, list(paras))
     assert out == paras and queries == []
+
+
+# --- a chemist's definition, and an invented one (job #104) ------------------
+
+def test_a_chemical_name_with_digits_and_brackets_is_learned():
+    """`2,2′-(ethylenedioxy)bis(ethylamine)` cannot match the ordinary definition
+    pattern at all — digits, primes and brackets inside the name — so EDBEA was never
+    learned and nothing could tell the copyedit it was already defined."""
+    learned = G.learn_abbreviations(
+        ["provided by 2,2′-(ethylenedioxy)bis(ethylamine) (EDBEA) with a rate"])
+    assert learned == {"EDBEA": "2,2′-(ethylenedioxy)bis(ethylamine)"}
+
+
+def test_the_clause_introducing_the_name_is_not_part_of_it():
+    learned = G.learn_abbreviations(
+        ["provided by 2,2′-(ethylenedioxy)bis(ethylamine) (EDBEA) with a rate"])
+    assert not learned["EDBEA"].startswith("provided")
+
+
+def test_ordinary_prose_is_not_read_as_a_chemical_name():
+    """In a long enough phrase any few letters appear in order, so the widened rule
+    is kept to names that are shaped like chemistry."""
+    assert G.learn_abbreviations(["the results of the experiment (TRE) were clear"]) == {}
+
+
+def test_an_expansion_the_author_never_wrote_is_refused():
+    """#104: the author's EDBEA is `2,2′-(ethylenedioxy)bis(ethylamine)`. The copyedit
+    wrote `N,N'-bis(2-aminoethyl)-1,3-benzenedicarboxamide (EDBEA)` — a different
+    molecule, in the author's voice."""
+    original = [
+        "Transesterification is provided by 2,2′-(ethylenedioxy)bis(ethylamine) "
+        "(EDBEA) with a rate constant.",
+        "The cross-linkers DTDA and EDBEA in a 1:1 molar ratio were used.",
+    ]
+    edited = list(original)
+    edited[1] = ("The cross-linkers DTDA and N,N'-bis(2-aminoethyl)-1,3-"
+                 "benzenedicarboxamide (EDBEA) in a 1:1 molar ratio were used.")
+    out, queries = G.refuse_invented_expansions(original, edited)
+    assert "benzenedicarboxamide" not in out[1]
+    assert "DTDA and EDBEA in a 1:1" in out[1], out[1]
+    assert len(queries) == 1 and "EDBEA" in queries[0]["query"]
+
+
+def test_the_author_s_own_expansion_is_not_refused():
+    original = ["We used 2,2′-(ethylenedioxy)bis(ethylamine) (EDBEA) here.",
+                "EDBEA was added slowly."]
+    edited = [original[0],
+              "2,2′-(ethylenedioxy)bis(ethylamine) (EDBEA) was added slowly."]
+    out, queries = G.refuse_invented_expansions(original, edited)
+    assert out == edited and queries == []
+
+
+# --- the bracketed entry number (job #104) -----------------------------------
+
+def test_a_vancouver_bracketed_entry_number_is_restored():
+    """12 of 21 entries came back unnumbered in #104 and this guard said nothing: it
+    knew `1.` and `1)` and not `[1]`, which is what Vancouver numbering looks like."""
+    original = ["References",
+                "[3] B. Blaiszik, M. Caruso, D. McIlroy, “Microcapsules filled with "
+                "reactive solutions,” Polymer, 2009."]
+    edited = [original[0],
+              "Blaiszik B, Caruso M, McIlroy D. Microcapsules filled with reactive "
+              "solutions. Polymer. 2009."]
+    out, queries = G.restore_reference_numbering(original, list(edited))
+    assert out[1].startswith("[3] ")
+    assert len(queries) == 1
+
+
+def test_the_author_s_own_numbering_style_is_kept():
+    """A list numbered `3.` must not come back as `[3]`, and the reverse."""
+    original = ["References", "3. B. Blaiszik, “Microcapsules,” Polymer, 2009."]
+    edited = [original[0], "Blaiszik B. Microcapsules. Polymer. 2009."]
+    out, _ = G.restore_reference_numbering(original, list(edited))
+    assert out[1].startswith("3. ") and not out[1].startswith("[")

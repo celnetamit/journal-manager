@@ -171,6 +171,41 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="The copyedit wrote its own definition for `EDBEA` — "
+                   "`N,N'-bis(2-aminoethyl)-1,3-benzenedicarboxamide` — which is a "
+                   "different molecule from the author's "
+                   "`2,2′-(ethylenedioxy)bis(ethylamine)`, already defined eight "
+                   "paragraphs earlier.",
+        found_in="job #104",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.refuse_invented_expansions",
+        proved_by="test_edit_guards.py::"
+                  "test_an_expansion_the_author_never_wrote_is_refused",
+        now="An expansion the copyedit inserts is checked against the author's own, "
+            "and only the inserted words are removed — the rest of the edit on that "
+            "sentence stands. Two things had to change: a chemist's name carries "
+            "digits, primes and brackets, so `2,2′-(ethylenedioxy)bis(ethylamine) "
+            "(EDBEA)` could not be read as a definition at all and EDBEA was never "
+            "learned; and nothing anywhere asked whether an inserted expansion came "
+            "from this manuscript.",
+    ),
+    Lesson(
+        went_wrong="Twelve of twenty-one bibliography entries came back with no "
+                   "number, so every in-text `[3]`, `[4]`, `[6]` pointed at nothing.",
+        found_in="job #104",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.restore_reference_numbering",
+        proved_by="test_edit_guards.py::"
+                  "test_a_vancouver_bracketed_entry_number_is_restored",
+        now="The entry number is restored in the author's own punctuation — `[3]` on a "
+            "list numbered `[3]`, `3.` on a list numbered `3.`. The guard knew `1.` "
+            "and `1)` and not `[1]`, which is what the house Vancouver style looks "
+            "like, so it had been silent on every manuscript that numbers its "
+            "bibliography that way. It also runs once more at the end, after Crossref "
+            "completion rewrites an entry — which is where these numbers went.",
+        measured="12 of 21 entries in #104",
+    ),
+    Lesson(
         went_wrong="`timespace` came back as `time space`. It is the author's term and "
                    "the spelling the literature uses; the copyedit did not recognise "
                    "the word and treated it as a slip.",

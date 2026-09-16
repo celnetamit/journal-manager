@@ -374,6 +374,19 @@ def verify_cell_edits(
 _DEFINITION = re.compile(
     r"([A-Za-z][A-Za-z\-‐-―, ]{3,70}?)\s*\(([A-Z][A-Za-z]{1,7})\)")
 
+#: The same thing written the way a chemist writes it: digits, primes and brackets
+#: inside the name itself. `2,2′-(ethylenedioxy)bis(ethylamine) (EDBEA)` cannot match
+#: the pattern above at all — and an abbreviation that is never learned is one the
+#: first-use rule does nothing about, which is how job #104 came back with a *different
+#: molecule* invented as EDBEA's expansion and nothing to say otherwise.
+_CHEMICAL_DEFINITION = re.compile(
+    r"([A-Za-z0-9][^\s][^;:]{2,80}?)\s*\(([A-Z][A-Za-z0-9]{1,8})\)")
+
+#: What makes a phrase chemical rather than ordinary prose. Without this the
+#: letters-in-order test below would learn `the results of the experiment (TRE)`: in a
+#: long enough phrase, any few letters appear in order somewhere.
+_CHEMICAL_SHAPE = re.compile(r"[0-9()\u2032']")
+
 
 #: Words an acronym is allowed to skip. "Information and Communication Technology" is
 #: ICT, not IACT, and "United Nations Educational, Scientific and Cultural
@@ -454,6 +467,25 @@ def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
             last = words[-1] if words else ""
             if _contracts_to(last, abbr):
                 pairs.setdefault(abbr, last)
+
+    # A chemist's name for the same thing: `2,2′-(ethylenedioxy)bis(ethylamine)` is
+    # EDBEA — ethylene, dioxy, bis, ethyl, amine — with the letters taken in order
+    # straight through the punctuation.
+    for m in _CHEMICAL_DEFINITION.finditer("\n".join(p or "" for p in paragraphs)):
+        phrase, abbr = m.group(1).strip(), m.group(2)
+        if abbr in pairs:
+            continue
+        # Shortest tail first, as with the initials: the name is what sits against the
+        # bracket, not the clause that introduces it. `provided by 2,2′-(…)` defines
+        # EDBEA as the molecule, and "provided by" is not part of its name.
+        tokens = phrase.split()
+        for n in range(1, min(len(tokens), 4) + 1):
+            tail = " ".join(tokens[-n:])
+            if not _CHEMICAL_SHAPE.search(tail):
+                continue
+            if _contracts_to(re.sub(r"[^A-Za-z]", "", tail), abbr):
+                pairs[abbr] = tail
+                break
     return pairs
 
 
@@ -673,9 +705,28 @@ def enforce_abbreviation_first_use(
 
 # --- front matter and the bibliography's own numbering --------------------------
 
-#: `1.` or `1)` at the head of a bibliography entry — the entry's number, which the
-#: in-text `[1]` points at. Not a heading number, though it looks like one.
-_ENTRY_NUMBER = re.compile(r"^\s*(\d{1,3})\s*[.)]\s+")
+#: `[1]`, `1.` or `1)` at the head of a bibliography entry — the entry's number, which
+#: the in-text `[1]` points at. Not a heading number, though it looks like one.
+#:
+#: The bracketed form was missing until job #104, where 12 of 21 entries came back
+#: unnumbered and this guard said nothing: the house reference style is Vancouver, the
+#: manuscript numbers its bibliography `[1]`, `[2]`, and the pattern only knew `1.` and
+#: `1)`. A guard that cannot see the thing it guards reports itself as applied.
+_ENTRY_NUMBER = re.compile(r"^\s*(?:\[(\d{1,3})\]|(\d{1,3})\s*[.)])\s*")
+
+
+def _entry_number_of(text: str) -> Optional[Tuple[str, str]]:
+    """`(number, marker)` for a bibliography entry, in the author's own punctuation.
+
+    The marker matters: putting `3.` on a list the author numbered `[3]` would make
+    this guard the second thing in the file changing their reference style.
+    """
+    m = _ENTRY_NUMBER.match(text or "")
+    if not m:
+        return None
+    if m.group(1) is not None:
+        return m.group(1), f"[{m.group(1)}] "
+    return m.group(2), f"{m.group(2)}. "
 
 #: How much of an entry's own wording must survive for it to still be that entry.
 #: Below this the bibliography has been re-ordered and its numbers are not ours to
@@ -811,7 +862,7 @@ def restore_reference_numbering(
     restored: List[str] = []
     moved = 0
     for i in range(start + 1, min(len(original), len(out))):
-        m = _ENTRY_NUMBER.match(original[i] or "")
+        m = _entry_number_of(original[i] or "")
         after = out[i] or ""
         if not m or not after.strip() or _ENTRY_NUMBER.match(after):
             continue
@@ -828,8 +879,8 @@ def restore_reference_numbering(
             moved += 1
             continue
 
-        out[i] = f"{m.group(1)}. {after.lstrip()}"
-        restored.append(m.group(1))
+        out[i] = f"{m[1]}{after.lstrip()}"
+        restored.append(m[0])
 
     if moved:
         return out, [{
@@ -1369,4 +1420,66 @@ def keep_closed_compounds(
                           f"please open it only if it is genuinely a slip."),
                 "suggestion": None,
             })
+    return out, queries
+
+
+def refuse_invented_expansions(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """The copyedit may not invent what an abbreviation stands for.
+
+    Job #104: the author defined `EDBEA` as `2,2′-(ethylenedioxy)bis(ethylamine)` and
+    used the short form afterwards. Eight paragraphs later the copyedit wrote its own
+    definition into the text — `N,N'-bis(2-aminoethyl)-1,3-benzenedicarboxamide
+    (EDBEA)` — which is a **different molecule**. Not a style slip: a fabricated
+    chemical name, in a manuscript, reading exactly like the author's own work.
+
+    So the expansion is checked against the author's, and only the inserted words are
+    taken out — the rest of the copyedit on that sentence stands. Where the manuscript
+    never defined the abbreviation at all there is nothing to check it against, and the
+    insertion is refused for the same reason: the words came from somewhere that is not
+    this manuscript.
+    """
+    pairs = {a: re.sub(r"[^A-Za-z]", "", e).lower()
+             for a, e in learn_abbreviations(original).items()}
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i in range(min(len(original), len(edited))):
+        before, after = original[i] or "", out[i] or ""
+        if not before or before == after or "(" not in after:
+            continue
+        rebuilt: List[str] = []
+        refused: List[str] = []
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+                None, before, after, autojunk=False).get_opcodes():
+            if tag == "delete":
+                continue
+            seg = after[j1:j2]
+            if tag in ("insert", "replace") and seg.rstrip().endswith("("):
+                follows = re.match(r"\s*([A-Z][A-Za-z0-9]{1,8})\)", after[j2:])
+                if follows:
+                    abbr = follows.group(1)
+                    words = re.sub(r"[^A-Za-z]", "", seg).lower()
+                    if len(words) > 3 and pairs.get(abbr, "") != words:
+                        refused.append(abbr)
+                        if tag == "replace":
+                            rebuilt.append(before[i1:i2])
+                        continue
+            rebuilt.append(seg)
+        if not refused:
+            continue
+        fixed = "".join(rebuilt)
+        for abbr in refused:                 # the closing bracket it left behind
+            fixed = re.sub(rf"(?<!\()\b{re.escape(abbr)}\)", abbr, fixed)
+        out[i] = fixed
+        names = ", ".join(dict.fromkeys(refused))
+        queries.append({
+            "index": i,
+            "snippet": fixed[:200],
+            "query": (f"The copyedit wrote its own expansion for {names} here, and it "
+                      f"is not the one the manuscript gives. It has been removed rather "
+                      f"than corrected — please check that {names} is defined where the "
+                      f"author intended."),
+            "suggestion": None,
+        })
     return out, queries
