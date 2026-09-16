@@ -2342,6 +2342,98 @@ def _prescreen_score(journal: Dict[str, Any], abstract: str) -> float:
     return round(min(100.0, cosine * 80 + overlap * 20), 1)
 
 
+def profile_manuscript(text: str, settings: Dict[str, Any],
+                       warnings: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Read the manuscript and say, in the paper's own terms, what it is about.
+
+    Amit, 16 Sep 2026: *"pahle ye pure manuscript ko samjhe ki uska topic / subject of
+    research kya hai aur uske basis par journals find kar ke map kre then sugest kare."*
+
+    Until now the recommender embedded the abstract and compared it with each journal's
+    scope. Nothing ever wrote down *what the paper is about*, so a method word could beat
+    a subject word — "optimization" and "simulation" appear in every domain's scope, and
+    a manuscript full of them drifts to whichever journal happens to say them most.
+
+    What comes back is deliberately structured and short:
+
+    * `subject` — the field this belongs to, as a specialist would name it.
+    * `specific_topic` — the actual thing studied, in the paper's own words.
+    * `studied` — the material, organism, system or corpus it was done on.
+    * `methods` — how, kept apart from the subject because a method is not a field.
+    * `application` — what it is for, when the paper says.
+    * `terms` — the words a librarian would index it under.
+
+    Returned empty on any failure, and the caller carries on exactly as before: this is a
+    guide for the ranking, never a gate. A first stage that can put the right journal out
+    of reach is worse than no first stage — measured on 14 Sep, when every hard-gated
+    version scored at or below the ungated baseline.
+    """
+    prompt = f"""You are a subject librarian placing a manuscript in a journal portfolio.
+
+Read the manuscript and say what it is about. Be specific and use the paper's own
+vocabulary — "perovskite solar cell degradation", not "materials science"; "arbitration
+of shareholder disputes", not "law". Name the field as a specialist would, not as a
+university department would.
+
+Separate the SUBJECT from the METHOD. A paper that uses machine learning to predict
+concrete strength is a concrete paper, not a machine-learning paper. A paper that develops
+a new machine-learning method and demonstrates it on concrete is a machine-learning paper.
+Decide which of the two this is and let `subject` reflect it.
+
+MANUSCRIPT:
+{text[:40000]}
+
+Return ONLY valid JSON of this exact shape:
+{{"subject":"","specific_topic":"","studied":"","methods":[],"application":"","terms":[]}}"""
+    try:
+        raw = _generate_text(prompt, settings=settings,
+                             response_mime_type="application/json")
+        start = raw.find("{")
+        if start < 0:
+            raise ValueError("no JSON object in the model's response")
+        data, _ = json.JSONDecoder().raw_decode(raw[start:])
+        if not isinstance(data, dict):
+            raise ValueError("the model did not return an object")
+        profile = {
+            "subject": str(data.get("subject") or "").strip(),
+            "specific_topic": str(data.get("specific_topic") or "").strip(),
+            "studied": str(data.get("studied") or "").strip(),
+            "methods": [str(m).strip() for m in (data.get("methods") or []) if str(m).strip()][:8],
+            "application": str(data.get("application") or "").strip(),
+            "terms": [str(t).strip() for t in (data.get("terms") or []) if str(t).strip()][:15],
+        }
+        return profile if profile["subject"] or profile["specific_topic"] else {}
+    except Exception as exc:
+        msg = ("The manuscript could not be profiled before matching "
+               f"({type(exc).__name__}: {exc}); journals were matched on the text alone.")
+        print(msg, flush=True)
+        if warnings is not None:
+            warnings.append(msg)
+        return {}
+
+
+def profile_query(profile: Dict[str, Any], fallback: str) -> str:
+    """The text the journal matching actually runs against.
+
+    The subject and the thing studied are repeated: this string is embedded and compared
+    with each journal's scope, and repetition is how weight is expressed to an embedding
+    without a second model. Methods are included once — they matter, but a paper is not
+    its method.
+    """
+    if not profile:
+        return fallback
+    subject = profile.get("subject", "")
+    topic = profile.get("specific_topic", "")
+    parts = [subject, topic, subject, topic, profile.get("studied", "")]
+    parts += profile.get("terms", [])
+    parts.append(profile.get("application", ""))
+    parts += profile.get("methods", [])
+    written = ". ".join(p for p in parts if p)
+    # The manuscript itself still goes in, after the profile: the profile is a summary and
+    # a summary can be wrong, so the words the author actually used stay in the query.
+    return f"{written}\n\n{fallback}"
+
+
 def _llm_rank_journals(abstract: str, candidates: List[Dict[str, Any]],
                        settings: Dict[str, Any], k: int = 3,
                        warnings: Optional[List[str]] = None) -> List[dict]:

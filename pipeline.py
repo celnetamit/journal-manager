@@ -35,6 +35,9 @@ from image_check import check_images
 from reference_check import check_references, complete_verified_references
 from proofread import proofread as run_proofread
 from edit_guards import (
+    _REF_URL,
+    _reference_identity,
+    _references_start,
     fix_trailing_citations,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
@@ -848,6 +851,29 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     for _q in _final_ref_queries:
         editor_queries = list(editor_queries) + [_q]
 
+    # What the reference guards could actually see, recorded on the job.
+    #
+    # Three days running the question "did this guard run, and on what" could not be
+    # answered from anything the job kept. Jobs #91 and #94 delivered references whose
+    # links had been deleted; handed those same files afterwards the guard restores
+    # them correctly, so the state it saw during the run was not the state on disk —
+    # and there was no record of either. Before that, the census was blind to an
+    # unnumbered list (#67, #69, #70) and to an initials-first one (#45, #68) and said
+    # nothing in both cases, because a guard that finds no bibliography returns
+    # silently and looks exactly like a guard that found nothing wrong.
+    _ref_start = _references_start(original_paragraphs)
+    _ref_entries = ([] if _ref_start is None
+                    else [p for p in original_paragraphs[_ref_start + 1:]
+                          if len((p or "").strip()) > 20])
+    reference_trace = {
+        "bibliography_found": _ref_start is not None,
+        "entries": len(_ref_entries),
+        "works_readable": sum(
+            1 for p in _ref_entries if _reference_identity(p) is not None),
+        "links_in_original": sum(1 for p in _ref_entries if _REF_URL.search(p or "")),
+        "links_missing_at_redline": 0,
+    }
+
     # And the link, for the same reason and in the same place.
     #
     # Job #91 ¶211 was delivered as `Unesco.org. 2026. Available from: ` with the
@@ -864,6 +890,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         original_paragraphs, edited_paragraphs)
     for _q in _final_url_queries:
         editor_queries = list(editor_queries) + [_q]
+    reference_trace["links_missing_at_redline"] = len(_final_url_queries)
     if _final_url_queries:
         print(f"[job {job_id}] a reference link was missing at the redline and was "
               f"put back ({len(_final_url_queries)}) — the middle-of-chain guard had "
@@ -992,6 +1019,8 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         # approve it forty times stops reading by the sixth.
         "patterns": recurring_changes(original_paragraphs, edited_paragraphs),
         "duration": round(duration, 1),
+        # Not for the editor — for whoever has to ask tomorrow what the guards saw.
+        "reference_trace": reference_trace,
         "warnings": warnings,
         "plagiarism": plagiarism,
         "plagiarism_report_path": plagiarism_report_path,
