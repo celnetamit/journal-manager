@@ -75,3 +75,30 @@ def test_a_hit_on_one_area_does_not_score_a_narrow_journal_higher_than_a_broad_o
     broad = dict(JOURNAL, score=0.5)
     abstract = "a study of machine learning applied to network technologies"
     assert editor._prescreen_score(broad, abstract) >= editor._prescreen_score(narrow, abstract)
+
+
+def test_a_purely_semantic_match_still_explains_itself():
+    """The branch that ran for every recommendation with no literal keyword overlap.
+
+    It referenced `topics`, a variable this function stopped having on 14 Sep 2026 when
+    the journal file gained real subject areas — so it raised NameError, and because the
+    explanation is built inside the recommendation loop, the whole panel died with it.
+    Nothing caught it: the tests all used journals whose words appear in the abstract.
+    """
+    from editor import _explain_journal_match
+
+    journal = {
+        "name": "Journal of Quite Other Things",
+        "code": "JQOT",
+        "score": 0.61,
+        "subject_areas": ["Tribology", "Surface Engineering"],
+        "topics": ["Mechanical Engineering"],
+        "scope": "Friction, wear and lubrication of engineering surfaces.",
+    }
+    # An abstract that shares no word with the journal's own vocabulary.
+    reason = _explain_journal_match("A study of monsoon rainfall over the Deccan plateau.",
+                                    journal, rank=1, total=3)
+
+    assert reason, "a recommendation with no reason is a recommendation nobody can check"
+    assert "semantic" in reason.lower()
+    assert journal["matched_topics"] == []

@@ -2239,12 +2239,20 @@ def _explain_journal_match(abstract: str, journal: Dict[str, Any], rank: int = 1
                 "It overlaps directly with the journal's focus areas: "
                 + ", ".join(t.title() for t in matched) + "."
             )
-    elif topics and score > 0:
-        parts.append(
-            "There is no exact keyword overlap, so the match is semantic rather than literal: "
-            "the journal's focus areas (" + ", ".join(t.title() for t in topics)
-            + ") sit close to your manuscript's meaning in embedding space."
-        )
+    elif score > 0:
+        # `topics` was this function's own variable until 14 Sep 2026, when the journal
+        # file gained real subject areas and scope and the lookup moved to
+        # `_journal_terms`. This branch kept the old name and nothing caught it, because
+        # it only runs when a journal matched **no** keyword at all — a purely semantic
+        # match, which is exactly the interesting case. Every such recommendation raised
+        # NameError and took the whole panel down with it.
+        areas = _journal_terms(journal)[:6]
+        if areas:
+            parts.append(
+                "There is no exact keyword overlap, so the match is semantic rather than "
+                "literal: the journal's focus areas (" + ", ".join(t.title() for t in areas)
+                + ") sit close to your manuscript's meaning in embedding space."
+            )
 
     # 4. How decisive the ranking is versus the next option.
     gap = _gap_phrase(score, next_score)
