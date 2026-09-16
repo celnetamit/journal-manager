@@ -1174,3 +1174,51 @@ def follow_the_author_on_invisible_twins(
             changed += n
         out.append(fixed)
     return out, changed
+
+
+#: The subscript digits. The house convention sets a chemical subscript with these —
+#: `H₂O`, `CO₂` — and that works because a single digit has a subscript form.
+_SUBSCRIPT_DIGITS = "₀₁₂₃₄₅₆₇₈₉"
+_TO_PLAIN = str.maketrans(_SUBSCRIPT_DIGITS, "0123456789")
+
+#: A subscript that could not be finished. Unicode has subscript digits and no
+#: subscript full stop, so a decimal number set this way comes out half-sized:
+#: job #73 turned the author's `log|Z|0.01Hz` into `log|Z|₀.₀₁Hz` — the digits shrank,
+#: the point and the `Hz` did not. It reads as a typo and it breaks search for the
+#: value. Requiring the separator keeps `H₂O` and `CO₂`, which are correct, well clear.
+_BROKEN_SUBSCRIPT = re.compile(f"[{_SUBSCRIPT_DIGITS}]+\\s*[.,]\\s*[{_SUBSCRIPT_DIGITS}]+")
+
+
+def undo_broken_subscripts(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """Plain digits back wherever a subscript was set in characters that do not exist.
+
+    Restores the digits and asks for the real thing: a subscript spanning a decimal
+    point has to be Word's own subscript formatting, which this pipeline works in plain
+    text and cannot apply. Leaving the half-sized version in would ship a value that
+    looks mistyped; taking it out silently would lose the author's notation, so it
+    comes back as a query against the paragraph it is in.
+    """
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i, para in enumerate(out):
+        if not para or not _BROKEN_SUBSCRIPT.search(para):
+            continue
+        fixed = _BROKEN_SUBSCRIPT.sub(lambda m: m.group(0).translate(_TO_PLAIN), para)
+        if fixed == para:
+            continue
+        out[i] = fixed
+        was = original[i] if i < len(original) else ""
+        queries.append({
+            "index": i,
+            "snippet": fixed[:200],
+            "query": ("A subscript here was set with subscript digits, which cannot "
+                      "carry the decimal point — it came out half-sized. The plain "
+                      "digits have been restored; please apply Word's subscript "
+                      "formatting to the value if the notation needs it."),
+            "suggestion": None,
+        })
+        if was and was == fixed:
+            queries[-1]["query"] += " (This is the author's own text, put back.)"
+    return out, queries

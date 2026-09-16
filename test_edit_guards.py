@@ -789,3 +789,24 @@ def test_a_mixed_manuscript_is_followed_at_each_occurrence():
     assert n == 3
     assert out[0] == "Arrangements of 0.2 to 1.0 µm and 0.2 to 1.4 µm were seen"
     assert out[1] == "A further feature of 3 μm"
+
+
+# --- subscripts that cannot be set in characters (job #73) -------------------
+
+def test_a_subscript_spanning_a_decimal_point_comes_back_as_plain_digits():
+    """Job #73: the author's `log|Z|0.01Hz` came back as `log|Z|₀.₀₁Hz` — the digits
+    shrank, the point and the `Hz` did not, and the value reads as mistyped."""
+    original = ["The 30-day log|Z|0.01Hz response was between 8.52 and 9.42"]
+    edited = ["The 30-day log|Z|₀.₀₁Hz response was between 8.52 and 9.42"]
+    out, queries = G.undo_broken_subscripts(original, edited)
+    assert out == original
+    assert len(queries) == 1 and queries[0]["index"] == 0
+    assert "Word's subscript formatting" in queries[0]["query"]
+
+
+def test_a_chemical_subscript_is_left_alone():
+    """`H₂O` is the house convention and is set correctly — no decimal point, no
+    half-sized run, nothing to undo."""
+    edited = ["H₂O and CO₂ and a TiO₂ coating"]
+    out, queries = G.undo_broken_subscripts(["H2O and CO2 and a TiO2 coating"], edited)
+    assert out == edited and queries == []

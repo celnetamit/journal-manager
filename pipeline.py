@@ -49,6 +49,7 @@ from edit_guards import (
     restore_reference_numbering,
     verify_reference_block,
     restore_reference_urls,
+    undo_broken_subscripts,
     verify_cell_edits,
 )
 from science_format import (
@@ -758,6 +759,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     if _n_twins:
         print(f"invisible twins folded to the author's spelling: {_n_twins}",
               file=sys.stderr)
+
+    # A subscript set in characters that cannot carry a decimal point. Body text only:
+    # the two real cases were both in prose, and a table query cannot point at the
+    # paragraph this one needs to quote.
+    edited_paragraphs, _subscript_queries = undo_broken_subscripts(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_subscript_queries)
 
     # Did the copyedit lose something the author wrote? Only the two checks that
     # survived measurement: a paragraph returned empty, and a negation dropped — the one
