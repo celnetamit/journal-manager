@@ -199,3 +199,35 @@ def test_a_title_with_a_colon_is_not_a_missing_city():
     assert R.book_fields_missing(
         "Whitman MV, Shanine KK. Revisiting the impostor phenomena: How individuals "
         "cope. J Manag Psychol. 2012;27(5):431-49.") == []
+
+
+def test_a_place_is_offered_and_never_written_in():
+    """Measured over the 35 book entries with no place: a lookup produced one for
+    three, and two of those three were wrong — a place inserted into the middle of
+    `John Wiley & Sons`, and New Delhi offered for a 1933 Oxford book. A catalogue
+    answers a title; a place belongs to an edition."""
+    import reference_check as R
+    paras = ["References",
+             "Potter PA, Perry AG. Fundamentals of Nursing. 10th ed. Elsevier; 2021."]
+    record = {"title": "Fundamentals of Nursing",
+              "publishers": ["Mosby Elsevier Health Science"], "places": ["St. Louis"]}
+    queries = R.suggest_book_places(paras, lambda title: record)
+    assert len(queries) == 1
+    assert "St. Louis" in queries[0]["query"]
+    assert queries[0]["audience"] == "author"
+    assert paras[1].endswith("Elsevier; 2021."), "the author's entry is untouched"
+
+
+def test_a_book_that_already_names_its_city_is_not_asked_again():
+    import reference_check as R
+    paras = ["References",
+             "Potter PA. Fundamentals of Nursing. 10th ed. St. Louis: Elsevier; 2021."]
+    assert R.suggest_book_places(paras, lambda title: {"title": "x"}) == []
+
+
+def test_a_catalogue_record_for_a_different_book_is_ignored():
+    import reference_check as R
+    paras = ["References", "Smith J. An Entirely Different Book. Elsevier; 2021."]
+    record = {"title": "Fundamentals of Nursing",
+              "publishers": ["Mosby Elsevier Health Science"], "places": ["St. Louis"]}
+    assert R.suggest_book_places(paras, lambda title: record) == []

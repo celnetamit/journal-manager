@@ -34,7 +34,8 @@ from docxmodel import read_structure
 from house_layout import check_all as house_check
 from science_format import check_all as science_format_check
 from image_check import check_images
-from reference_check import check_references, complete_verified_references
+from reference_check import (check_references, complete_verified_references,
+                             suggest_book_places)
 from proofread import proofread as run_proofread
 from edit_guards import (
     _REF_URL,
@@ -81,6 +82,7 @@ from editor import (
     enforce_reference_year_only,
     enforce_temperature_spacing,
     fetch_crossref_record,
+    fetch_openlibrary_book,
     for_display,
     generate_ai_review,
     generate_cover_letter,
@@ -758,6 +760,16 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _invented_queries = refuse_invented_expansions(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_invented_queries)
+
+    # A book's place of publication, offered from a catalogue. Never written in — see
+    # `suggest_book_places` for the measurement that settled that.
+    if use_crossref:
+        try:
+            for _q in suggest_book_places(edited_paragraphs, fetch_openlibrary_book):
+                guard_queries.append(_q)
+        except Exception as _book_exc:                           # noqa: BLE001
+            warnings.append(f"The book-reference lookup was skipped: "
+                            f"{skip_reason(_book_exc)}")
 
     edited_paragraphs, _abbr_queries = enforce_abbreviation_first_use(
         original_paragraphs, edited_paragraphs)

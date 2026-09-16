@@ -702,6 +702,44 @@ def _looks_like_reference_entry(text: str) -> bool:
     return _proofread._is_reference_block(text or "")
 
 
+def fetch_openlibrary_book(title: str) -> Optional[Dict[str, Any]]:
+    """What a book catalogue knows about a title: its publishers and their places.
+
+    Crossref is the wrong catalogue for a book and the measurement says so plainly.
+    Asked for `Potter PA, Perry AG. Fundamentals of Nursing. 10th ed. St. Louis:
+    Elsevier; 2021.` it answers with journal *reviews* of nursing textbooks at a score
+    of 34, and the publisher on those records belongs to the review. Over thirty real
+    book entries from our own redlines it produced a usable publisher for **none** of
+    them. Open Library found the right book for every one of the six checked by hand,
+    with the publisher and usually the city.
+
+    No key, no account. A failure here is a missing suggestion, never a failed run.
+    """
+    if not title or len(title) < 8:
+        return None
+    try:
+        r = requests.get(
+            "https://openlibrary.org/search.json",
+            params={"q": title[:200],
+                    "fields": "title,author_name,publisher,publish_place,"
+                              "first_publish_year",
+                    "limit": 3},
+            timeout=8)
+        if r.status_code != 200:
+            return None
+        for doc in (r.json().get("docs") or [])[:3]:
+            return {
+                "title": doc.get("title") or "",
+                "authors": list(doc.get("author_name") or []),
+                "publishers": list(doc.get("publisher") or []),
+                "places": list(doc.get("publish_place") or []),
+                "year": str(doc.get("first_publish_year") or ""),
+            }
+    except Exception:                        # noqa: BLE001 — a suggestion is optional
+        return None
+    return None
+
+
 def fetch_crossref_record(citation_text: str) -> Optional[Dict[str, Any]]:
     """The full Crossref record for a citation, or None.
 
@@ -718,7 +756,7 @@ def fetch_crossref_record(citation_text: str) -> Optional[Dict[str, Any]]:
             "https://api.crossref.org/works",
             params={"query.bibliographic": citation_text[:400],
                     "select": "DOI,score,title,author,container-title,volume,issue,"
-                              "page,issued,type",
+                              "page,issued,type,publisher",
                     "rows": 3},
             timeout=6)
         if r.status_code != 200:
@@ -745,6 +783,11 @@ def fetch_crossref_record(citation_text: str) -> Optional[Dict[str, Any]]:
                 "volume": item.get("volume", ""),
                 "issue": item.get("issue", ""),
                 "pages": item.get("page", ""),
+                # Books and chapters. Crossref indexes them, with the publisher and
+                # the containing book — everything Vancouver wants except the place
+                # of publication, which Crossref simply does not carry.
+                "type": item.get("type", ""),
+                "publisher": item.get("publisher", ""),
             }
     except Exception:
         return None

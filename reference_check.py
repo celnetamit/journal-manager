@@ -528,3 +528,119 @@ def book_fields_missing(text: str) -> List[str]:
     if not t or not _IN_EDITED_BOOK.search(t) or _PAGE_RANGE.search(t):
         return []
     return ["chapter page range"]
+
+
+# --- books: what a lookup can settle, and what it cannot ----------------------
+
+#: The title of a book reference, as well as it can be had from the text: the longest
+#: sentence-like segment. Authors, the year and the publisher are all short; the title
+#: is what the entry is mostly made of.
+_TITLE_SPLIT = re.compile(r"(?<=[a-z])\.\s+|\.\s+(?=[A-Z])|\?\s+")
+
+
+def probable_title(entry: str) -> str:
+    segs = [s.strip(" .,;") for s in _TITLE_SPLIT.split(entry or "")
+            if len(s.strip()) > 12]
+    # Drop the segments that are plainly not a title before taking the longest.
+    segs = [s for s in segs
+            if not re.match(r"(?i)^(in\s*:|available|accessed|retrieved|doi)", s)]
+    return max(segs, key=len) if segs else (entry or "").strip()
+
+
+def _same_title(a: str, b: str) -> bool:
+    key = lambda t: re.sub(r"[^a-z0-9]", "", (t or "").lower())
+    ka, kb = key(a), key(b)
+    return bool(ka) and (ka == kb or (len(ka) > 18 and (ka in kb or kb in ka)))
+
+
+def book_place_for(entry: str, record: Dict[str, Any]) -> Optional[str]:
+    """The place of publication for the publisher this entry already names, or None.
+
+    The one completion a lookup can make safely. A book's publisher is a fact about
+    the edition the author used — `Fundamentals of Nursing` is Mosby in 1985 and
+    Elsevier in 2021, and a catalogue answering a title query offers both — so writing
+    a publisher in from a title match would be a guess dressed as a correction, the
+    same mistake as the invented EDBEA expansion.
+
+    But if the author has *already* named the publisher and the catalogue has a place
+    for that same publisher, then nothing is being guessed: the entry says which
+    edition it means and the record says where it came from. That is the field authors
+    actually leave out, and it is the only one filled in here.
+    """
+    if not record or not _same_title(probable_title(entry), record.get("title") or ""):
+        return None
+    if _PLACE_AND_PUBLISHER.search(entry or ""):
+        return None                          # already has one
+    # Any substantial word of the catalogue's publisher, not its first: the record
+    # says `Mosby Elsevier Health Science` where the author wrote `Elsevier`, and
+    # first-word matching missed every one of those.
+    def names_it(publisher: str) -> bool:
+        return any(re.search(rf"\b{re.escape(w)}\b", entry or "", re.I)
+                   for w in re.findall(r"[A-Za-z&]{4,}", publisher or ""))
+
+    named = [p for p in (record.get("publishers") or []) if p and names_it(p)]
+    if not named:
+        return None
+    for place in record.get("places") or []:
+        if place and place.strip():
+            return place.strip()
+    return None
+
+
+def suggest_book_places(
+    paragraphs: List[str], fetch_book, limit: int = 12,
+) -> List[Dict[str, object]]:
+    """Offer the place of publication a book reference is missing — offer, not apply.
+
+    The quality team, 16 Sep 2026: if the data can be had, apply it; otherwise query.
+    This was written to apply it, and the measurement said no. Over the 35 book
+    entries in our redlines that have no place, a catalogue lookup produced one for
+    three — and of those three, one was inserted into the middle of the publisher's
+    own name (`John Wiley & Sons` became `John Hull: Wiley & Sons`) and one offered
+    New Delhi for a 1933 Oxford book whose record also lists London.
+
+    A catalogue answers a *title*, and a place of publication is a fact about an
+    *edition*. One in ten filled, and two of the three wrong, is not a correction
+    rate; it is the invented-EDBEA mistake with a citation attached. So the place is
+    put in the query as a suggestion, where a person compares it with the book in
+    their hand, and the author's reference is left exactly as they wrote it.
+    """
+    start = _references_start_of(paragraphs)
+    if start is None or not fetch_book:
+        return []
+    queries: List[Dict[str, object]] = []
+    used = 0
+    for i in range(start + 1, len(paragraphs)):
+        entry = paragraphs[i] or ""
+        if used >= limit or len(entry.strip()) < 40:
+            continue
+        if not _LOOKS_LIKE_A_BOOK.search(entry) or _PLACE_AND_PUBLISHER.search(entry):
+            continue
+        used += 1
+        try:
+            record = fetch_book(probable_title(entry))
+        except Exception:                    # noqa: BLE001
+            continue
+        place = book_place_for(entry, record or {})
+        if not place:
+            continue
+        queries.append({
+            "index": i,
+            "snippet": entry[:200],
+            "query": (f"This book reference gives no place of publication. Open "
+                      f"Library lists `{place}` for this title and this publisher — "
+                      f"please add it if it matches the printing you used. It has not "
+                      f"been filled in: a catalogue answers a title, and the place "
+                      f"belongs to one particular edition."),
+            "suggestion": f"{place}: ",
+            "audience": "author",
+        })
+    return queries
+
+
+def _references_start_of(paragraphs: List[str]) -> Optional[int]:
+    for i, p in enumerate(paragraphs):
+        if re.match(r"(?i)^\s*(?:\d+\.?\s*)?(?:list of\s+)?references?\s*[:.\-–—]?\s*$",
+                    (p or "").strip()):
+            return i
+    return None
