@@ -465,6 +465,7 @@ def complete_verified_references(
                       f"author, the year and the title all match "
                       f"({int(score * 100)}% of the title). The original read: "
                       f"“{text.strip()[:160]}”. Please confirm before accepting."),
+            "guard": "complete_verified_references",
             "suggestion": None,
         })
     return out, queries
@@ -632,6 +633,7 @@ def suggest_book_places(
                       f"please add it if it matches the printing you used. It has not "
                       f"been filled in: a catalogue answers a title, and the place "
                       f"belongs to one particular edition."),
+            "guard": "suggest_book_places",
             "suggestion": f"{place}: ",
             "audience": "author",
         })

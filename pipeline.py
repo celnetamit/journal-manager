@@ -1155,6 +1155,16 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "patterns": recurring_changes(original_paragraphs, edited_paragraphs),
         "duration": round(duration, 1),
         # Not for the editor — for whoever has to ask tomorrow what the guards saw.
+        # What each guard actually caught on this manuscript, kept as data rather than
+        # only as comments in the file. The daily record reads this: a defect class
+        # that stops firing, or one that starts, is the thing worth seeing early.
+        "guard_findings": [
+            {"guard": q.get("guard") or "unknown",
+             "audience": q.get("audience") or "internal",
+             "index": q.get("index"),
+             "query": (q.get("query") or "")[:300]}
+            for q in editor_queries if isinstance(q, dict) and q.get("guard")
+        ],
         "reference_trace": reference_trace,
         "warnings": warnings,
         "plagiarism": plagiarism,

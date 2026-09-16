@@ -75,6 +75,7 @@ def _load_cookie_manager():
 CookieManager, COOKIE_MANAGER_AVAILABLE = _load_cookie_manager()
 
 import auth
+import daily_findings
 import quality_log
 import config as app_config
 import house_layout
@@ -1612,6 +1613,33 @@ with tab_quality:
                 f"Fixed {_les.fixed_on} · guarded by `{_les.prevented_by}` · "
                 f"proved by `{_les.proved_by}`"
             )
+
+    st.divider()
+    st.subheader("What the guards caught, day by day")
+    st.caption(
+        "Written every night at 23:00. The totals matter less than the change in "
+        "them: a guard that stops firing has usually stopped working, and a class "
+        "that suddenly appears is a new manuscript habit or a new model. Neither is "
+        "visible in any single job."
+    )
+    try:
+        _history = daily_findings.history(14)
+    except Exception as _hist_exc:                                   # noqa: BLE001
+        _history = []
+        st.caption(f"The daily record could not be read: {_hist_exc}")
+    if _history:
+        st.dataframe(
+            [{"Date": row.get("date"),
+              "Manuscripts": row.get("jobs"),
+              "Guard findings": sum((row.get("guard_findings") or {}).values()),
+              "For the author": row.get("for_the_author"),
+              "Most often": ", ".join(
+                  f"{k.replace('_', ' ')} ({v})"
+                  for k, v in list((row.get("guard_findings") or {}).items())[:3]),
+              } for row in reversed(_history)],
+            width="stretch", hide_index=True)
+    else:
+        st.info("No day has been recorded yet. The first record is written tonight.")
 
     st.divider()
     st.caption(

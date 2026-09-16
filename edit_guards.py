@@ -136,6 +136,7 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
                 "query": ("The copyedit removed the day and month from this date "
                           "line; the article's own dates are kept in full, so the "
                           "original has been restored."),
+                "guard": "restore_protected_text",
                 "suggestion": before,
             })
             continue
@@ -152,6 +153,7 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
                 "snippet": before[:80],
                 "query": ("This is a numbered step in an algorithm listing, not a "
                           "heading — its number has been put back."),
+                "guard": "restore_protected_text",
                 "suggestion": restored,
             })
             continue
@@ -174,6 +176,7 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
                     "query": (f"The copyedit removed this caption's label. Every "
                               f"'{lost}' in the text points at that number, so it has "
                               f"been put back; the rest of the copyedit is kept."),
+                    "guard": "restore_protected_text",
                     "suggestion": restored,
                 })
                 continue
@@ -189,6 +192,7 @@ def restore_protected_text(originals: List[str], edited: List[str]) -> Tuple[
                           f"at, so the original has been restored. This paragraph holds "
                           f"both a heading and a caption — please split them into two "
                           f"paragraphs."),
+                "guard": "restore_protected_text",
                 "suggestion": before,
             })
             continue
@@ -254,6 +258,7 @@ def orphaned_formula_queries(originals: List[str],
                 "snippet": nxt_after[:80],
                 "query": ("The formula above has been rebuilt onto one line, which "
                           "leaves this denominator stranded. Delete this paragraph."),
+                "guard": "orphaned_formula_queries",
                 "suggestion": "",
             })
     return queries
@@ -329,6 +334,7 @@ def verify_cell_edits(
             "index": index,
             "query": f"The copyedit for this cell was not applied: {why} The "
                      f"author's text was kept.",
+            "guard": "verify_cell_edits",
             "suggestion": None,
         })
 
@@ -688,6 +694,7 @@ def enforce_abbreviation_first_use(
                     f"'({abbr})' after it, and the short form from then on — that has "
                     f"been restored across the document. Please confirm the first "
                     f"mention is where you want the definition."),
+                "guard": "enforce_abbreviation_first_use",
                 "suggestion": None,
             })
         if redefined:
@@ -699,6 +706,7 @@ def enforce_abbreviation_first_use(
                     f"defined (paragraph{'s' if len(redefined) > 1 else ''} {where}). "
                     f"The house rule gives the full form once and '{abbr}' from then "
                     f"on, so the repeats now read '{abbr}'."),
+                "guard": "enforce_abbreviation_first_use",
                 "suggestion": None,
             })
 
@@ -805,6 +813,7 @@ def restore_front_matter_names(
                     f"The author line lost {', '.join(missing[:4])}. Author names are "
                     f"kept as submitted — only their capitalisation is corrected — so "
                     f"the original line has been restored."),
+                "guard": "restore_front_matter_names",
                 "suggestion": before,
             })
             continue
@@ -815,6 +824,7 @@ def restore_front_matter_names(
                 "index": i, "snippet": before[:120],
                 "query": ("The asterisk marking the corresponding author was removed "
                           "from this affiliation line and has been put back."),
+                "guard": "restore_front_matter_names",
                 "suggestion": out[i],
             })
 
@@ -894,6 +904,7 @@ def restore_reference_numbering(
                 f"been re-ordered. Numbers were NOT restored for those — putting the "
                 f"old number on a different work would be worse. Please check the "
                 f"bibliography numbering against the in-text citations by hand."),
+            "guard": "restore_reference_numbering",
             "suggestion": None,
         }]
 
@@ -907,6 +918,7 @@ def restore_reference_numbering(
             f"({', '.join(restored[:5])}{'…' if len(restored) > 5 else ''}). The "
             f"numbers are what the in-text citations point at, so they have been "
             f"restored from the original."),
+        "guard": "restore_reference_numbering",
         "suggestion": None,
     }]
 
@@ -985,6 +997,7 @@ def preserve_author_hyphenation(
             f"had hyphenated ({', '.join(unique[:5])}"
             f"{'…' if len(unique) > 5 else ''}). Hyphenation of these prefixes is a "
             f"style choice rather than an error, so the author's form was kept."),
+        "guard": "preserve_author_hyphenation",
         "suggestion": None,
     }]
 
@@ -1099,6 +1112,7 @@ def verify_reference_block(
             + ". The entry count was unchanged, so this would not have shown up in a "
               "count. The author's reference list has been restored unformatted; please "
               "reformat it by hand or re-run once the list is stable."),
+        "guard": "verify_reference_block",
         "suggestion": None,
     }]
 
@@ -1145,6 +1159,7 @@ def restore_reference_urls(
             "query": ("The copyedit dropped this reference's link, which the house "
                       "format for a web source requires. It has been put back — please "
                       "check it sits where the entry wants it."),
+            "guard": "restore_reference_urls",
             "suggestion": None,
         })
     return out, queries
@@ -1303,6 +1318,7 @@ def undo_broken_subscripts(
                       "carry the decimal point — it came out half-sized. The plain "
                       "digits have been restored; please apply Word's subscript "
                       "formatting to the value if the notation needs it."),
+            "guard": "undo_broken_subscripts",
             "suggestion": None,
         })
         if was and was == fixed:
@@ -1355,6 +1371,7 @@ def keep_every_equation(
                        "equation that is not in the author's file. ")) +
                      "The author's paragraph has been kept as it was — please edit it "
                      "by hand around the equation.",
+            "guard": "keep_every_equation",
             "suggestion": None,
         })
     return out, queries
@@ -1432,6 +1449,7 @@ def keep_closed_compounds(
                           f"writes it closed throughout, so it has been kept closed — "
                           f"please open it only if it is genuinely a slip."),
                 "audience": "author",
+            "guard": "keep_closed_compounds",
             "suggestion": None,
             })
     return out, queries
@@ -1542,6 +1560,7 @@ def refuse_invented_expansions(
                           f"the expansion is the right one — please check it against "
                           f"the author's field before accepting."),
                 "audience": "author",
+            "guard": "refuse_invented_expansions",
             "suggestion": None,
             })
         if not refused:
@@ -1560,6 +1579,7 @@ def refuse_invented_expansions(
                       f"than corrected: after its first use the short form stands "
                       f"alone, and where {names} is defined is the author's decision."),
             "audience": "author",
+            "guard": "refuse_invented_expansions",
             "suggestion": None,
         })
     return out, queries
@@ -1623,6 +1643,7 @@ def keep_subscript_markers(
                           f"The author's notation has been kept — please set the "
                           f"subscript with Word's own formatting, which is the only "
                           f"thing that can carry it."),
+                "guard": "keep_subscript_markers",
                 "suggestion": None,
             })
     return out, queries
@@ -1720,6 +1741,7 @@ def keep_caption_values(
                       f"caption really does disagree with the text, that is a question "
                       f"for the author and the artwork, not a copyedit."),
             "audience": "author",
+            "guard": "keep_caption_values",
             "suggestion": None,
         })
     return out, queries
@@ -1818,6 +1840,7 @@ def apply_case_changes_everywhere(
                           f"and left it as it was elsewhere. It has been made "
                           f"consistent throughout ({touched} more). If `{before}` was "
                           f"right, the change can be rejected everywhere at once."),
+                "guard": "apply_case_changes_everywhere",
                 "suggestion": None,
             })
     return out, queries

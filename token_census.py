@@ -143,6 +143,7 @@ def missing_tokens(
                           f"copyedited text anywhere. Please check whether it was "
                           f"meant to go — a unit, a subscript or a formula that "
                           f"disappears is rarely an improvement."),
+                "guard": "missing_tokens",
                 "suggestion": None,
                 # Only the author knows whether a value was meant to go.
                 "audience": "author",
