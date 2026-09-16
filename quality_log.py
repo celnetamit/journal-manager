@@ -217,13 +217,22 @@ LESSONS: List[Lesson] = [
         prevented_by="edit_guards.refuse_invented_expansions",
         proved_by="test_edit_guards.py::"
                   "test_an_expansion_the_author_never_wrote_is_refused",
-        now="An expansion the copyedit inserts is checked against the author's own, "
+        now="Chemical detail the copyedit adds is checked against the author's own, "
             "and only the inserted words are removed — the rest of the edit on that "
             "sentence stands. Two things had to change: a chemist's name carries "
             "digits, primes and brackets, so `2,2′-(ethylenedioxy)bis(ethylamine) "
             "(EDBEA)` could not be read as a definition at all and EDBEA was never "
             "learned; and nothing anywhere asked whether an inserted expansion came "
-            "from this manuscript.",
+            "from this manuscript. Job #105 is the same guard's second case: `DTDA` "
+            "came back as `4,4'-DTDA`, a locant put in front of a short form the "
+            "author had written bare — not wrong chemistry, but against the first-use "
+            "rule, and with an ASCII apostrophe where the author uses a prime. Where "
+            "the manuscript never defines the abbreviation at all, the expansion "
+            "stands and is queried instead: nothing in the file can confirm it, and "
+            "removing it would throw away the house rule's own first-use requirement.",
+        measured="over 89 redlines: 6 removals, all of them the same fabricated "
+                 "molecule — three different inventions for EDBEA across five runs of "
+                 "one manuscript — and 18 expansions kept with a query",
     ),
     Lesson(
         went_wrong="Twelve of twenty-one bibliography entries came back with no "

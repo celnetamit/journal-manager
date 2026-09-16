@@ -1423,6 +1423,38 @@ def keep_closed_compounds(
     return out, queries
 
 
+#: A chemical locant: `4,4\'-`, `2,2\u2032-`, `1,3-`. Job #105 inserted one in front of
+#: a short form the author had written bare — `DTDA` became `4,4\'-DTDA`. The number is
+#: not wrong (the author writes `4,4\u2032-dithiodianiline` where they define it) and it is
+#: still an edit against the house rule: after first use the short form stands alone.
+#: The inserted prime was an ASCII apostrophe where the author uses U+2032, so keeping
+#: it would not even have matched their own typography.
+_LOCANT = re.compile(r"^\s*\d[\d,'\u2032\u2019]*[-\u2010-\u2015]\s*$")
+
+#: What a locant was put in front of: a short form, in capitals.
+_SHORT_FORM = re.compile(r"^[A-Z][A-Za-z0-9]{1,8}\b")
+
+
+def _same_expansion(mine: Optional[str], theirs: str) -> bool:
+    """Whether two spellings are the same expansion written differently.
+
+    Strict equality refused five correct edits for every real one, measured over the
+    89 redlines: `carbon-fiber-reinforced polymer` against the author's `carbon fibre
+    reinforced polymer`, `Convolutional Neural Networks` against its own singular,
+    `The Random Forest` against `Random Forest`, and `square error` where the diff had
+    left `root mean ` already in place. None of those is a different thing.
+
+    A fabricated one is not close at all — `N,N\'-bis(2-aminoethyl)-1,3-benzene-
+    dicarboxamide` against the author's `2,2\u2032-(ethylenedioxy)bis(ethylamine)` scores
+    0.3 and shares no containment, which is the gap this rule sits in.
+    """
+    if not mine:
+        return False
+    if mine in theirs or theirs in mine:
+        return True
+    return difflib.SequenceMatcher(None, mine, theirs).ratio() >= 0.8
+
+
 def refuse_invented_expansions(
     original: List[str], edited: List[str],
 ) -> Tuple[List[str], List[Dict[str, object]]]:
@@ -1446,26 +1478,57 @@ def refuse_invented_expansions(
     queries: List[Dict[str, object]] = []
     for i in range(min(len(original), len(edited))):
         before, after = original[i] or "", out[i] or ""
-        if not before or before == after or "(" not in after:
+        # No `"(" in after` shortcut: that was written when this guard only knew
+        # about expansions, and it made the locant case silent on any sentence with no
+        # bracket in it — which is most sentences.
+        if not before or before == after:
             continue
         rebuilt: List[str] = []
         refused: List[str] = []
+        unverifiable: List[str] = []
         for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
                 None, before, after, autojunk=False).get_opcodes():
             if tag == "delete":
                 continue
             seg = after[j1:j2]
+            if (tag in ("insert", "replace") and _LOCANT.match(seg)
+                    and _SHORT_FORM.match(after[j2:])):
+                refused.append(_SHORT_FORM.match(after[j2:]).group(0))
+                if tag == "replace":
+                    rebuilt.append(before[i1:i2])
+                continue
             if tag in ("insert", "replace") and seg.rstrip().endswith("("):
                 follows = re.match(r"\s*([A-Z][A-Za-z0-9]{1,8})\)", after[j2:])
                 if follows:
                     abbr = follows.group(1)
                     words = re.sub(r"[^A-Za-z]", "", seg).lower()
-                    if len(words) > 3 and pairs.get(abbr, "") != words:
-                        refused.append(abbr)
-                        if tag == "replace":
-                            rebuilt.append(before[i1:i2])
-                        continue
+                    if len(words) > 3 and not _same_expansion(pairs.get(abbr), words):
+                        if abbr in pairs:
+                            # The manuscript says what it stands for, and this is not
+                            # that. Fabrication, and the author's own words settle it.
+                            refused.append(abbr)
+                            if tag == "replace":
+                                rebuilt.append(before[i1:i2])
+                            continue
+                        # Never defined anywhere in the manuscript. The expansion may
+                        # well be right — `thermoplastic starch (TPS)` — and nothing
+                        # here can tell. Removing it would throw away the house rule's
+                        # own first-use requirement; keeping it silently would ship a
+                        # fact from outside the paper. So it stands, and it is asked
+                        # about.
+                        unverifiable.append(abbr)
             rebuilt.append(seg)
+        if unverifiable:
+            names = ", ".join(dict.fromkeys(unverifiable))
+            queries.append({
+                "index": i,
+                "snippet": after[:200],
+                "query": (f"The copyedit spelled out {names} here. The manuscript does "
+                          f"not define it anywhere, so nothing in the file confirms "
+                          f"the expansion is the right one — please check it against "
+                          f"the author's field before accepting."),
+                "suggestion": None,
+            })
         if not refused:
             continue
         fixed = "".join(rebuilt)
@@ -1476,10 +1539,11 @@ def refuse_invented_expansions(
         queries.append({
             "index": i,
             "snippet": fixed[:200],
-            "query": (f"The copyedit wrote its own expansion for {names} here, and it "
-                      f"is not the one the manuscript gives. It has been removed rather "
-                      f"than corrected — please check that {names} is defined where the "
-                      f"author intended."),
+            "query": (f"The copyedit added chemical detail to {names} here that the "
+                      f"author did not write in this sentence — an expansion, or a "
+                      f"locant in front of the short form. It has been removed rather "
+                      f"than corrected: after its first use the short form stands "
+                      f"alone, and where {names} is defined is the author's decision."),
             "suggestion": None,
         })
     return out, queries

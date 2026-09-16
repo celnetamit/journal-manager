@@ -1001,3 +1001,47 @@ def test_a_symbol_the_copyedit_left_alone_raises_nothing():
     paras = ["the value of K_IC was measured."]
     out, queries = G.keep_subscript_markers(paras, list(paras))
     assert out == paras and queries == []
+
+
+def test_a_locant_is_not_added_to_a_bare_short_form():
+    """#105: the author writes `4,4′-dithiodianiline (DTDA)` where they define it and
+    plain `DTDA` afterwards. The copyedit put `4,4'-` back in front of the short form
+    — against the house rule, and with an ASCII apostrophe where the author uses a
+    prime, so it did not even match their own typography."""
+    original = ["The disulfide functionality is introduced via 4,4′-dithiodianiline "
+                "(DTDA) with an activation energy.",
+                "a mixture of DGEBA with the cross-linkers DTDA and EDBEA."]
+    edited = [original[0],
+              "a mixture of DGEBA with the cross-linkers 4,4'-DTDA and EDBEA."]
+    out, queries = G.refuse_invented_expansions(original, edited)
+    assert out[1] == "a mixture of DGEBA with the cross-linkers DTDA and EDBEA."
+    assert len(queries) == 1 and "DTDA" in queries[0]["query"]
+
+
+def test_a_locant_the_author_wrote_is_left_alone():
+    original = ["prepared from 4,4′-dithiodianiline (DTDA) in ethanol."]
+    out, queries = G.refuse_invented_expansions(original, list(original))
+    assert out == original and queries == []
+
+
+def test_the_same_expansion_spelled_differently_is_not_refused():
+    """Measured over 89 redlines, strict equality refused five correct edits for every
+    real one: `carbon-fiber-reinforced polymer` against the author's `carbon fibre
+    reinforced polymer`, a plural against its singular, an article added."""
+    original = ["We used carbon fibre reinforced polymer (CFRP) panels.",
+                "The CFRP experiments ran for a week."]
+    edited = [original[0],
+              "The carbon-fiber-reinforced polymer (CFRP) experiments ran for a week."]
+    out, queries = G.refuse_invented_expansions(original, edited)
+    assert out == edited and queries == []
+
+
+def test_an_undefined_abbreviation_is_kept_and_asked_about():
+    """`thermoplastic starch (TPS)` may well be right, and nothing in the manuscript
+    can say so. Removing it would throw away the house rule's own first-use
+    requirement; keeping it silently would ship a fact from outside the paper."""
+    original = ["The TPS blends were extruded at 140 °C."]
+    edited = ["The thermoplastic starch (TPS) blends were extruded at 140 °C."]
+    out, queries = G.refuse_invented_expansions(original, edited)
+    assert out == edited, "the expansion stands"
+    assert len(queries) == 1 and "does not define it" in queries[0]["query"]
