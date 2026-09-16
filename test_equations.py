@@ -129,3 +129,73 @@ def test_the_placeholder_never_reaches_a_reader(tmp_path):
     assert OBJECT_PLACEHOLDER not in xml
     assert "[equation]" in xml
     assert for_display("a ￼ b") == "a [equation] b"
+
+
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def _add_ole_equation(paragraph):
+    """An old Word equation: an OLE object inside an ordinary run, which is what
+    Equation Editor 3.0 leaves behind and what job #106's nomenclature list is made
+    of. `Paragraph.text` steps over it exactly as it does over OMML."""
+    from docx.oxml import parse_xml
+    paragraph._p.append(parse_xml(
+        f'<w:r xmlns:w="{W_NS}" '
+        f'xmlns:v="urn:schemas-microsoft-com:vml" '
+        f'xmlns:o="urn:schemas-microsoft-com:office:office">'
+        f'<w:object><v:shape id="s1" style="width:12pt;height:12pt"/>'
+        f'<o:OLEObject Type="Embed" ProgID="Equation.3" ShapeID="s1"/>'
+        f'</w:object></w:r>'))
+
+
+def test_an_ole_equation_in_a_line_of_text_is_shown_to_the_copyedit(tmp_path):
+    """#106: the copyedit saw `  Initial concentration of TPH (mg/kg)` and wrote its
+    own symbol in — `C0 =`, `C =`, `Q =`, and nothing at all on the next four lines."""
+    doc = docx.Document()
+    doc.add_paragraph("Title")
+    doc.add_paragraph("Abstract: x.")
+    p = doc.add_paragraph()
+    _add_ole_equation(p)
+    p.add_run(" Initial concentration of TPH (mg/kg)")
+    path = str(tmp_path / "m.docx")
+    doc.save(path)
+
+    line = [t for t in read_docx(path) if "Initial concentration" in t][0]
+    assert line.count(OBJECT_PLACEHOLDER) == 1, line
+
+
+def test_an_ole_equation_comes_back_where_it_stood(tmp_path):
+    doc = docx.Document()
+    doc.add_paragraph("Title")
+    doc.add_paragraph("Abstract: x.")
+    p = doc.add_paragraph()
+    _add_ole_equation(p)
+    p.add_run(" Initial concentration of TPH (mg/kg)")
+    path = str(tmp_path / "m.docx")
+    doc.save(path)
+
+    original = read_docx(path)
+    edited = [t.replace("Initial", "The initial") for t in original]
+    out = str(tmp_path / "r.docx")
+    generate_redline_docx(path, edited, out)
+
+    doc2 = docx.Document(out)
+    # `Paragraph.text` reads the direct runs only, and the edited words are inside
+    # `w:ins` — the same measurement trap the redline caught earlier in this file.
+    para = [q for q in doc2.paragraphs
+            if "initial concentration" in _redline_text(q).lower()][0]
+    objects = [o for o in para._p.iter(f"{{{W_NS}}}object")]
+    assert objects, "the author's equation object was dropped by the rewrite"
+    assert OBJECT_PLACEHOLDER not in doc2.element.xml
+
+
+def test_a_figure_only_paragraph_still_travels_the_old_way(tmp_path):
+    """Job #53's fix must not be undone: a paragraph that is only a picture has no
+    text for anything to be invented into, and is carried across by
+    `_detachable_graphics`."""
+    from editor import _detachable_graphics
+    doc = docx.Document()
+    p = doc.add_paragraph()
+    _add_ole_equation(p)
+    leading, trailing = _detachable_graphics(p)
+    assert leading or trailing, "an object-only paragraph keeps the old path"

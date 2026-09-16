@@ -513,9 +513,25 @@ def _paragraph_pieces(p):
     equations it ignores, so a character offset into the rendered string still maps back
     to the run it came from.
     """
+    has_text = any(
+        (c.findtext(qn("w:t")) or "").strip() for c in p._p if c.tag == qn("w:r"))
     for child in p._p:
         if child.tag == qn("w:r"):
-            yield "run", Run(child, p)
+            # An old Word equation is not OMML: it is an OLE object inside an ordinary
+            # run, and `Paragraph.text` steps over it exactly the same way. Job #106's
+            # nomenclature list is built from them — `<C₀> Initial concentration of TPH`
+            # — and the copyedit, seeing a line that began with a blank, wrote its own
+            # symbols in: `C0 =`, `C =`, `Q =`, and nothing at all on the four lines
+            # after that.
+            #
+            # Only where the paragraph has text of its own. A paragraph that is just a
+            # figure has no gap for anything to be invented into, and it goes on being
+            # carried across the rewrite by `_detachable_graphics`, which is what job
+            # #53 needed.
+            if has_text and any(child.find(qn(t)) is not None for t in _GRAPHIC_TAGS):
+                yield "object", child
+            else:
+                yield "run", Run(child, p)
         elif child.tag in _MATH_TAGS:
             yield "object", child
 
@@ -2019,6 +2035,12 @@ def _detachable_graphics(p) -> list:
     be a made-up number dressed as precision. In practice a figure sits at one end of
     its caption paragraph or the other, and both ends are preserved exactly.
     """
+    # A paragraph with text of its own has already had its inline objects turned into
+    # placeholders by `_paragraph_pieces`, and they come back at exactly the character
+    # they stood at. Taking them here as well would move a symbol out of the middle of
+    # its own sentence and put it at one end.
+    if any((c.findtext(qn("w:t")) or "").strip() for c in p._p if c.tag == qn("w:r")):
+        return [[], []]
     leading, trailing, seen_text = [], [], False
     for child in list(p._p):
         if child.tag == qn("w:r"):

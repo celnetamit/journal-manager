@@ -171,6 +171,39 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="The copyedit wrote its own symbols into a nomenclature list: "
+                   "`C0 =`, `C =`, `Q =` on the first three lines and nothing at all "
+                   "on the four after them, where the author had defined every symbol "
+                   "themselves.",
+        found_in="job #106",
+        fixed_on="2026-09-17",
+        prevented_by="editor._paragraph_pieces",
+        proved_by="test_equations.py::"
+                  "test_an_ole_equation_in_a_line_of_text_is_shown_to_the_copyedit",
+        now="An old Word equation is not OMML — it is an OLE object inside an "
+            "ordinary run, and `Paragraph.text` steps over it the same way. Those are "
+            "now held by the same placeholder as an equation, so the copyedit sees a "
+            "symbol rather than a blank line to fill. A paragraph that is only a "
+            "figure keeps the older path, which is what job #53 needed.",
+    ),
+    Lesson(
+        went_wrong="`cfu/g` was written `CFU/g` in one place and left alone in the "
+                   "other two.",
+        found_in="job #106",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards.apply_case_changes_everywhere",
+        proved_by="test_edit_guards.py::"
+                  "test_a_unit_recased_once_is_recased_everywhere",
+        now="A unit recased in one place is recased in all of them, with one query "
+            "naming the term. `CFU` being the right form is not the point: a paper "
+            "that says both is worse than one consistently wrong, because a reader "
+            "cannot tell which is the typo.",
+        measured="over 90 redlines: 1 finding, this one. A first version read "
+                 "`MATERIALS AND METHODS` -> `Materials and Methods` as a ruling on "
+                 "`AND` and rewrote 115 paragraphs; a second learned `al` -> `AL` "
+                 "from a re-sorted bibliography and would have written `et AL.`",
+    ),
+    Lesson(
         went_wrong="A figure caption came back naming different data: `Figure 9: Line "
                    "Waver-Burke Plot for T4 (80g)` became `Figure 9. Lineweaver-Burk "
                    "plot for T5 (100 g)`. The spelling repair is right and wanted; the "

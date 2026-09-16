@@ -1723,3 +1723,101 @@ def keep_caption_values(
             "suggestion": None,
         })
     return out, queries
+
+
+#: A short all-letters token that could be a unit or an abbreviation: `cfu`, `tph`,
+#: `bod`. Bounded at six letters — beyond that a run of capitals is a word being
+#: shouted, not a unit.
+_ABBREVIATION_TOKEN = re.compile(r"^[a-z]{2,6}$")
+
+#: Ordinary words, which a heading recases and a unit does not. Without this the first
+#: sweep read `MATERIALS AND METHODS` -> `Materials and Methods` as a decision about
+#: the term `AND` and rewrote it through 115 paragraphs of one manuscript.
+_ORDINARY_WORDS = frozenset("""
+a an the and or nor but if then than that this these those of in on at to for from by
+with within into onto over under is are was were be been being has have had do does
+did not no as it its their his her our your my we they he she you i also such can
+could may might must shall should will would there here when where which who whom
+whose all any both each few more most other some only very same so what why how
+after before during while about above below between through against among per via
+new old two one three used using use data both time case study group level total
+al et pp ed eds vol no fig figs tab eq
+""".split())
+
+
+def _is_a_recasing(before: str, after: str) -> bool:
+    """`cfu` -> `CFU` yes; `and` -> `AND` no; `Fig` -> `FIG` no."""
+    return (before.islower() and after.isupper()
+            and before.lower() == after.lower()
+            and _ABBREVIATION_TOKEN.match(before) is not None
+            and before not in _ORDINARY_WORDS)
+
+
+def apply_case_changes_everywhere(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A unit recased in one place is recased in all of them.
+
+    Job #106: the author writes `cfu/g` three times; the copyedit returned `CFU/g`
+    once and left the other two alone. `CFU` is the right form and that is not the
+    complaint — a manuscript that says `CFU/g` on one page and `cfu/g` on the next is
+    worse than one that is consistently wrong, because now a reader cannot tell which
+    is the typo.
+
+    Only a whole token whose letters are unchanged, only between all-lower and
+    all-caps, and only outside the first word of a sentence: `the` -> `The` at a full
+    stop is the copyedit punctuating, not a decision about a term.
+
+    One query per term, naming where it was seen, so the editor knows a change of
+    theirs was carried further than they made it.
+    """
+    # A recasing is learned from the body only. The bibliography is re-sorted and
+    # re-formatted wholesale, so paragraph *i* before and paragraph *i* after are
+    # routinely two different works — which is how the first sweep learned `al` ->
+    # `AL` from an `et al.` on one side and an author's initials on the other, and
+    # would have written `et AL.` through eight paragraphs.
+    body_end = _references_start(original)
+    body_end = len(original) if body_end is None else body_end
+
+    changes: Dict[str, str] = {}
+    for was, now in zip(original[:body_end], edited[:body_end]):
+        if not was or not now or was == now:
+            continue
+        # By set membership, not by position: pairing two word lists positionally
+        # makes every later word disagree as soon as one is inserted, and the first
+        # sweep's `and` -> `AND` came from exactly that.
+        mine, theirs = set(re.findall(r"[A-Za-z]+", was)), set(
+            re.findall(r"[A-Za-z]+", now))
+        for before in mine:
+            after = before.upper()
+            if (after in theirs and before not in theirs
+                    and _is_a_recasing(before, after)):
+                changes.setdefault(before, after)
+
+    if not changes:
+        return edited, []
+
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for before, after in changes.items():
+        # Never the first word of a sentence, where a capital means something else.
+        pattern = re.compile(rf"(?<![.!?]\s)(?<!^)\b{re.escape(before)}\b")
+        touched = 0
+        for i, para in enumerate(out):
+            if not para or before not in para:
+                continue
+            fixed, n = pattern.subn(after, para)
+            if n:
+                out[i] = fixed
+                touched += n
+        if touched:
+            queries.append({
+                "index": next((i for i, p in enumerate(out) if after in (p or "")), 0),
+                "snippet": after,
+                "query": (f"The copyedit wrote `{before}` as `{after}` in one place "
+                          f"and left it as it was elsewhere. It has been made "
+                          f"consistent throughout ({touched} more). If `{before}` was "
+                          f"right, the change can be rejected everywhere at once."),
+                "suggestion": None,
+            })
+    return out, queries

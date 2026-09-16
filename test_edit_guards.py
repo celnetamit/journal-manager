@@ -1094,3 +1094,40 @@ def test_an_equation_placeholder_the_copyedit_invented_is_refused():
     out, queries = G.keep_every_equation(original, edited)
     assert out == original
     assert len(queries) == 1 and "not in the author's file" in queries[0]["query"]
+
+
+# --- a unit recased in one place only (job #106) -----------------------------
+
+def test_a_unit_recased_once_is_recased_everywhere():
+    """#106: the author writes `cfu/g` three times; the copyedit returned `CFU/g`
+    once and left the other two. `CFU` is the right form and that is not the
+    complaint — a paper that says both is worse than one consistently wrong."""
+    original = ["The count reached 6.2 cfu/g.",
+                "Values are reported in (cfu/g).",
+                "A later line with (cfu/g) in it."]
+    edited = ["The count reached 6.2 CFU/g.",
+              "Values are reported in (cfu/g).",
+              "A later line with (cfu/g) in it."]
+    out, queries = G.apply_case_changes_everywhere(original, edited)
+    assert all("CFU/g" in p for p in out)
+    assert len(queries) == 1 and "2 more" in queries[0]["query"]
+
+
+def test_a_recased_heading_is_not_a_decision_about_a_word():
+    """`MATERIALS AND METHODS` -> `Materials and Methods` is punctuation. The first
+    version read it as a ruling on the term `AND` and rewrote 115 paragraphs of one
+    manuscript."""
+    original = ["MATERIALS AND METHODS", "The soil and water were mixed."]
+    edited = ["Materials and Methods", "The soil and water were mixed."]
+    out, queries = G.apply_case_changes_everywhere(original, edited)
+    assert out == edited and queries == []
+
+
+def test_et_al_is_never_recased():
+    """Learned from a bibliography where `et al.` sat opposite an author's initials
+    `Kraft AL` — the list had been re-sorted, so the two paragraphs were different
+    works. It would have written `et AL.` through eight paragraphs."""
+    original = ["References", "Almeida T, Braz M, et al. Biobased ternary films."]
+    edited = ["References", "Shojaeiarani J, Bergholz TM, Kraft AL. Spin coating."]
+    out, queries = G.apply_case_changes_everywhere(original, edited)
+    assert out == edited and queries == []

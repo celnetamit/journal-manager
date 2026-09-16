@@ -39,6 +39,7 @@ from reference_check import (check_references, complete_verified_references,
 from proofread import proofread as run_proofread
 from edit_guards import (
     _REF_URL,
+    apply_case_changes_everywhere,
     _reference_identity,
     _references_start,
     fix_trailing_citations,
@@ -697,6 +698,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _marker_queries = keep_subscript_markers(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_marker_queries)
+
+    # A unit recased in one place is recased in all of them. A manuscript that says
+    # `CFU/g` on one page and `cfu/g` on the next is worse than one that is
+    # consistently wrong: a reader cannot tell which is the typo.
+    edited_paragraphs, _case_queries = apply_case_changes_everywhere(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_case_queries)
 
     # A caption's values name the data the figure shows. Everything else in it — the
     # spelling, the capitalisation, the stop at the end — is the copyedit's to fix.
