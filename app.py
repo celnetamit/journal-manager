@@ -75,6 +75,7 @@ def _load_cookie_manager():
 CookieManager, COOKIE_MANAGER_AVAILABLE = _load_cookie_manager()
 
 import auth
+import quality_log
 import config as app_config
 import house_layout
 import usage as _usage
@@ -1217,12 +1218,13 @@ def _render_job(job: dict) -> None:
 st.title("📝 Automated Manuscript Copyediting & Proofreading")
 
 _is_superadmin = st.session_state.get("role") == "superadmin"
-_tab_labels = ["📝 Editor", "🧪 Model Test", "📚 My History", "📈 Analytics"]
+_tab_labels = ["📝 Editor", "🧪 Model Test", "📚 My History", "📈 Analytics",
+               "🛡️ Quality Log"]
 if _is_superadmin:
     _tab_labels.append("👑 Superadmin")
 _tabs = st.tabs(_tab_labels)
-tab_editor, tab_test, tab_history, tab_analytics = _tabs[:4]
-tab_superadmin = _tabs[4] if _is_superadmin else None
+tab_editor, tab_test, tab_history, tab_analytics, tab_quality = _tabs[:5]
+tab_superadmin = _tabs[5] if _is_superadmin else None
 
 with tab_editor:
     st.markdown(
@@ -1562,6 +1564,56 @@ with tab_analytics:
             st.info("No analytics recorded yet.")
     except Exception as e:
         st.error(f"Could not load analytics: {e}")
+
+
+with tab_quality:
+    # Amit, 16 Sep 2026, asking whether the model has a lessons file so it stops
+    # repeating itself. It cannot have one that works — a rule in the prompt is applied
+    # or not applied, run by run. What it has instead is this: every defect the quality
+    # team has reported, and the deterministic guard that now makes it impossible.
+    #
+    # Here rather than in the repository because the people who find these defects read
+    # this screen and do not read commit messages. Visible to every user for the same
+    # reason: a copy editor who reported something last month should be able to see
+    # what happened to it without asking anyone.
+    st.subheader("🛡️ What went wrong once, and what stops it now")
+    st.caption(
+        "ce4 does not ask the model to remember its mistakes — a rule in the prompt is "
+        "followed on one paragraph and not the next. Each entry below is a real defect "
+        "and the code that now prevents it, with the test that fails if it ever comes "
+        "back. Every row is checked by the test suite: a guard that is renamed or "
+        "removed turns this page red rather than leaving a comfortable claim behind."
+    )
+
+    _lessons = quality_log.LESSONS
+    st.metric("Defects closed and guarded", len(_lessons))
+
+    _needle = st.text_input(
+        "Search", placeholder="equation, reference, job #100, abbreviation…",
+        key="quality_log_search").strip().lower()
+
+    _shown = [les for les in _lessons
+              if not _needle or _needle in " ".join(
+                  [les.went_wrong, les.now, les.found_in, les.prevented_by]).lower()]
+    if _needle and not _shown:
+        st.info("Nothing matches that yet. If it is something the team has reported, "
+                "it may still be open — please ask.")
+
+    for _les in reversed(_shown):          # newest first: the team asked about those
+        with st.expander(f"**{_les.went_wrong}**  ·  {_les.found_in}", expanded=False):
+            st.markdown(f"**What happens now:** {_les.now}")
+            if _les.measured:
+                st.markdown(f"**Measured:** {_les.measured}")
+            st.caption(
+                f"Fixed {_les.fixed_on} · guarded by `{_les.prevented_by}` · "
+                f"proved by `{_les.proved_by}`"
+            )
+
+    st.divider()
+    st.caption(
+        "Found something this page does not cover? Report it with the job number — "
+        "that is what makes it fixable, and every entry here started as one."
+    )
 
 
 if tab_superadmin is not None:
