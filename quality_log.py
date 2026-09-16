@@ -171,6 +171,21 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="`timespace` came back as `time space`. It is the author's term and "
+                   "the spelling the literature uses; the copyedit did not recognise "
+                   "the word and treated it as a slip.",
+        found_in="job #104",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.keep_closed_compounds",
+        proved_by="test_edit_guards.py::"
+                  "test_a_technical_term_is_not_split_into_two_words",
+        now="A word the author wrote closed stays closed, with a query. Two conditions "
+            "keep the real corrections going through: both halves must be content "
+            "words, so `thatthe` and `inorder` are still opened, and the manuscript "
+            "must never write the term open itself — an author who uses both forms has "
+            "made no decision to enforce.",
+    ),
+    Lesson(
         went_wrong="A term the author had already defined was spelled out again — "
                    "`dicyclopentadiene (DCPD)` in the sentence after the Figure 1 "
                    "caption, and again at Figure 3 — with the first-use rule switched "

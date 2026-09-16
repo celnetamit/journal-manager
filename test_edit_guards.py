@@ -861,3 +861,40 @@ def test_job_103_stops_re_expanding_after_the_caption():
     assert out[4] == original[4]
     assert out[5] == original[5]
     assert len(queries) == 1 and "already been defined" in queries[0]["query"]
+
+
+# --- a word the author wrote closed (job #104) -------------------------------
+
+def test_a_technical_term_is_not_split_into_two_words():
+    """`timespace` came back as `time space`. It is the author's term and it is
+    written that way in the literature; no house rule asks for it to be opened."""
+    original = ["The timespace evolution of the crack front was recorded."]
+    edited = ["The time space evolution of the crack front was recorded."]
+    out, queries = G.keep_closed_compounds(original, edited)
+    assert out == original
+    assert len(queries) == 1 and "'timespace'" in queries[0]["query"]
+
+
+def test_a_run_on_typo_is_still_corrected():
+    """The corrections that must go through: both halves are function words, or one
+    of them is, which is what a slip is made of."""
+    for was, now in [("We showed thatthe result holds.",
+                      "We showed that the result holds."),
+                     ("The sample was split inorder to test it.",
+                      "The sample was split in order to test it.")]:
+        out, queries = G.keep_closed_compounds([was], [now])
+        assert out == [now] and queries == []
+
+
+def test_an_author_who_writes_it_both_ways_is_left_alone():
+    """No decision of theirs to enforce — so none is enforced for them."""
+    original = ["Both timespace and time space appear in this paper."]
+    edited = ["Both time space and time space appear in this paper."]
+    out, queries = G.keep_closed_compounds(original, edited)
+    assert out == edited and queries == []
+
+
+def test_a_word_the_copyedit_kept_closed_raises_nothing():
+    paras = ["The microcapsule shell is thin."]
+    out, queries = G.keep_closed_compounds(paras, list(paras))
+    assert out == paras and queries == []

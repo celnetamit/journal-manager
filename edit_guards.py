@@ -1294,3 +1294,79 @@ def keep_every_equation(
             "suggestion": None,
         })
     return out, queries
+
+
+#: Words that a run-on typo is nearly always made of. `ofthe`, `inorder`, `isnot` —
+#: splitting those is a real correction and must go through. A term the author coined
+#: joins two content words, which is the case this guard is for.
+_FUNCTION_WORDS = frozenset("""
+a an the and or nor but if then than that this these those of in on at to for from by
+with within without into onto over under is are was were be been being has have had do
+does did not no as it its their his her our your my we they he she you i also such can
+could may might must shall should will would there here when where which who whom whose
+""".split())
+
+#: Long enough to be a term rather than a slip, and both halves long enough to be words.
+_MIN_COMPOUND = 7
+_MIN_HALF = 3
+
+
+def _closed_compounds(paragraph: str) -> List[str]:
+    return [w for w in re.findall(r"[A-Za-z]{%d,}" % _MIN_COMPOUND, paragraph or "")]
+
+
+def _splits_of(word: str) -> List[Tuple[str, str]]:
+    return [(word[:i], word[i:]) for i in range(_MIN_HALF, len(word) - _MIN_HALF + 1)]
+
+
+def keep_closed_compounds(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A word the author wrote closed stays closed.
+
+    `timespace` came back as `time space`. It is the author's term, it is written that
+    way in the literature, and nothing in the house rules asks for it to be opened —
+    the copyedit simply did not recognise the word and treated it as a slip.
+
+    Two conditions keep this away from the corrections that must go through. Both
+    halves must be content words, so `ofthe` -> `of the` and `inorder` -> `in order`
+    are untouched; and the manuscript must never write the term open itself, because an
+    author who uses both forms has not made the decision this guard would be enforcing.
+
+    Restored with a query rather than in silence: if the word really is a slip, the
+    editor is the one who should say so.
+    """
+    whole = "\n".join(p or "" for p in original).lower()
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i in range(min(len(original), len(edited))):
+        was, now = original[i] or "", out[i] or ""
+        if not was or was == now:
+            continue
+        restored: List[str] = []
+        for word in _closed_compounds(was):
+            if re.search(rf"(?i)\b{re.escape(word)}\b", now):
+                continue                      # the copyedit kept it
+            for head, tail in _splits_of(word):
+                if head.lower() in _FUNCTION_WORDS or tail.lower() in _FUNCTION_WORDS:
+                    continue
+                if re.search(rf"(?i)\b{re.escape(head)}\s+{re.escape(tail)}\b", whole):
+                    continue                  # the author writes it open too
+                opened = re.compile(rf"(?i)\b({re.escape(head)})\s+({re.escape(tail)})\b")
+                if not opened.search(now):
+                    continue
+                now = opened.sub(lambda m: m.group(1) + m.group(2), now)
+                restored.append(word)
+                break
+        if restored:
+            out[i] = now
+            terms = ", ".join(f"'{w}'" for w in dict.fromkeys(restored))
+            queries.append({
+                "index": i,
+                "snippet": now[:200],
+                "query": (f"The copyedit split {terms} into two words. The author "
+                          f"writes it closed throughout, so it has been kept closed — "
+                          f"please open it only if it is genuinely a slip."),
+                "suggestion": None,
+            })
+    return out, queries

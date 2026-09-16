@@ -41,6 +41,7 @@ from edit_guards import (
     _references_start,
     fix_trailing_citations,
     follow_the_author_on_invisible_twins,
+    keep_closed_compounds,
     keep_every_equation,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
@@ -676,6 +677,14 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _hyphen_queries = preserve_author_hyphenation(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_hyphen_queries)
+
+    # The same question about the other shape a compound comes in. Beside the hyphen
+    # guard deliberately: one decides whether the author's hyphen survives, the other
+    # whether their closed word does, and an editor reading the queries should find
+    # them together.
+    edited_paragraphs, _compound_queries = keep_closed_compounds(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_compound_queries)
 
     # Body and table cells in ONE call, deliberately. The rule renders a superscript
     # only where the document gives evidence for it, and that evidence is document-wide:
