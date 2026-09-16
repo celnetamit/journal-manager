@@ -171,6 +171,26 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="Nothing in ce4 asked the general question. Every guard answers one "
+                   "past failure, so a new kind of loss — a subscript marker, in this "
+                   "case — walked through the whole chain without touching a check, "
+                   "and the quality team was the only thing that caught it.",
+        found_in="asked by Amit after job #104",
+        fixed_on="2026-09-16",
+        prevented_by="token_census.missing_tokens",
+        proved_by="test_token_census.py::"
+                  "test_a_subscript_marker_that_vanished_is_reported",
+        now="Every technical token in the author's manuscript — a quantity with a "
+            "unit, a symbol carrying a subscript or superscript, a chemical formula — "
+            "is looked for in the copyedited text, and anything missing is queried. It "
+            "knows nothing about any particular failure, which is the point: it does "
+            "not need to be told which way the next one will come.",
+        measured="over all 88 redlines: 20 findings in 6 files, every one of them the "
+                 "real G_IC loss. The first version reported 47, about half of them "
+                 "correct copyediting — each of those classes is normalised away and "
+                 "has its own test",
+    ),
+    Lesson(
         went_wrong="`(G_IC,healed/G_IC,pristine)` came back as "
                    "`(GIC,healed/GIC,pristine)`, and `(G_(IC,healed))` as "
                    "`(GIC,healed)`.",

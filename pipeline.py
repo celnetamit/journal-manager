@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import config as app_config
 import losscheck as _losscheck
+import token_census as _token_census
 import usage as _usage
 import auth
 # Only for the progress reports a platform job sends back while it runs. `mng_bridge`
@@ -965,6 +966,23 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         print(f"[job {job_id}] a reference link was missing at the redline and was "
               f"put back ({len(_final_url_queries)}) — the middle-of-chain guard had "
               f"already restored it, so a later step removes it", flush=True)
+
+    # The net underneath every guard above, and the last thing to look: which technical
+    # tokens the author wrote are not in what we are about to hand back. It knows
+    # nothing about any particular failure, which is the point — every guard in
+    # `edit_guards` was written after a person found the defect first.
+    #
+    # Measured over all 88 redlines produced up to 16 Sep: 20 findings in 6 files, and
+    # every one of them the `G_IC` -> `GIC` loss the quality team reported. The classes
+    # that made the first version half noise — unit spacing, a reference volume read as
+    # amperes, an underscore inside an ordinary word, a DOI suffix read as a salt — are
+    # each normalised away in `token_census`, with the case that taught it written down.
+    try:
+        for _q in _token_census.missing_tokens(original_paragraphs, edited_paragraphs):
+            editor_queries = list(editor_queries) + [_q]
+    except Exception as _census_exc:                             # noqa: BLE001
+        warnings.append(f"The technical-token check was skipped: "
+                        f"{skip_reason(_census_exc)}")
 
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()
