@@ -289,17 +289,26 @@ def test_a_stray_expansion_becomes_the_short_form():
     assert len(queries) == 1
 
 
-def test_the_author_s_own_definition_is_never_duplicated():
-    """If the author defined it, that definition stands and no second one is invented
-    — otherwise the paper defines the same term twice and the author's chosen first
-    mention moves."""
+def test_the_definition_belongs_at_the_first_occurrence():
+    """The house rule, restated by Amit on 16 Sep 2026 after job #72.
+
+    "Spell out an abbreviation in full at its FIRST occurrence in the body text with the
+    abbreviation in parentheses, then use the abbreviation throughout the rest of the
+    text." So the definition goes where the term first appears — not where the author
+    happened to put it — and the author's later `(AE)` becomes a bare `AE`, because by
+    then it has been defined. The paper still defines it exactly once.
+
+    Until today this test asserted the opposite: that a definition anywhere in the body
+    licensed shortening everything, including the mentions before it. That is how job
+    #72's introduction came back saying "UF" with nothing having said what UF was.
+    """
     original = ["Intro paragraph mentioning AE.",
                 "Later, acoustic-emission (AE) is defined here."]
     edited = ["Intro paragraph mentioning acoustic emission.",
               "Later, acoustic-emission (AE) is defined here."]
     out, _ = enforce_abbreviation_first_use(original, list(edited))
-    assert out[0] == "Intro paragraph mentioning AE."
-    assert out[1] == edited[1], "the author's definition is left exactly alone"
+    assert out[0] == "Intro paragraph mentioning acoustic emission (AE)."
+    assert out[1] == "Later, AE is defined here."
 
 
 def test_an_undefined_abbreviation_is_left_alone():
@@ -711,8 +720,8 @@ def test_an_abbreviation_never_arrives_before_its_definition():
     ]
     out, _ = enforce_abbreviation_first_use(paragraphs, list(paragraphs))
 
-    assert "urea-formaldehyde and melamine-formaldehyde" in out[3], (
-        "the mention before the definition must keep the full form")
-    assert "UF" not in out[3]
-    assert "urea-formaldehyde (UF)" in out[4], "the author's own definition stands"
-    assert "UF control group" in out[5], "after the definition, the short form is used"
+    assert "urea-formaldehyde (UF) and melamine-formaldehyde" in out[3], (
+        "the definition belongs at the first occurrence, and both resins keep their names")
+    assert "commercial UF microcapsules" in out[4], (
+        "having been defined above, the author's later definition is now the short form")
+    assert "UF control group" in out[5]

@@ -534,22 +534,22 @@ def enforce_abbreviation_first_use(
         # is invented — every stray expansion simply becomes the short form. Adding
         # our own earlier definition would leave the paper defining the same term
         # twice, and would move the author's chosen first mention.
-        whole = "\n".join(p or "" for p in original[body_from:body_end])
-        seen_definition = bool(def_rx.search(whole) or rev_rx.search(whole))
-        # *Where* the author defined it, not merely whether. Job #72's introduction said
-        # "urea-formaldehyde and melamine-formaldehyde shells"; the author's own
-        # "urea-formaldehyde (UF)" came later, in the methods. Knowing only that a
-        # definition existed somewhere, this guard shortened the earlier mention too —
-        # so the paper introduced UF to a reader who had not been told what it was, and
-        # a pair of resins read as one. An abbreviation may only replace its expansion
-        # *after* the definition; before it, the full form is the definition's whole
-        # purpose. The author's chosen first mention is never moved.
-        definition_at: Optional[int] = None
-        for i in range(body_from, body_end):
-            para = original[i] or ""
-            if para and (def_rx.search(para) or rev_rx.search(para)):
-                definition_at = i
-                break
+        # The house rule, in Amit's words on 16 Sep 2026: "FIRST-USE EXPANSION: spell out
+        # an abbreviation in full at its FIRST occurrence in the body text with the
+        # abbreviation in parentheses, then use the abbreviation throughout the rest of
+        # the text."
+        #
+        # So the definition belongs at the first occurrence — wherever the author happened
+        # to put theirs. Job #72's introduction said "urea-formaldehyde and
+        # melamine-formaldehyde" and the author's own "urea-formaldehyde (UF)" came later,
+        # in the methods; the rule wants "(UF)" in the introduction and a bare "UF" in the
+        # methods. This used to start from "a definition exists somewhere in the body",
+        # which produced the opposite: the introduction was shortened to an abbreviation
+        # nothing had defined yet.
+        #
+        # False, then, and set the moment a definition is passed: what matters is whether
+        # one has been seen *so far*, not whether one exists.
+        seen_definition = False
         first_index: Optional[int] = None
         already_defined_here = False
         redefined: List[int] = []
@@ -558,16 +558,8 @@ def enforce_abbreviation_first_use(
             para = out[i]
             if not para:
                 continue
-            # Before the author's definition, their own full form stands: shortening it
-            # would introduce the abbreviation to a reader who has not been told what it
-            # means. But an expansion the *model* put there — where the author had written
-            # the short form — is still undone, because that is the model overriding the
-            # author, not the author's first mention.
-            if (definition_at is not None and i < definition_at
-                    and rx.search(original[i] or "")):
-                continue
             if def_rx.search(para):
-                if not already_defined_here:
+                if not already_defined_here and not seen_definition:
                     already_defined_here = True             # the definition we keep
                     seen_definition = True
                     # A paragraph can define the same term twice on its own, and the
