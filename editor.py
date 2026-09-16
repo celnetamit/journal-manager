@@ -28,6 +28,7 @@ from docx import shared as _docx_shared
 import docxmodel as _docxmodel
 import usage as _usage
 import hyperlinks as _hyperlinks
+import orcid as _orcid
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import numpy as np
@@ -2007,6 +2008,17 @@ def generate_redline_docx(
                     author=f"AI Editor — {kind}" if kind else "AI Editor",
                     initials=f"AE{kind[0]}" if kind else "AE",
                 )
+
+    # The ORCID block above the references. Before the hyperlinking pass so its own URLs
+    # are treated like any other, and after every tracked change has been aligned — this
+    # is the one step that *adds* paragraphs, and it is safe only because nothing after
+    # it maps anything by position.
+    try:
+        _orcid.add_orcid_section(doc, _orcid.find_orcids(
+            [p.text for p in docx.Document(original_path).paragraphs]))
+    except Exception as exc:
+        # An ORCID block is an addition; a lost redline is not recoverable.
+        print(f"redline: ORCID section skipped: {exc!r}", file=_sys.stderr)
 
     # Make DOIs, URLs and e-mail addresses clickable. Last, so it sees the finished
     # document, and it only wraps runs that already exist — it never touches the
