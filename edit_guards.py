@@ -536,6 +536,20 @@ def enforce_abbreviation_first_use(
         # twice, and would move the author's chosen first mention.
         whole = "\n".join(p or "" for p in original[body_from:body_end])
         seen_definition = bool(def_rx.search(whole) or rev_rx.search(whole))
+        # *Where* the author defined it, not merely whether. Job #72's introduction said
+        # "urea-formaldehyde and melamine-formaldehyde shells"; the author's own
+        # "urea-formaldehyde (UF)" came later, in the methods. Knowing only that a
+        # definition existed somewhere, this guard shortened the earlier mention too —
+        # so the paper introduced UF to a reader who had not been told what it was, and
+        # a pair of resins read as one. An abbreviation may only replace its expansion
+        # *after* the definition; before it, the full form is the definition's whole
+        # purpose. The author's chosen first mention is never moved.
+        definition_at: Optional[int] = None
+        for i in range(body_from, body_end):
+            para = original[i] or ""
+            if para and (def_rx.search(para) or rev_rx.search(para)):
+                definition_at = i
+                break
         first_index: Optional[int] = None
         already_defined_here = False
         redefined: List[int] = []
@@ -543,6 +557,14 @@ def enforce_abbreviation_first_use(
         for i in range(body_from, body_end):
             para = out[i]
             if not para:
+                continue
+            # Before the author's definition, their own full form stands: shortening it
+            # would introduce the abbreviation to a reader who has not been told what it
+            # means. But an expansion the *model* put there — where the author had written
+            # the short form — is still undone, because that is the model overriding the
+            # author, not the author's first mention.
+            if (definition_at is not None and i < definition_at
+                    and rx.search(original[i] or "")):
                 continue
             if def_rx.search(para):
                 if not already_defined_here:

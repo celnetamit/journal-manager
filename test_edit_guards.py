@@ -685,3 +685,34 @@ def test_real_content_is_never_touched():
 def test_empty_input_is_safe():
     assert strip_model_preamble("") == ""
     assert strip_model_preamble(None) == ""
+
+
+def test_an_abbreviation_never_arrives_before_its_definition():
+    """Job #72, raised by the quality team on 16 Sep 2026.
+
+    The introduction read "capsules, usually made from urea-formaldehyde and
+    melamine-formaldehyde shells"; the author's own "urea-formaldehyde (UF)" came later,
+    in the methods. The guard knew a definition existed *somewhere* and shortened the
+    earlier mention, so the paper handed the reader "UF" before telling them what it was
+    — and "UF and melamine-formaldehyde" reads as one resin where the author named two.
+    """
+    from edit_guards import enforce_abbreviation_first_use
+
+    paragraphs = [
+        "Abstract",
+        "Self-healing coatings for marine structures.",
+        "Keywords: self-healing, coatings",
+        "However, these conventional capsules, usually made from urea-formaldehyde and "
+        "melamine-formaldehyde shells using interfacial polymerization, are unable to "
+        "address sub-critical microcracks.",
+        "The commercial urea-formaldehyde (UF) microcapsules containing dicyclopentadiene "
+        "were used as the control group.",
+        "The healing efficiency of the urea-formaldehyde control group was below 5%.",
+    ]
+    out, _ = enforce_abbreviation_first_use(paragraphs, list(paragraphs))
+
+    assert "urea-formaldehyde and melamine-formaldehyde" in out[3], (
+        "the mention before the definition must keep the full form")
+    assert "UF" not in out[3]
+    assert "urea-formaldehyde (UF)" in out[4], "the author's own definition stands"
+    assert "UF control group" in out[5], "after the definition, the short form is used"
