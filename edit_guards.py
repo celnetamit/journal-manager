@@ -396,6 +396,34 @@ def _sub_after_first(rx: "re.Pattern[str]", replacement: str, text: str) -> str:
     return text[:first.end()] + rx.sub(replacement, text[first.end():])
 
 
+def _contracts_to(word: str, abbr: str) -> bool:
+    """True when `abbr` is `word` with letters taken out — `dicyclopentadiene` -> DCPD.
+
+    A chemical name is one word, so the initials test can never see it: the initials of
+    `dicyclopentadiene` are `d`. That rejection was silent, and it took the whole
+    first-use rule with it for exactly the terms a materials paper is made of — DCPD,
+    PDMS, THF, DMF. Job #103 re-expanded DCPD twice, eight paragraphs after the author
+    had defined it, and nothing could tell it not to.
+
+    Tight on purpose, and the third condition is the one that earns its place. The
+    abbreviation must start on the word's own first letter, its letters must appear in
+    order, it must be at least three letters, and the word must be at least three times
+    its length — a contraction that throws away two thirds of a long technical term.
+
+    Without that ratio, `control (CTRL)` is learned, and then every later "control" in
+    the manuscript is replaced by `CTRL`: an ordinary English word, rewritten
+    throughout the paper. A chemical name is nothing like that — `dicyclopentadiene`
+    is 17 letters for 4, `polydimethylsiloxane` 20 for 4 — and the gap between the two
+    is wide enough to stand on. `core (DCPD)` fails earlier still, on the first letter,
+    which is the commonest case: the word beside the bracket is very often not the term.
+    """
+    word, abbr = word.lower(), abbr.lower()
+    if len(abbr) < 3 or len(word) < 3 * len(abbr) or not word[:1] == abbr[:1]:
+        return False
+    it = iter(word)
+    return all(letter in it for letter in abbr)
+
+
 def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
     """`{ABBR: expansion}` for every pair the author defined in their own text.
 
@@ -421,6 +449,11 @@ def learn_abbreviations(paragraphs: List[str]) -> Dict[str, str]:
                                 _initials(tail, skip_joiners=True).upper()):
                 pairs.setdefault(abbr, tail)
                 break
+        else:
+            # One word, contracted rather than initialled: the chemical names.
+            last = words[-1] if words else ""
+            if _contracts_to(last, abbr):
+                pairs.setdefault(abbr, last)
     return pairs
 
 

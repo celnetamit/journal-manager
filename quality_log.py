@@ -171,6 +171,25 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="A term the author had already defined was spelled out again — "
+                   "`dicyclopentadiene (DCPD)` in the sentence after the Figure 1 "
+                   "caption, and again at Figure 3 — with the first-use rule switched "
+                   "on and reporting itself as applied.",
+        found_in="job #103",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.learn_abbreviations",
+        proved_by="test_edit_guards.py::"
+                  "test_job_103_stops_re_expanding_after_the_caption",
+        now="A chemical name is one word, so its initials are one letter and the pair "
+            "was never learned — and an abbreviation the guard has not learned is one "
+            "it does nothing about. A contraction is now recognised as well: the "
+            "letters in order, starting on the word's own first letter, in a word at "
+            "least three times as long. `control (CTRL)` is still refused, because "
+            "learning it would put `CTRL` in place of every later 'control'.",
+        measured="5 paragraphs in #103 — DCPD four times, DTDA once; PDMS, THF and "
+                 "DMF were equally invisible",
+    ),
+    Lesson(
         went_wrong="A tracked change with nothing to see: `μm` deleted, `µm` inserted. "
                    "The same glyph, a different code point.",
         found_in="job #100",

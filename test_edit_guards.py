@@ -810,3 +810,54 @@ def test_a_chemical_subscript_is_left_alone():
     edited = ["H₂O and CO₂ and a TiO₂ coating"]
     out, queries = G.undo_broken_subscripts(["H2O and CO2 and a TiO2 coating"], edited)
     assert out == edited and queries == []
+
+
+# --- a chemical name is one word (job #103) ----------------------------------
+
+def test_an_abbreviation_contracted_from_one_word_is_learned():
+    """`dicyclopentadiene` has one initial, `d`. Every chemical name does, so the
+    initials test rejected DCPD, PDMS, THF and DMF alike — silently, taking the
+    whole first-use rule with it for the terms a materials paper is built on."""
+    assert G.learn_abbreviations(["a dicyclopentadiene (DCPD) core"]) == {
+        "DCPD": "dicyclopentadiene"}
+    assert G.learn_abbreviations(["in tetrahydrofuran (THF) at 40 °C"]) == {
+        "THF": "tetrahydrofuran"}
+    assert G.learn_abbreviations(["N,N-dimethylformamide (DMF) was used"]) == {
+        "DMF": "dimethylformamide"}
+
+
+def test_the_word_beside_the_bracket_is_not_taken_for_the_term():
+    """The common case that must not match: the bracket follows the wrong word."""
+    assert G.learn_abbreviations(["the healing core (DCPD)"]) == {}
+    assert G.learn_abbreviations(["the solution (AQ)"]) == {}
+
+
+def test_an_ordinary_english_word_is_not_contracted():
+    """`control (CTRL)` would put `CTRL` in place of every later "control" in the
+    paper. A chemical name throws away two thirds of itself; a common word does not,
+    and that gap is what the rule stands on."""
+    assert G.learn_abbreviations(["control (CTRL) values were stable"]) == {}
+    assert G.learn_abbreviations(["aluminium (Al) foil was used"]) == {}
+
+
+def test_job_103_stops_re_expanding_after_the_caption():
+    """#103: the author defined DCPD in the body; the sentence after the Figure 1
+    caption spelled it out again, and again at Figure 3."""
+    original = [
+        "Abstract: a summary.",
+        "Keywords: microcapsules, vitrimer",
+        "The shell is arranged around a dicyclopentadiene (DCPD) core.",
+        "Figure 1. The layered shell architecture.",
+        "Figure 1 illustrates the arrangement surrounding the DCPD core.",
+        "Figure 3 displays the release profile of DCPD, normalized.",
+    ]
+    edited = list(original)
+    edited[4] = ("Figure 1 illustrates the arrangement surrounding the "
+                 "dicyclopentadiene (DCPD) core.")
+    edited[5] = ("Figure 3 displays the release profile of dicyclopentadiene (DCPD), "
+                 "normalized.")
+    out, queries = G.enforce_abbreviation_first_use(original, edited)
+    assert out[2] == original[2], "the author's own definition must stay where it is"
+    assert out[4] == original[4]
+    assert out[5] == original[5]
+    assert len(queries) == 1 and "already been defined" in queries[0]["query"]
