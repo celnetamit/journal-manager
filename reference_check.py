@@ -277,7 +277,8 @@ def check_references(reference_paragraphs, fetch=None) -> List[RefFinding]:
             continue
         # A missing title comes first because it is a different order of problem: a
         # reference short of its page range is still findable, one with no title is not.
-        gaps = missing_descriptive_fields(text) + missing_fields(text)
+        gaps = (missing_descriptive_fields(text) + missing_fields(text)
+                + book_fields_missing(text))
         if not gaps:
             continue
         # Each lookup is a network round trip. A median manuscript flags two
@@ -467,3 +468,63 @@ def complete_verified_references(
             "suggestion": None,
         })
     return out, queries
+
+
+#: A real page range, for the one question below. `_PAGES` is deliberately generous —
+#: its last arm accepts a trailing `, 607.` as a page — and on a chapter ending
+#: `; 2010.` it reads the year as the pages. This asks for two numbers and a dash.
+_PAGE_RANGE = re.compile(r"(?:\bpp?\.?\s*)?\d{1,5}\s*[-–—]\s*\d{1,5}\b")
+
+#: A chapter inside an edited book: Vancouver writes `In: Editor AB, editor. Book
+#: title. Place: Publisher; Year. p. 10-25.`
+_IN_EDITED_BOOK = re.compile(r"(?i)\bin\s*:|\b(editors?|eds?\.)\b")
+
+#: A publisher by name. The house words only — no colon heuristic, because a title
+#: with a colon in it is not a place of publication.
+_PUBLISHER_NAME = re.compile(
+    r"(?i)\b(?:[A-Z][\w.&'-]*\s+)?(press|publisher|publishing|publications?|wiley|"
+    r"elsevier|springer|routledge|sage|taylor\s*&?\s*francis|mcgraw[- ]?hill|pearson|"
+    r"academic\s+press|crc|blackwell|nature\s+publishing)\b")
+
+#: `Place: Publisher` — the city before the colon is the part authors leave out.
+_PLACE_AND_PUBLISHER = re.compile(r"[A-Z][A-Za-z.'\- ]{2,30}:\s*[A-Z]")
+
+#: An edition statement, which a book only needs when it is not the first.
+_EDITION = re.compile(r"(?i)\b\d+(?:st|nd|rd|th)\s*ed\b|\bedition\b")
+
+#: What says "this is a book" rather than an article: a publisher, an edition, or the
+#: `In:` of a chapter. Deliberately not "it has no volume" — a thin journal reference
+#: has no volume either, and that is a different finding.
+_LOOKS_LIKE_A_BOOK = re.compile(
+    r"(?i)\b(press|publisher|publishing|publications?|wiley|elsevier|springer|"
+    r"routledge|sage|taylor\s*&?\s*francis|mcgraw|pearson|isbn|handbook)\b"
+    r"|\b\d+(?:st|nd|rd|th)\s*ed\b|\bin\s*:")
+
+
+def book_fields_missing(text: str) -> List[str]:
+    """What a book or chapter reference is missing — the one question that can be
+    answered from the text alone.
+
+    The quality team, 16 Sep 2026: journal references are being formatted and books
+    are not. That is true, and the reason is worth writing down rather than papering
+    over: a journal article has a fixed shape — volume, issue, pages — that can be
+    checked against itself, and a book does not. Whether `Philadelphia: Wolters
+    Kluwer; 2022` names a publisher is not a question a pattern can answer, because
+    the publisher is a proper noun and there is no list of them.
+
+    Measured, not assumed. A first version asked for a place of publication whenever
+    it saw a colon before a capital, and turned `Revisiting the impostor phenomena:
+    How individuals cope` into a missing city — 60 of its 66 findings. A second asked
+    by publisher name and reported `Philadelphia: Wolters Kluwer` as having no
+    publisher, because Wolters Kluwer is not on any list anyone will maintain: 100
+    findings on 2,146 entries, most of them wrong. This file already carries the same
+    lesson from an earlier attempt, removed rather than tuned.
+
+    So only the arm that survived measurement stays: a chapter says it is a chapter
+    (`In: … editor`) and a chapter is found by its page range. One finding in 2,146.
+    The rest needs a lookup, not a pattern — see the note in the roadmap.
+    """
+    t = (text or "").strip()
+    if not t or not _IN_EDITED_BOOK.search(t) or _PAGE_RANGE.search(t):
+        return []
+    return ["chapter page range"]

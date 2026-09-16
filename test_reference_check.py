@@ -164,3 +164,38 @@ def test_the_reason_for_no_suggestion_is_the_real_one():
     assert "could not be matched" in R._why(None, lambda t: None, 3)
     assert "more than 15" in R._why(None, lambda t: None, 16)
     assert "suggested" in R._why("Smith J. ...", lambda t: {}, 1)
+
+
+# --- books (the quality team, 16 Sep 2026) -----------------------------------
+
+def test_a_chapter_with_no_page_range_is_reported():
+    """A chapter is found by its pages; a whole book is not."""
+    import reference_check as R
+    assert R.book_fields_missing(
+        "Jordan MM, Mackay EJ. Scale control in chalk reservoirs. In: Amjad Z, "
+        "editor. Mineral scales. Boca Raton: CRC Press; 2010.") == [
+        "chapter page range"]
+
+
+def test_a_complete_book_is_not_reported():
+    """`Philadelphia: Wolters Kluwer; 2022` names a publisher, and no list of
+    publisher names will ever contain all of them — which is why this check asks
+    nothing about publishers. Measured: a version that did reported 100 findings on
+    2,146 real entries, most of them wrong."""
+    import reference_check as R
+    for entry in [
+        "Potter PA, Perry AG. Fundamentals of Nursing. 10th ed. St. Louis: "
+        "Elsevier; 2021.",
+        "Brunner LS, Suddarth DS. Textbook of Medical-Surgical Nursing. 15th ed. "
+        "Philadelphia: Wolters Kluwer; 2022.",
+    ]:
+        assert R.book_fields_missing(entry) == [], entry
+
+
+def test_a_title_with_a_colon_is_not_a_missing_city():
+    """60 of the first version's 66 findings were this: a colon inside a title read
+    as `Place: Publisher`."""
+    import reference_check as R
+    assert R.book_fields_missing(
+        "Whitman MV, Shanine KK. Revisiting the impostor phenomena: How individuals "
+        "cope. J Manag Psychol. 2012;27(5):431-49.") == []
