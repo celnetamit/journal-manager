@@ -1951,6 +1951,15 @@ def _restore_equations(p, equations: list) -> None:
     for el in pending:
         p._p.append(el)
 
+    # And whatever placeholder is left had no equation to become. It is a working
+    # character and must never reach the author — job #106 delivered a paragraph whose
+    # entire content was one of these, because the copyedit had written its own.
+    for run in list(p._p.iter(qn("w:r"))):
+        for node in list(run):
+            if node.tag in (qn("w:t"), qn("w:delText")) and node.text:
+                if OBJECT_PLACEHOLDER in node.text:
+                    node.text = node.text.replace(OBJECT_PLACEHOLDER, "")
+
 
 #: Run-level content that carries a picture or an embedded object. `w:drawing` is the
 #: modern inline/floating image, `w:pict` the VML one Word still writes for pasted

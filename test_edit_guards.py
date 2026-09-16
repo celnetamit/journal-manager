@@ -1045,3 +1045,52 @@ def test_an_undefined_abbreviation_is_kept_and_asked_about():
     out, queries = G.refuse_invented_expansions(original, edited)
     assert out == edited, "the expansion stands"
     assert len(queries) == 1 and "does not define it" in queries[0]["query"]
+
+
+# --- a caption's data (job #106) ---------------------------------------------
+
+def test_a_caption_may_be_reworded_but_not_revalued():
+    """#106: `Figure 9: Line Waver-Burke Plot for T4 (80g)` came back as
+    `Figure 9. Lineweaver-Burk plot for T5 (100 g)`. The spelling repair is wanted;
+    the caption now claims the figure shows a different sample at a different mass."""
+    original = ["Figure 9:\tLine Waver-Burke Plot for T4 (80g) of Room-Dried Stem"]
+    edited = ["Figure 9. Lineweaver-Burk plot for T5 (100 g) of room-dried stem."]
+    out, queries = G.keep_caption_values(original, edited)
+    assert "T4 (80g)" in out[0], out[0]
+    assert "Lineweaver-Burk" in out[0], "the spelling correction must survive"
+    assert out[0].endswith("stem.")
+    assert len(queries) == 1 and "`T4`" in queries[0]["query"]
+
+
+def test_prose_that_opens_like_a_caption_is_left_alone():
+    """`Table 6 and Figure 2 shows that…` opens exactly like a caption and is a
+    sentence. Measured over 90 redlines, the reporting verb separated the two every
+    time."""
+    original = ["Table 6 and Figure 2 shows that the satisfaction level of information "
+                "bias has the highest mean rate among 4 groups"]
+    edited = ["Table 6 and Figure 2 show that the satisfaction level of information "
+              "bias has the highest mean rate among 5 groups"]
+    out, queries = G.keep_caption_values(original, edited)
+    assert out == edited and queries == []
+
+
+def test_the_house_subscript_in_a_caption_is_not_a_changed_value():
+    """`CaSO4` -> `CaSO₄` and `10-5` -> `10⁻⁵` are this pipeline's own corrections —
+    14 of the first sweep's 44 findings, every one of them correct work."""
+    for was, now in [("Table 2. Scale test observations at (40°C) CaSO4.",
+                      "Table 2. Scale test observations at (40°C) CaSO₄."),
+                     ("Figure 4. Emission spectra in THF; 10-5 moles/L at 390 nm.",
+                      "Figure 4. Emission spectra in THF; 10⁻⁵ moles/L at 390 nm.")]:
+        out, queries = G.keep_caption_values([was], [now])
+        assert out == [now] and queries == [], was
+
+
+def test_an_equation_placeholder_the_copyedit_invented_is_refused():
+    """#106: the author's `KCrd = 36.768x - 0.0006`, an equation typed as ordinary
+    text, came back as a bare placeholder — the model had seen the character standing
+    for equations elsewhere in that manuscript and wrote one of its own."""
+    original = ["KCrd = 36.768x - 0.0006\t(16)"]
+    edited = ["￼\t(16)"]
+    out, queries = G.keep_every_equation(original, edited)
+    assert out == original
+    assert len(queries) == 1 and "not in the author's file" in queries[0]["query"]

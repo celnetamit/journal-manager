@@ -42,6 +42,7 @@ from edit_guards import (
     _references_start,
     fix_trailing_citations,
     follow_the_author_on_invisible_twins,
+    keep_caption_values,
     keep_closed_compounds,
     keep_every_equation,
     keep_subscript_markers,
@@ -694,6 +695,12 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _marker_queries = keep_subscript_markers(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_marker_queries)
+
+    # A caption's values name the data the figure shows. Everything else in it — the
+    # spelling, the capitalisation, the stop at the end — is the copyedit's to fix.
+    edited_paragraphs, _caption_queries = keep_caption_values(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_caption_queries)
 
     # Body and table cells in ONE call, deliberately. The rule renders a superscript
     # only where the document gives evidence for it, and that evidence is document-wide:

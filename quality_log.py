@@ -171,6 +171,40 @@ LESSONS: List[Lesson] = [
             "carries no abbreviations of its own.",
     ),
     Lesson(
+        went_wrong="A figure caption came back naming different data: `Figure 9: Line "
+                   "Waver-Burke Plot for T4 (80g)` became `Figure 9. Lineweaver-Burk "
+                   "plot for T5 (100 g)`. The spelling repair is right and wanted; the "
+                   "caption silently agreeing with a sentence further down the paper "
+                   "is not.",
+        found_in="job #106",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.keep_caption_values",
+        proved_by="test_edit_guards.py::"
+                  "test_a_caption_may_be_reworded_but_not_revalued",
+        now="A caption may be re-worded and not re-valued. Which of the two is the "
+            "typo — the caption or the body — is a question about the artwork that "
+            "nobody reading the manuscript can answer, so the author's values come "
+            "back and the query asks. Every other correction to the caption stands.",
+        measured="over 90 redlines: 1 finding, this one. The first sweep gave 44, of "
+                 "which the false ones were prose opening `Table 6 … shows that`, and "
+                 "this pipeline's own `CaSO4` -> `CaSO₄` and `10-5` -> `10⁻⁵`",
+    ),
+    Lesson(
+        went_wrong="The copyedit invented an equation placeholder. The author's "
+                   "`KCrd = 36.768x - 0.0006`, an equation typed as ordinary text, was "
+                   "delivered as a single `￼` — the working character this pipeline "
+                   "uses to hold an equation's place, written into the file.",
+        found_in="job #106",
+        fixed_on="2026-09-16",
+        prevented_by="edit_guards.keep_every_equation",
+        proved_by="test_edit_guards.py::"
+                  "test_an_equation_placeholder_the_copyedit_invented_is_refused",
+        now="The placeholder count is compared in both directions: one the author did "
+            "not have is as wrong as one they had and lost, and the paragraph is "
+            "restored either way. A placeholder with no equation to become is also "
+            "stripped as the file is written, so it can never reach a reader.",
+    ),
+    Lesson(
         went_wrong="Nothing in ce4 asked the general question. Every guard answers one "
                    "past failure, so a new kind of loss — a subscript marker, in this "
                    "case — walked through the whole chain without touching a check, "

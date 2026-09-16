@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import difflib
 import re
+
+import token_census as _token_census
 from typing import Dict, List, Optional, Tuple
 
 #: A journal front-matter date line. These carry the article's own dates, not a
@@ -1327,21 +1329,32 @@ def keep_every_equation(
     Where the count no longer matches, the author's paragraph is restored whole. A
     partial repair would need to know where the missing equation belonged, and a
     sentence built around an equation is not a sentence that survives a guess.
+
+    The count is compared in **both** directions, which job #106 is the reason for.
+    The placeholder is a character the model can see, and having seen it standing for
+    equations elsewhere in that manuscript it wrote one of its own: the author's
+    `KCrd = 36.768x - 0.0006`, an equation typed as ordinary text, came back as a bare
+    `￼`. Nothing stood for it, so nothing could put anything back, and the character
+    itself was delivered in the file. A placeholder the author did not have is as
+    wrong as one they had and lost.
     """
     out = list(edited)
     queries: List[Dict[str, object]] = []
     for i in range(min(len(original), len(edited))):
         was, now = original[i] or "", out[i] or ""
-        expected = was.count(OBJECT_PLACEHOLDER)
-        if not expected or now.count(OBJECT_PLACEHOLDER) == expected:
+        expected, got = was.count(OBJECT_PLACEHOLDER), now.count(OBJECT_PLACEHOLDER)
+        if expected == got:
             continue
         out[i] = was
         queries.append({
             "index": i,
             "snippet": was.replace(OBJECT_PLACEHOLDER, "[equation]")[:200],
-            "query": ("This paragraph contains an equation, and the copyedit did not "
-                      "return it intact. The author's paragraph has been kept as it "
-                      "was — please edit it by hand around the equation."),
+            "query": (("This paragraph contains an equation, and the copyedit did not "
+                       "return it intact. ") if expected else
+                      ("The copyedit replaced this paragraph with a placeholder for an "
+                       "equation that is not in the author's file. ")) +
+                     "The author's paragraph has been kept as it was — please edit it "
+                     "by hand around the equation.",
             "suggestion": None,
         })
     return out, queries
@@ -1609,4 +1622,100 @@ def keep_subscript_markers(
                           f"thing that can carry it."),
                 "suggestion": None,
             })
+    return out, queries
+
+
+#: A figure or table caption, by how it opens. A caption is not prose: it is the label
+#: on a piece of data, and the numbers in it identify which data.
+#: The number may be `9`, `10.2` or `8.1` — all of it belongs to the label, and a
+#: pattern that stopped at `10` left `2 Mean` looking like a value that changed.
+_CAPTION_START = re.compile(
+    r"(?i)^\s*(fig(?:ure)?|tab(?:le)?|scheme|plate)\s*[.:\-–—]?\s*\d+(?:\.\d+)*")
+
+#: What a sentence about a table does and a caption never does. `Table 6 and Figure 2
+#: shows that the quality satisfaction level…` opens exactly like a caption and is
+#: prose; measured over 90 redlines, this one word separated the two every time.
+_REPORTING_VERB = re.compile(
+    r"(?i)\b(shows?|summari[sz]es?|presents?|illustrates?|displays?|lists?|gives?|"
+    r"depicts?|compares?|indicates?|reports?|describes?|reveals?|contains?)\b")
+
+#: A caption is a label. Past this length it is a paragraph that begins with one.
+_MAX_CAPTION = 300
+
+#: A sample label: `T4`, `S1`, `R2`. Everything else worth comparing in a caption —
+#: quantities with units, chemical formulae, marked symbols — is already defined once,
+#: in `token_census`, and measured there. Defining "a value" a second time here is how
+#: the first sweep came to treat `800 and` and `1 region` as data.
+_SAMPLE_LABEL = re.compile(r"\b[A-Za-z]{1,3}[\d₀-₉⁰-⁹]{1,3}\b")
+
+#: Sub- and superscript digits folded to plain ones, both of them. The census keeps
+#: superscripts marked on purpose — there a dropped `^` is the defect — but a caption
+#: asks a different question, and `10-5 moles/L` set as `10⁻⁵ moles/L` is this
+#: pipeline doing its job.
+_SCRIPT_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉⁰¹²³⁴⁵⁶⁷⁸⁹", "01234567890123456789")
+
+
+def _caption_values(text: str) -> List[str]:
+    body = _CAPTION_START.sub("", text or "")
+    return _token_census._tokens_outside_links(body) + _SAMPLE_LABEL.findall(body)
+
+
+def _value_key(value: str) -> str:
+    return re.sub(r"[\s\-\u2010-\u2015\u207b]", "",
+                  (value or "").translate(_SCRIPT_DIGITS)).lower()
+
+
+#: The values inside one. `T4`, `80g`, `0.05 M` — a label or a quantity, not the
+#: caption's own number, which `_CAPTION_START` has already consumed.
+
+def keep_caption_values(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A caption's data may be re-worded but not re-valued.
+
+    Job #106: `Figure 9: Line Waver-Burke Plot for T4 (80g) of Room-Dried of Plantain
+    Stem Substrate` came back as `Figure 9. Lineweaver-Burk plot for T5 (100 g) of
+    room-dried plantain stem substrate.` The spelling repair is right and wanted. `T4
+    (80g)` becoming `T5 (100 g)` is not a copyedit: it is the caption now claiming the
+    figure shows a different sample at a different mass, silently, to agree with a
+    sentence further down the paper.
+
+    It may even be what the author meant — the body does say T5 — and that is the
+    point. Which of the two is the typo is a question about the artwork, and nobody
+    reading the manuscript can answer it. The values come back and the query asks.
+
+    Only the values are restored. Every other correction to the caption stands.
+    """
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    for i in range(min(len(original), len(edited))):
+        was, now = original[i] or "", out[i] or ""
+        if not was or was == now or not _CAPTION_START.match(was):
+            continue
+        if len(was) > _MAX_CAPTION or _REPORTING_VERB.search(was):
+            continue
+        mine, theirs = _caption_values(was), _caption_values(now)
+        # `CaSO4` -> `CaSO₄` and `cm-1` -> `cm⁻¹` are this pipeline's own corrections,
+        # and were 14 of the first sweep's 44 findings. Folded away here.
+        flat = [_value_key(v) for v in theirs]
+        lost = [v for v in mine if _value_key(v) not in flat]
+        if not lost:
+            continue
+        # Put each one back where the copyedit's own value stands, so the rewritten
+        # caption keeps its wording and only the data returns to the author's.
+        _mine_flat = [_value_key(x) for x in mine]
+        for value, replacement in zip(lost, [v for v in theirs
+                                             if _value_key(v) not in _mine_flat]):
+            now = now.replace(replacement, value, 1)
+        out[i] = now
+        queries.append({
+            "index": i,
+            "snippet": was[:200],
+            "query": (f"The copyedit changed {', '.join(f'`{v}`' for v in lost)} in "
+                      f"this caption. A caption's values identify which data the "
+                      f"figure shows, so the author's have been put back — if the "
+                      f"caption really does disagree with the text, that is a question "
+                      f"for the author and the artwork, not a copyedit."),
+            "suggestion": None,
+        })
     return out, queries
