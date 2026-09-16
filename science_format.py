@@ -132,6 +132,9 @@ _SUBSCRIPT_MARKER = re.compile(
 _EXPONENT_UNITS = ("cm", "mm", "nm", "µm", "um", "m", "km", "g", "mg", "kg", "µg",
                    "ng", "L", "mL", "µL", "l", "ml", "ha", "min", "s", "h", "mol",
                    "mmol", "K", "W", "J", "Pa", "N", "mgg", "gg", "day", "yr")
+#: The Greek mu spelled the same as the micro sign — see `proofread.both_micro_signs`.
+_EXPONENT_UNITS = _EXPONENT_UNITS + tuple(
+    u.replace("\u00b5", "\u03bc") for u in _EXPONENT_UNITS if "\u00b5" in u)
 _EXPONENT_MARKER = re.compile(
     r"(?<![A-Za-z0-9-])(" + "|".join(sorted(_EXPONENT_UNITS, key=len, reverse=True))
     + r")\s?-\s?([123])\b")

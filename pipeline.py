@@ -11,6 +11,7 @@ import concurrent.futures
 import datetime
 import json
 import os
+import sys
 import threading
 import time
 import traceback
@@ -39,6 +40,7 @@ from edit_guards import (
     _reference_identity,
     _references_start,
     fix_trailing_citations,
+    follow_the_author_on_invisible_twins,
     orphaned_formula_queries,
     enforce_abbreviation_first_use,
     preserve_author_hyphenation,
@@ -738,6 +740,24 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
                          f"{_q['message']}",
                 "suggestion": None,
             })
+
+    # Last, so nothing after it can re-introduce one: a tracked change from `μm` to
+    # `µm`, which is the same sign written twice. Body and table cells judged on the
+    # author's usage across both, since it is one document and one decision.
+    _n_body = len(edited_paragraphs)
+    _cells_now = [table_edits.get(a, o) for a, o
+                  in zip(table_cell_addresses, table_cell_originals)]
+    _twinned, _n_twins = follow_the_author_on_invisible_twins(
+        original_paragraphs + list(table_cell_originals),
+        edited_paragraphs + _cells_now)
+    edited_paragraphs = _twinned[:_n_body]
+    for _addr, _was, _now in zip(table_cell_addresses, table_cell_originals,
+                                 _twinned[_n_body:]):
+        if _now != table_edits.get(_addr, _was):
+            table_edits[_addr] = _now
+    if _n_twins:
+        print(f"invisible twins folded to the author's spelling: {_n_twins}",
+              file=sys.stderr)
 
     # Did the copyedit lose something the author wrote? Only the two checks that
     # survived measurement: a paragraph returned empty, and a negation dropped — the one

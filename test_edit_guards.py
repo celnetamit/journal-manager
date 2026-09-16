@@ -725,3 +725,67 @@ def test_an_abbreviation_never_arrives_before_its_definition():
     assert "commercial UF microcapsules" in out[4], (
         "having been defined above, the author's later definition is now the short form")
     assert "UF control group" in out[5]
+
+
+# --- invisible twins (job #100) ----------------------------------------------
+
+def test_the_author_s_micro_sign_survives_the_copyedit():
+    """Job #100: `μm` deleted, `µm` inserted. One glyph, two code points, and a
+    tracked change the copy editor cannot see."""
+    original = ["only cracks exceeding 5–10 μm in length",
+                "microcracks below 1 μm are addressed"]
+    edited = ["Only cracks exceeding 5–10 µm in length",
+              "Microcracks below 1 µm are addressed"]
+    out, n = G.follow_the_author_on_invisible_twins(original, edited)
+    assert n == 2
+    assert out == ["Only cracks exceeding 5–10 μm in length",
+                   "Microcracks below 1 μm are addressed"]
+    # The real edit — the capital O — is untouched.
+    assert out[0].startswith("Only")
+
+
+def test_a_new_micro_sign_is_set_the_author_s_way_too():
+    original = ["particles of 5 μm"]
+    edited = ["particles of 5 μm and a further batch of 2 µm"]
+    out, _ = G.follow_the_author_on_invisible_twins(original, edited)
+    assert "µ" not in out[0]
+
+
+def test_a_mixed_author_is_not_made_consistent_for_them():
+    """The author used both forms. Each occurrence keeps what they typed — the
+    guard follows them, it does not tidy them up, because making the document
+    consistent would be a decision no reader can see being made."""
+    original = ["5 μm and 3 µm"]
+    edited = ["5 µm and 3 µm"]
+    out, n = G.follow_the_author_on_invisible_twins(original, edited)
+    assert n == 1 and out == original
+
+
+def test_a_sign_the_author_never_used_is_the_copyedit_s_own_work():
+    """`um` -> `µm` is a visible correction and must survive as a tracked change."""
+    original = ["particles of 5 um"]
+    edited = ["particles of 5 µm"]
+    out, n = G.follow_the_author_on_invisible_twins(original, edited)
+    assert n == 0 and out == edited
+
+
+def test_the_increment_sign_is_left_to_the_science_pass():
+    """`∆` -> `Δ` is `enforce_science_symbols` doing its job on purpose; folding it
+    back here would leave the two passes undoing each other every run."""
+    original = ["∆s# was measured"]
+    edited = ["ΔS# was measured"]
+    out, _ = G.follow_the_author_on_invisible_twins(original, edited)
+    assert out == edited
+
+
+def test_a_mixed_manuscript_is_followed_at_each_occurrence():
+    """Job #93: the author wrote the micro sign four times and the Greek mu once.
+    No document-wide preference exists, so each site keeps what the author typed."""
+    original = ["arrangements of 0.2 to 1.0 µm and 0.2 to 1.4 µm were seen",
+                "a further feature of 3 μm"]
+    edited = ["Arrangements of 0.2 to 1.0 μm and 0.2 to 1.4 μm were seen",
+              "A further feature of 3 µm"]
+    out, n = G.follow_the_author_on_invisible_twins(original, edited)
+    assert n == 3
+    assert out[0] == "Arrangements of 0.2 to 1.0 µm and 0.2 to 1.4 µm were seen"
+    assert out[1] == "A further feature of 3 μm"

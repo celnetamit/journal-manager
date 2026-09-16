@@ -60,6 +60,16 @@ SPACED_UNITS = (
     "J", "kJ", "min", "h", "s", "ms", "rpm",
 )
 
+#: Both micro signs. Authors write either; the lists above carry only U+00B5, so a
+#: manuscript that uses the Greek mu had its `5\u03bcm` read as no unit at all and
+#: every spacing check on it silently passed.
+def both_micro_signs(units) -> tuple:
+    out = list(units)
+    for u in units:
+        if "\u00b5" in u:
+            out.append(u.replace("\u00b5", "\u03bc"))
+    return tuple(out)
+
 
 @dataclass
 class ProofFinding:
@@ -351,7 +361,7 @@ def mechanical_findings(paragraphs: List[str],
                     text[max(0, m.start() - 18):m.end() + 18].strip(),
                     f"{m.group(1)}–{m.group(2)}"))
 
-            units = "|".join(sorted(SPACED_UNITS, key=len, reverse=True))
+            units = "|".join(sorted(both_micro_signs(SPACED_UNITS), key=len, reverse=True))
             for m in re.finditer(rf"(?<![\w.])(\d+(?:\.\d+)?)({units})\b", scan):
                 if _is_not_a_measurement(scan, m):
                     continue

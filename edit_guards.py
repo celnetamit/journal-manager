@@ -26,6 +26,7 @@ instead: see `orphaned_formula_queries`.
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -1061,3 +1062,115 @@ def restore_reference_urls(
             "suggestion": None,
         })
     return out, queries
+
+
+#: Characters that are the same character twice over: one glyph, one meaning, two code
+#: points. Job #100 came back with `μm` deleted and `µm` inserted — a tracked change
+#: the copy editor cannot see, cannot judge, and has to accept or reject anyway. The
+#: model does this on its own; nothing in the house rules asks for it.
+#:
+#: Only signs that are visually identical in a normal manuscript font belong here.
+#: Deliberately absent:
+#:   * `∆` -> `Δ` (U+2206 -> U+0394), which `enforce_science_symbols` performs on
+#:     purpose — folding it back would leave two passes fighting each other;
+#:   * lookalikes that are NOT identical (`º` for `°`, `'` for `’`, a hyphen for a
+#:     minus sign), because correcting those is real work that must stay visible;
+#:   * the space characters, because the spacing passes insert a non-breaking space
+#:     deliberately.
+INVISIBLE_TWINS: Tuple[Tuple[str, str], ...] = (
+    ("µ", "μ"),   # MICRO SIGN / GREEK SMALL LETTER MU
+    ("Ω", "Ω"),   # OHM SIGN / GREEK CAPITAL OMEGA
+    ("Å", "Å"),   # ANGSTROM SIGN / LATIN CAPITAL A WITH RING ABOVE
+    ("K", "K"),   # KELVIN SIGN / LATIN CAPITAL K
+)
+
+
+_ANY_TWIN = re.compile("[" + "".join(a + b for a, b in INVISIBLE_TWINS) + "]")
+
+
+def _fold_twins(text: str) -> str:
+    """The text with each twin written one agreed way. For comparison only — this
+    spelling is never what gets written out."""
+    for a, b in INVISIBLE_TWINS:
+        text = text.replace(a, b)
+    return text
+
+
+def _follow_at_each_occurrence(before: str, after: str) -> Tuple[str, int]:
+    """The author's own character back at every site where the copyedit swapped one
+    twin for the other and changed nothing else.
+
+    Needed because a manuscript is allowed to be inconsistent — job #93 used the micro
+    sign four times and the Greek mu once. There is no document-wide answer there, but
+    there is an answer at each occurrence: whichever one the author typed.
+    """
+    if before == after:
+        return after, 0
+    out: List[str] = []
+    swapped = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, before, after, autojunk=False).get_opcodes():
+        if tag == "delete":
+            continue
+        piece = after[j1:j2]
+        if (tag == "replace" and (i2 - i1) == (j2 - j1)
+                and _fold_twins(before[i1:i2]) == _fold_twins(piece)):
+            out.append(before[i1:i2])
+            swapped += sum(1 for x, y in zip(before[i1:i2], piece) if x != y)
+        else:
+            out.append(piece)
+    return "".join(out), swapped
+
+
+def follow_the_author_on_invisible_twins(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], int]:
+    """Spell each of the twins above the way the author spelled it.
+
+    Two passes, because there are two different questions. Where the author used one
+    form and never the other, that is a decision for the whole document and it is
+    applied everywhere — including to text the copyedit added, so a newly written
+    `5 µm` is set like the author's own. Where the author used both, there is no
+    document-wide answer, so each occurrence is matched against the author's character
+    at that same place and put back only if nothing else about it changed.
+
+    A twin the author never used at all is left alone in both passes: `um` -> `µm` is
+    the copyedit's own work, it is visible on the page, and it must stay a tracked
+    change like any other correction.
+
+    Returns the text and the number of characters put back, which is reported nowhere
+    on purpose — a change no reader can see is not worth a query on a copy editor's
+    screen.
+    """
+    joined = "\n".join(p or "" for p in original)
+    swaps: Dict[str, str] = {}
+    for a, b in INVISIBLE_TWINS:
+        used_a, used_b = a in joined, b in joined
+        if used_a and not used_b:
+            swaps[b] = a
+        elif used_b and not used_a:
+            swaps[a] = b
+
+    if not swaps and not _ANY_TWIN.search(joined):
+        return edited, 0
+
+    out: List[str] = []
+    changed = 0
+    for i, para in enumerate(edited):
+        if not para:
+            out.append(para)
+            continue
+        fixed = para
+        for wrong, right in swaps.items():
+            if wrong in fixed:
+                changed += fixed.count(wrong)
+                fixed = fixed.replace(wrong, right)
+        # The per-occurrence pass, for the forms the document-wide rule had no answer
+        # for. Skipped unless this paragraph and the author's own both carry a twin,
+        # so the character diff runs on a handful of paragraphs, not the manuscript.
+        was = original[i] if i < len(original) else ""
+        if _ANY_TWIN.search(fixed) and _ANY_TWIN.search(was or ""):
+            fixed, n = _follow_at_each_occurrence(was, fixed)
+            changed += n
+        out.append(fixed)
+    return out, changed
