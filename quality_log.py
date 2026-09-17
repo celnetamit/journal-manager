@@ -447,6 +447,126 @@ LESSONS: List[Lesson] = [
             "and its number is put back with the author's own spacing.",
         measured="10 of 13 steps unnumbered, 3 left alone",
     ),
+
+    # --- 17 September 2026, with the quality team on jobs #107 to #113 -------------
+
+    Lesson(
+        went_wrong="`(FAO, 2015)` was turned into `[3]` although no FAO reference "
+                   "exists, so the citation pointed at Akpe et al. on crude-oil soil.",
+        found_in="job #107",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards.refuse_citations_without_a_reference",
+        proved_by="test_edit_guards.py::"
+                  "test_a_number_is_not_minted_for_a_missing_reference",
+        now="A number is never minted for a work that is not in the list. The author's "
+            "own citation is put back and they are asked for the reference.",
+        measured="94 findings over 91 redlines narrowed to 8, each read by hand",
+    ),
+    Lesson(
+        went_wrong="A recasing the copyedit made in the prose (`cfu/g` to `CFU/g`) did "
+                   "not reach the table, where the unit is looked up.",
+        found_in="jobs #106, #107, #110",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards.apply_case_changes_to_cells",
+        proved_by="test_edit_guards.py::test_a_recasing_reaches_the_table_cells",
+        now="The recasing is learned from the body and applied to body and cells "
+            "alike, over every cell with a letter in it.",
+        measured="5 of 37 table cells were reaching the guard before",
+    ),
+    Lesson(
+        went_wrong="A reference reformatted to lead with a different author was read "
+                   "as lost, and the whole bibliography was restored unformatted.",
+        found_in="job #107",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards._references_lost",
+        proved_by="test_job60_references.py::"
+                  "test_a_reference_reformatted_to_lead_with_another_author_is_not_lost",
+        now="A work is identified by its years, its names and its uncommon title "
+            "words, and only the entries actually missing are restored.",
+        measured="24 of 91 bibliographies were being discarded; now 13, all real",
+    ),
+    Lesson(
+        went_wrong="In-text citation numbers shifted by one while the reference list "
+                   "stayed in its original order, so every number after the shift "
+                   "pointed at a different paper.",
+        found_in="job #110",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards.keep_citation_numbers_when_the_list_did_not_move",
+        proved_by="test_edit_guards.py::"
+                  "test_a_number_may_not_move_while_the_list_stands_still",
+        now="If the bibliography holds the same works in the same order, no in-text "
+            "number may change.",
+        measured="6 of 92 manuscripts, one with 65 shifted citations",
+    ),
+    Lesson(
+        went_wrong="Thirteen citations were left as author and year in a Vancouver "
+                   "manuscript whose list numbers every one of those works.",
+        found_in="job #112",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards.number_citations_that_have_a_reference",
+        proved_by="test_edit_guards.py::"
+                  "test_a_listed_work_cited_by_name_gets_its_number",
+        now="The number is added after the author's own citation, but only where the "
+            "surname and year match exactly one numbered entry.",
+        measured="5 of 92 manuscripts; every inserted number checked by hand",
+    ),
+    Lesson(
+        went_wrong="The hypotheses H2, O2 and O3 were subscripted into hydrogen, "
+                   "oxygen and ozone in a paper with no chemistry in it.",
+        found_in="job #112",
+        fixed_on="2026-09-17",
+        prevented_by="science_format.labelled_series",
+        proved_by="test_edit_guards.py::test_a_numbered_hypothesis_is_not_hydrogen",
+        now="A letter used with two or more numbers, one of which cannot be a formula, "
+            "is numbering something — unless the paragraph carries real chemistry.",
+        measured="3 of 92 manuscripts, two of them already shipped with the defect",
+    ),
+    Lesson(
+        went_wrong="A manuscript set to follow its own language wrote `fiber` 27 times "
+                   "and `fibre` 4, because the copyedit chose where the language pass "
+                   "had correctly refused to.",
+        found_in="job #109",
+        fixed_on="2026-09-17",
+        prevented_by="edit_guards.apply_spelling_changes_everywhere",
+        proved_by="test_edit_guards.py::"
+                  "test_a_respelling_is_carried_through_the_manuscript",
+        now="Whatever the copyedit re-spelled is re-spelled everywhere outside the "
+            "bibliography, where a title is a quotation.",
+        measured="6 of 92 manuscripts, one word each",
+    ),
+    Lesson(
+        went_wrong="Lowercase Greek quantity symbols were not italic, against the "
+                   "convention every physical-science house style follows.",
+        found_in="job #109",
+        fixed_on="2026-09-17",
+        prevented_by="greek_italics.apply_to_document",
+        proved_by="test_edit_guards.py::"
+                  "test_a_lowercase_greek_quantity_is_italic_and_a_capital_is_not",
+        now="Lowercase italic, capitals upright, and units (μm, μL, Cu Kα) left alone.",
+        measured="45 symbols set over 40 manuscripts, 38 left as units",
+    ),
+    Lesson(
+        went_wrong="The text sent a reader to Table 6 and to Figures 1 to 4 that are "
+                   "not in the manuscript, and nothing said so.",
+        found_in="Amit, 17 Sep",
+        fixed_on="2026-09-17",
+        prevented_by="house_layout.check_cited_artwork_exists",
+        proved_by="test_edit_guards.py::test_a_table_the_text_points_at_must_exist",
+        now="Every table and figure the text refers to is checked against the captions "
+            "that exist, including captions inside the table.",
+        measured="20 of 91 manuscripts have a gap; four read by hand, all real",
+    ),
+    Lesson(
+        went_wrong="A reference missing its authors was reported only in a margin "
+                   "comment, beside an entry that looks complete.",
+        found_in="job #113",
+        fixed_on="2026-09-17",
+        prevented_by="reference_gaps.mark",
+        proved_by="test_reference_gaps.py::"
+                  "test_missing_authors_are_marked_at_the_head_after_the_number",
+        now="The gap is written into the entry where the field belongs, in its own "
+            "highlight — authors at the head, volume and pages at the tail.",
+    ),
 ]
 
 
