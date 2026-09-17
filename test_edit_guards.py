@@ -1325,3 +1325,51 @@ def test_a_chemical_locant_is_italic():
     import greek_italics as GI
     assert GI._wants_italic("the β-hydroxyester bond", 4) is True
     assert GI._wants_italic("α-cellulose content", 0) is True
+
+
+# --------------------------------------------------------------------------------
+# A reference's number is the author's until the list itself moves (job #110).
+
+_LIST = ["REFERENCES",
+         "1. Haller H. Soil Remediation. Mid Sweden University; 2017.",
+         "2. Evely A. Dead planet, living planet. UNEP; 2010.",
+         "3. Akpe AR, Ekundayo AO. Bacterial degradation of petroleum hydrocarbons. 2013.",
+         "4. Ali H, Khan E. Phytoremediation of heavy metals. Chemosphere. 2013."]
+
+
+def test_a_number_may_not_move_while_the_list_stands_still():
+    """Job #110: the author's [3] came back as [4], and 3. is still Akpe."""
+    original = ["Plantain stems support colonisation [3], and more [4]."] + _LIST
+    edited = ["Plantain stems support colonization [4], and more [5]."] + _LIST
+    out, queries = G.keep_citation_numbers_when_the_list_did_not_move(original, edited)
+    assert "[3]" in out[0] and "[4]" in out[0] and "[5]" not in out[0]
+    assert queries and "put back" in queries[0]["query"]
+
+
+def test_house_punctuation_is_not_a_number():
+    """`[7-9]` -> `[7–9]` is the en dash rule doing its job."""
+    original = ["Several studies [7-9] agree."] + _LIST
+    edited = ["Several studies [7–9] agree."] + _LIST
+    out, queries = G.keep_citation_numbers_when_the_list_did_not_move(original, edited)
+    assert out[0] == edited[0] and queries == []
+
+
+def test_a_genuine_resort_renumbers_freely():
+    """When the list really is re-ordered, renumbering is the point of the pass."""
+    original = ["First [4], then [1]."] + _LIST
+    resorted = ["REFERENCES",
+                "1. Ali H, Khan E. Phytoremediation of heavy metals. Chemosphere. 2013.",
+                "2. Haller H. Soil Remediation. Mid Sweden University; 2017.",
+                "3. Evely A. Dead planet, living planet. UNEP; 2010.",
+                "4. Akpe AR, Ekundayo AO. Bacterial degradation of petroleum "
+                "hydrocarbons. 2013."]
+    edited = ["First [1], then [2]."] + resorted
+    out, queries = G.keep_citation_numbers_when_the_list_did_not_move(original, edited)
+    assert out == edited and queries == []
+
+
+def test_nothing_happens_without_a_reference_list():
+    original = ["A claim [3]."]
+    edited = ["A claim [4]."]
+    out, queries = G.keep_citation_numbers_when_the_list_did_not_move(original, edited)
+    assert out == edited and queries == []

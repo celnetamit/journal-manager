@@ -2386,3 +2386,90 @@ def apply_spelling_changes_to_cells(
     for query in queries:
         query["guard"] = "apply_spelling_changes_to_cells"
     return out, queries
+
+
+_BRACKET_GROUP = re.compile(r"\[\s*(\d{1,3}(?:\s*[,;]\s*\d{1,3}|\s*[–—-]\s*\d{1,3})*)\s*\]")
+
+
+def _bracket_numbers(text: str) -> List[List[str]]:
+    """The numbers inside each bracketed citation, in order."""
+    return [re.findall(r"\d{1,3}", m.group(1)) for m in _BRACKET_GROUP.finditer(text or "")]
+
+
+def _list_order_unchanged(original: List[str], edited: List[str], start: int) -> bool:
+    """Whether the bibliography holds the same works in the same order.
+
+    This is the whole question. If the list was re-sorted, renumbering the text is the
+    point of the exercise; if it was not, every changed number is a changed pointer.
+    """
+    before = [s for s in (_reference_shape(p) for p in original[start + 1:]) if s]
+    after = [s for s in (_reference_shape(p) for p in edited[start + 1:]) if s]
+    if not before or len(before) != len(after):
+        return False
+    return all(_same_work(a, b) for a, b in zip(before, after))
+
+
+def keep_citation_numbers_when_the_list_did_not_move(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A reference's number is the author's until the list itself is re-ordered.
+
+    Job #110, and it is the same defect as job #107 one step further on. The author
+    cited `(FAO, 2015)`, which has no reference; the numbering pass counted it as a
+    work anyway and gave it a place in the sequence, so every citation after it moved
+    up by one — the author's `[3]` came back as `[4]`, `[4]` as `[5]`, `[5-6]` as
+    `[6, 7]`. The bibliography did not move: all nineteen entries were in the order the
+    author wrote them, with `3.` still Akpe and `4.` still Ali. So `[4]` in the text now
+    points at Ali where the author pointed at Akpe.
+
+    Restoring the FAO citation, which #107's guard does, is not enough on its own —
+    that fixes the sentence and leaves the shift. This is the other half.
+
+    The rule is decidable rather than clever: if the bibliography holds the same works
+    in the same order it started in, no in-text number may change. When the list *is*
+    genuinely re-sorted — which is what the pass is for — the numbers are expected to
+    change and nothing here interferes.
+
+    Punctuation is not a number. `[7-9]` → `[7–9]` is the house's en dash and is left
+    alone; this restores the author's *numbers*, and the citation-formatting rules that
+    run after it put the house punctuation back on.
+    """
+    start = _references_start(original)
+    if start is None or not _list_order_unchanged(original, edited, start):
+        return edited, []
+
+    out = list(edited)
+    moved: List[Tuple[int, str, str]] = []
+    for i in range(min(start, len(out))):
+        was, now = original[i] or "", out[i] or ""
+        if not was or not now:
+            continue
+        before_groups = list(_BRACKET_GROUP.finditer(was))
+        after_groups = list(_BRACKET_GROUP.finditer(now))
+        if not before_groups or len(before_groups) != len(after_groups):
+            continue
+        changed = [(b, a) for b, a in zip(before_groups, after_groups)
+                   if _bracket_numbers(b.group(0)) != _bracket_numbers(a.group(0))]
+        if not changed:
+            continue
+        for b, a in sorted(changed, key=lambda pair: -pair[1].start()):
+            moved.append((i, a.group(0), b.group(0)))
+            now = now[:a.start()] + b.group(0) + now[a.end():]
+        out[i] = now
+
+    if not moved:
+        return out, []
+
+    shown = "; ".join(f"{was} → {now}" for _i, was, now in moved[:5])
+    return out, [{
+        "index": moved[0][0],
+        "snippet": moved[0][1],
+        "query": (
+            f"{len(moved)} citation number(s) had moved while the reference list stayed "
+            f"in the order the author wrote it — {shown}. A number that moves while the "
+            f"list does not is a citation pointing at a different paper, so the author's "
+            f"numbers have been put back. This usually means the numbering pass counted "
+            f"a citation that has no reference; that query is beside it."),
+        "guard": "keep_citation_numbers_when_the_list_did_not_move",
+        "suggestion": None,
+    }]

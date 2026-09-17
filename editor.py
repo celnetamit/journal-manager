@@ -1802,6 +1802,42 @@ def collect_table_texts_for_proofing(structure) -> List[Tuple[TableAddress, str]
     return out
 
 
+def collect_all_table_cells(structure) -> List[Tuple[TableAddress, str]]:
+    """Every cell paragraph that contains a letter — the widest net of the three.
+
+    Job #110 is why this exists. `cfu/g` was recased to `CFU/g` in the prose and stayed
+    lowercase in `T. Bacteria (cfu/g)` and `HUB (cfu/g)`, twice over two jobs, and the
+    guard written to carry a recasing into the tables could not have fixed it: those
+    cells are not in the list. `is_editable_cell` wants three real words before a cell
+    goes anywhere near the copyeditor — rightly, because a model asked to copyedit
+    `0.15` may hand back `0.150` — and a column heading has two. Of this manuscript's
+    83 table paragraphs, five were collected.
+
+    The document-wide *repairs* are not copyediting and the reason for that threshold
+    does not apply to them: they are deterministic character substitutions learned from
+    a change the copyedit already made — `cfu` → `CFU`, `fibre` → `fiber`. None of them
+    can touch a number.
+
+    A merged cell appears once: python-docx returns the same cell for every grid
+    position it spans.
+    """
+    out: List[Tuple[TableAddress, str]] = []
+    seen: set = set()
+    for t in structure.tables:
+        for row in t.grid:
+            for cell in row:
+                for pi, para in enumerate(cell.paragraphs):
+                    text = (para.text or "").strip()
+                    if not text or not re.search(r"[A-Za-z]", text):
+                        continue
+                    address = (t.index, cell.row, cell.col, pi)
+                    if address in seen:
+                        continue
+                    seen.add(address)
+                    out.append((address, text))
+    return out
+
+
 def collect_table_texts(structure) -> List[Tuple[TableAddress, str]]:
     """Cell paragraphs worth copyediting, with the address to write each one back to.
 

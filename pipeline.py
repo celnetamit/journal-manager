@@ -43,6 +43,7 @@ from edit_guards import (
     apply_case_changes_to_cells,
     apply_spelling_changes_everywhere,
     apply_spelling_changes_to_cells,
+    keep_citation_numbers_when_the_list_did_not_move,
     refuse_citations_without_a_reference,
     _reference_identity,
     _references_start,
@@ -78,6 +79,7 @@ from editor import (
     build_jats_xml,
     build_journal_report,
     build_plagiarism_report,
+    collect_all_table_cells,
     collect_table_texts,
     collect_table_texts_for_proofing,
     enforce_author_limit,
@@ -571,6 +573,19 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # disagreeing with itself, which is worse than not firing at all.
     table_cell_addresses: list = []
     table_cell_originals: list = []
+    # Every cell with a letter in it, which is a different and much longer list than
+    # the cells worth copyediting — see `collect_all_table_cells`. The document-wide
+    # repairs run over this one, because job #110's `T. Bacteria (cfu/g)` is exactly
+    # the kind of cell the copyediting threshold keeps out.
+    repair_cell_addresses: list = []
+    repair_cell_originals: list = []
+    if structure is not None:
+        try:
+            for _addr, _text in collect_all_table_cells(structure):
+                repair_cell_addresses.append(_addr)
+                repair_cell_originals.append(_text)
+        except Exception as _cells_exc:                           # noqa: BLE001
+            warnings.append(f"Table cells could not be read for repairs: {_cells_exc}")
     if structure is not None and opts.get("edit_tables", True):
         try:
             table_items = collect_table_texts(structure)
@@ -658,6 +673,16 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_citation_queries)
 
+    # And the other half of the same defect. Restoring `(FAO, 2015)` fixes the sentence
+    # and leaves the shift it caused: the numbering pass had counted it as a work, so
+    # every citation after it moved up one — the author's [3] came back as [4] while
+    # the bibliography stayed in the order they wrote it, with 3. still Akpe and 4.
+    # still Ali. A number that moves while the list does not is a wrong pointer.
+    edited_paragraphs, _numbering_queries = (
+        keep_citation_numbers_when_the_list_did_not_move(
+            original_paragraphs, edited_paragraphs))
+    guard_queries.extend(_numbering_queries)
+
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_reference_year_only(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_drop_redundant_paren_citation(edited_paragraphs, enabled_rule_ids)
@@ -723,11 +748,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # #106's finding again for exactly this reason: the guard above did its work and
     # never saw `T. Bacteria (cfu/g)`, because the pipeline carries cells separately.
     _cells_before_case = [table_edits.get(a, o) for a, o
-                          in zip(table_cell_addresses, table_cell_originals)]
+                          in zip(repair_cell_addresses, repair_cell_originals)]
     _cells_recased, _cell_case_queries = apply_case_changes_to_cells(
         original_paragraphs, edited_paragraphs, _cells_before_case)
-    for _addr, _now in zip(table_cell_addresses, _cells_recased):
-        table_edits[_addr] = _now
+    for _addr, _was, _now in zip(repair_cell_addresses, _cells_before_case,
+                                 _cells_recased):
+        if _now != _was:
+            table_edits[_addr] = _now
     guard_queries.extend(_cell_case_queries)
 
     # And a word re-spelled in one place is re-spelled in all of them. Job #109 was set
@@ -740,11 +767,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     guard_queries.extend(_spelling_queries)
 
     _cells_before_spelling = [table_edits.get(a, o) for a, o
-                              in zip(table_cell_addresses, table_cell_originals)]
+                              in zip(repair_cell_addresses, repair_cell_originals)]
     _cells_respelled, _cell_spelling_queries = apply_spelling_changes_to_cells(
         original_paragraphs, edited_paragraphs, _cells_before_spelling)
-    for _addr, _now in zip(table_cell_addresses, _cells_respelled):
-        table_edits[_addr] = _now
+    for _addr, _was, _now in zip(repair_cell_addresses, _cells_before_spelling,
+                                 _cells_respelled):
+        if _now != _was:
+            table_edits[_addr] = _now
     guard_queries.extend(_cell_spelling_queries)
 
     # A caption's values name the data the figure shows. Everything else in it — the
