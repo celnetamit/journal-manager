@@ -2279,3 +2279,110 @@ def _references_lost(
     unaccounted = [str(shape["text"]) for j, shape in enumerate(shapes_after)
                    if j not in matched_after]
     return lost, unaccounted
+
+
+def _variant_pairs() -> Dict[str, str]:
+    """Every word this house knows as a spelling variant, both ways round."""
+    from science_format import _UK_TO_US, _US_TO_UK
+    pairs = dict(_UK_TO_US)
+    pairs.update(_US_TO_UK)
+    return pairs
+
+
+def _learn_spelling_changes(original: List[str], edited: List[str]) -> Dict[str, str]:
+    """The re-spellings the copyedit itself made, and only those.
+
+    Validated against the house's own variant list, so this can never turn into
+    "replace any word the copyedit replaced". `fibre` → `fiber` is learned; `showed`
+    → `demonstrated` is not a spelling variant and is none of this guard's business.
+    """
+    variants = _variant_pairs()
+    changes: Dict[str, str] = {}
+    for was, now in zip(original, edited):
+        if not was or not now or was == now:
+            continue
+        mine = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", was)}
+        theirs = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", now)}
+        for word in mine - theirs:
+            target = variants.get(word)
+            if target and target in theirs:
+                changes.setdefault(word, target)
+    return changes
+
+
+def _write_spelling_changes(
+    paragraphs: List[str], changes: Dict[str, str], where: str,
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    from science_format import _match_case
+
+    out = list(paragraphs)
+    queries: List[Dict[str, object]] = []
+    for before, after in changes.items():
+        pattern = re.compile(rf"\b{re.escape(before)}\b", re.I)
+        touched = 0
+        for i, para in enumerate(out):
+            if not para:
+                continue
+            fixed, n = pattern.subn(lambda m: _match_case(m.group(0), after), para)
+            if n:
+                out[i] = fixed
+                touched += n
+        if touched:
+            queries.append({
+                "index": next((i for i, p in enumerate(out) if p and after in p.lower()),
+                              0),
+                "snippet": after,
+                "query": (f"The copyedit spelled `{before}` as `{after}` in one place "
+                          f"and left it as it was {where}. It has been made consistent "
+                          f"throughout ({touched} more). One manuscript cannot hold "
+                          f"both spellings; if `{before}` was right, the change can be "
+                          f"rejected everywhere at once."),
+                "guard": "apply_spelling_changes_everywhere",
+                "suggestion": None,
+            })
+    return out, queries
+
+
+def apply_spelling_changes_everywhere(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A word re-spelled in one place is re-spelled in all of them.
+
+    Job #109 was set to *Auto — follow the manuscript*, and the manuscript does not
+    follow one: 44 UK-only spellings against 62 US-only. So `enforce_language_variant`
+    correctly refused to choose, said so, and did nothing — and the copyedit went ahead
+    and chose anyway, in fourteen paragraphs out of seventeen. The paper came back with
+    `fiber` twenty-seven times and `fibre` four, which is worse than either spelling
+    consistently: a reader cannot tell which is the typo.
+
+    So the decision is the copyedit's and the consistency is this guard's. Whatever it
+    re-spelled, it re-spells everywhere — no variant is chosen here, and a change the
+    editor rejects is rejected in one place and gone from all of them.
+
+    **The bibliography is never touched.** A reference title is a quotation of a
+    published work: `Optimizing the selection of natural fibre reinforcement` is the
+    title of somebody else's paper, and re-spelling it makes the reference wrong. That
+    is why one of #109's four survivors — ¶449 — was right to survive.
+    """
+    body_end = _references_start(original)
+    body_end = len(original) if body_end is None else body_end
+    changes = _learn_spelling_changes(original[:body_end], edited[:body_end])
+    if not changes:
+        return edited, []
+    fixed, queries = _write_spelling_changes(edited[:body_end], changes, "elsewhere")
+    return fixed + list(edited[body_end:]), queries
+
+
+def apply_spelling_changes_to_cells(
+    original: List[str], edited: List[str], cells: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """And into the table, for the same reason the recasing goes there."""
+    body_end = _references_start(original)
+    body_end = len(original) if body_end is None else body_end
+    changes = _learn_spelling_changes(original[:body_end], edited[:body_end])
+    if not changes or not cells:
+        return cells, []
+    out, queries = _write_spelling_changes(cells, changes, "in the table")
+    for query in queries:
+        query["guard"] = "apply_spelling_changes_to_cells"
+    return out, queries

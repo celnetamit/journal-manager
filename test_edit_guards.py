@@ -1237,3 +1237,91 @@ def test_the_table_is_left_alone_when_the_prose_was_not_recased():
     out, queries = G.apply_case_changes_to_cells(
         ["Counts in cfu/g."], ["Counts in cfu/g."], ["T. Bacteria (cfu/g)"])
     assert out == ["T. Bacteria (cfu/g)"] and queries == []
+
+
+# --------------------------------------------------------------------------------
+# A word re-spelled in one place is re-spelled in all of them (job #109).
+
+def test_a_respelling_is_carried_through_the_manuscript():
+    original = ["Fibre fraction and specimen configuration",
+                "The fibre content was measured in every sample.",
+                "Natural-fibre/polymer combinations were compared."]
+    edited = ["Fibre fraction and specimen configuration",
+              "The fiber content was measured in every sample.",
+              "Natural-fibre/polymer combinations were compared."]
+    out, queries = G.apply_spelling_changes_everywhere(original, edited)
+    assert out[0] == "Fiber fraction and specimen configuration"
+    assert "Natural-fiber/polymer" in out[2]
+    assert len(queries) == 1 and "fibre" in queries[0]["query"]
+
+
+def test_a_reference_title_keeps_the_spelling_it_was_published_with():
+    """¶449 of job #109 was right to survive: the title belongs to somebody else."""
+    original = ["The fibre content was measured.", "REFERENCES",
+                "Thanikodi S. Optimizing the selection of natural fibre "
+                "reinforcement. J Nat Fibers. 2023."]
+    edited = ["The fiber content was measured.", "REFERENCES",
+              "Thanikodi S. Optimizing the selection of natural fibre "
+              "reinforcement. J Nat Fibers. 2023."]
+    out, _queries = G.apply_spelling_changes_everywhere(original, edited)
+    assert "natural fibre reinforcement" in out[2]
+
+
+def test_only_a_known_spelling_variant_is_learned():
+    """`showed` -> `demonstrated` is a word choice, and none of this guard's business."""
+    original = ["The results showed a clear trend.", "Other results showed the same."]
+    edited = ["The results demonstrated a clear trend.", "Other results showed the same."]
+    out, queries = G.apply_spelling_changes_everywhere(original, edited)
+    assert out == edited and queries == []
+
+
+def test_capitalisation_survives_the_respelling():
+    original = ["Centre for Research", "The centre was measured."]
+    edited = ["Centre for Research", "The center was measured."]
+    out, _q = G.apply_spelling_changes_everywhere(original, edited)
+    assert out[0] == "Center for Research"
+
+
+def test_a_respelling_reaches_the_table_cells():
+    out, queries = G.apply_spelling_changes_to_cells(
+        ["The fibre content."], ["The fiber content."],
+        ["Fibre fraction", "4.02"])
+    assert out == ["Fiber fraction", "4.02"]
+    assert len(queries) == 1
+
+
+# --------------------------------------------------------------------------------
+# Greek letters, set the way a journal sets them (job #109).
+
+def test_a_lowercase_greek_quantity_is_italic_and_a_capital_is_not():
+    import greek_italics as GI
+    assert GI._wants_italic("2θ = 20.8°", 1) is True
+    assert GI._wants_italic("efficiency (η) of", 12) is True
+    assert GI._wants_italic("ΔT was measured", 0) is False
+    assert GI._wants_italic("a sum Σx over", 6) is False
+
+
+def test_the_micro_prefix_is_a_unit_and_stays_upright():
+    """`μm` is not a quantity. Italicising it would put a formatting error into every
+    measurement in the paper."""
+    import greek_italics as GI
+    assert GI._wants_italic("cracks below 1 μm in length", 15) is False
+    assert GI._wants_italic("50 μL of buffer", 3) is False
+    assert GI._wants_italic("μg/mL", 0) is False
+    # But a bare μ used as a mean is a quantity.
+    assert GI._wants_italic("where μ is the mean", 6) is True
+
+
+def test_a_spectral_line_is_not_a_quantity():
+    """Two of the 52 changes this pass first proposed were the α of Cu Kα radiation."""
+    import greek_italics as GI
+    assert GI._wants_italic("using CuKα radiation", 9) is False
+    assert GI._wants_italic("Kβ line", 1) is False
+    # The wavelength beside it is a quantity and stays italic.
+    assert GI._wants_italic("(λ = 1.540 nm)", 1) is True
+
+
+def test_a_chemical_locant_is_italic():
+    import greek_italics as GI
+    assert GI._wants_italic("the β-hydroxyester bond", 4) is True
+    assert GI._wants_italic("α-cellulose content", 0) is True

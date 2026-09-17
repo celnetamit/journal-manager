@@ -27,6 +27,7 @@ import docx
 from docx import shared as _docx_shared
 import docxmodel as _docxmodel
 import usage as _usage
+import greek_italics as _greek
 import hyperlinks as _hyperlinks
 import orcid as _orcid
 from docx.oxml import OxmlElement
@@ -2197,6 +2198,7 @@ def generate_redline_docx(
     queries: Optional[List[Dict[str, Any]]] = None,
     table_edits: Optional[Dict[TableAddress, str]] = None,
     audience: Optional[str] = None,
+    notes: Optional[List[str]] = None,
 ) -> None:
     doc = docx.Document(original_path)
     tc_id = 1
@@ -2292,6 +2294,18 @@ def generate_redline_docx(
 
     if audience == AUTHOR:
         _highlight_insertions(doc)
+
+    # Greek letters set to the convention: lowercase quantity symbols italic, capitals
+    # upright, and units (μm, μL, Cu Kα) left alone. Last, so it sees every run the
+    # tracked changes produced, and reported through `notes` because a formatting
+    # change is not a tracked change — if it is not said plainly, nobody knows.
+    try:
+        census = _greek.apply_to_document(doc)
+        for query in _greek.query_for(census):
+            if notes is not None:
+                notes.append(str(query["query"]))
+    except Exception as exc:                                     # noqa: BLE001
+        print(f"redline: Greek italics skipped: {exc!r}", file=_sys.stderr)
 
     doc.save(output_path)
 

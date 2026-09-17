@@ -41,6 +41,8 @@ from edit_guards import (
     _REF_URL,
     apply_case_changes_everywhere,
     apply_case_changes_to_cells,
+    apply_spelling_changes_everywhere,
+    apply_spelling_changes_to_cells,
     refuse_citations_without_a_reference,
     _reference_identity,
     _references_start,
@@ -728,6 +730,23 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         table_edits[_addr] = _now
     guard_queries.extend(_cell_case_queries)
 
+    # And a word re-spelled in one place is re-spelled in all of them. Job #109 was set
+    # to follow the manuscript, the manuscript follows both variants, so the language
+    # pass correctly refused to choose — and the copyedit chose anyway, in fourteen
+    # paragraphs out of seventeen. The decision is the copyedit's; the consistency is
+    # ours. The bibliography is never touched: a reference title is a quotation.
+    edited_paragraphs, _spelling_queries = apply_spelling_changes_everywhere(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_spelling_queries)
+
+    _cells_before_spelling = [table_edits.get(a, o) for a, o
+                              in zip(table_cell_addresses, table_cell_originals)]
+    _cells_respelled, _cell_spelling_queries = apply_spelling_changes_to_cells(
+        original_paragraphs, edited_paragraphs, _cells_before_spelling)
+    for _addr, _now in zip(table_cell_addresses, _cells_respelled):
+        table_edits[_addr] = _now
+    guard_queries.extend(_cell_spelling_queries)
+
     # A caption's values name the data the figure shows. Everything else in it — the
     # spelling, the capitalisation, the stop at the end — is the copyedit's to fix.
     edited_paragraphs, _caption_queries = keep_caption_values(
@@ -1042,7 +1061,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     redline_path = out_dir / f"user_{user_id}_{ts}_redline.docx"
     generate_redline_docx(
         input_path, edited_paragraphs, str(redline_path), queries=editor_queries,
-        table_edits=table_edits,
+        table_edits=table_edits, notes=warnings,
     )
 
     # The same manuscript and the same tracked changes, with only the questions the
