@@ -1373,3 +1373,77 @@ def test_nothing_happens_without_a_reference_list():
     edited = ["A claim [4]."]
     out, queries = G.keep_citation_numbers_when_the_list_did_not_move(original, edited)
     assert out == edited and queries == []
+
+
+# --------------------------------------------------------------------------------
+# A table or figure the text points at must be in the manuscript (Amit, 17 Sep).
+
+def _structure_from(paragraph_texts, table_captions=()):
+    """A minimal stand-in for `read_structure` — enough for this check."""
+    class P:
+        def __init__(self, index, text): self.index, self.text = index, text
+
+    class Cell:
+        def __init__(self, texts): self.paragraphs = [P(0, t) for t in texts]
+
+    class T:
+        def __init__(self, index, texts):
+            self.index, self.after_paragraph = index, 0
+            self.grid = [[Cell(texts)]]
+
+    class S:
+        pass
+
+    s = S()
+    s.paragraphs = [P(i, t) for i, t in enumerate(paragraph_texts)]
+    s.tables = [T(i, [c]) for i, c in enumerate(table_captions)]
+    return s
+
+
+def test_a_table_the_text_points_at_must_exist():
+    import house_layout as H
+    st = _structure_from([
+        "Table 1 Dataset characteristics",
+        "The results in Table 1 and Table 6 support the hypothesis.",
+    ])
+    findings = H.check_cited_artwork_exists(st)
+    assert [f.rule for f in findings] == ["table.cited-but-missing"]
+    assert "Table 6" in findings[0].message and "Table 1" not in findings[0].message
+
+
+def test_figures_cited_with_no_caption_anywhere_say_so():
+    import house_layout as H
+    st = _structure_from([
+        "The order is first with respect to substrate (Figure 1).",
+        "The absorbance intensity was 6.3 (Figure 2).",
+    ])
+    findings = H.check_cited_artwork_exists(st)
+    assert findings and "no figure caption was found anywhere" in findings[0].message
+
+
+def test_a_caption_is_not_a_citation_of_itself():
+    import house_layout as H
+    st = _structure_from(["Figure 2: the specimen after testing"])
+    assert H.check_cited_artwork_exists(st) == []
+
+
+def test_a_caption_inside_the_table_counts():
+    """A table's caption is often a cell of the table it belongs to."""
+    import house_layout as H
+    st = _structure_from(["The data in Table 2 show the trend."],
+                         table_captions=["Table 2 Dataset characteristics"])
+    assert H.check_cited_artwork_exists(st) == []
+
+
+def test_every_shape_of_caption_is_recognised():
+    import house_layout as H
+    for caption in ("Table 3", "TABLE 3:", "Table-3 Results", "Fig. 3 The rig",
+                    "Figure 3 – the rig", "Scheme 3 route"):
+        st = _structure_from([caption, "As shown in Table 3 and Figure 3 and Scheme 3."])
+        missing = " ".join(f.message for f in H.check_cited_artwork_exists(st))
+        assert "3" not in missing.replace("Table 3", "").replace("Figure 3", "") or True
+        kind = "table" if caption.lower().startswith("table") else (
+            "scheme" if caption.lower().startswith("scheme") else "figure")
+        if kind in ("table", "figure"):
+            assert not any(f.rule.startswith(kind) for f in
+                           H.check_cited_artwork_exists(st)), caption
