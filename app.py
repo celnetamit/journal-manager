@@ -874,6 +874,12 @@ def _render_downloads(result: dict, kp: str) -> None:
         # the author is the one to answer, with the changes highlighted.
         ("author_redline_path", "✉️ Redline — for the author",
          f"{stem}_for_author.docx", _DOCX_MIME, "primary"),
+        # One short page the author can act on: what the manuscript does not contain,
+        # and the review cut to the parts addressed to them. Beside the author's
+        # redline rather than among the editorial outputs, because it goes to the same
+        # person in the same email.
+        ("author_report_path", "📄 Report — for the author",
+         f"{stem}_author_report.docx", _DOCX_MIME, "primary"),
         ("review_report_path", "📑 Review Report", f"{stem}_editorial_report.docx", _DOCX_MIME, "secondary"),
         ("ai_review_path", "🧑‍⚖️ AI Peer Review", f"{stem}_ai_peer_review.docx", _DOCX_MIME, "secondary"),
         ("journal_report_path", "📚 Journal Recommendations", f"{stem}_journal_recommendations.docx", _DOCX_MIME, "secondary"),
@@ -1934,6 +1940,7 @@ if tab_superadmin is not None:
                                  ".wordprocessingml.document")
                         _outputs = [
                             ("redline_path", "📝 Redline", "redline.docx", _mime),
+                            ("author_report_path", "📄 Author report", "author_report.docx", _mime),
                             ("review_report_path", "📑 Review", "editorial_report.docx", _mime),
                             ("ai_review_path", "🧑‍⚖️ AI Review", "ai_peer_review.docx", _mime),
                             ("journal_report_path", "📚 Journals", "journals.docx", _mime),

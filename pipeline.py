@@ -26,6 +26,7 @@ import losscheck as _losscheck
 import token_census as _token_census
 import usage as _usage
 import auth
+import author_report
 # Only for the progress reports a platform job sends back while it runs. `mng_bridge`
 # imports `auth` and `config` and nothing from here, so there is no cycle — and an
 # unconfigured bridge simply hands back no reporter.
@@ -1170,6 +1171,26 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         ai_review_path = out_dir / f"user_{user_id}_{ts}_aireview.docx"
         markdown_to_docx(ai_review_md, str(ai_review_path))
 
+    # One short page for the author: what the manuscript does not contain, and what a
+    # reviewer would say. Built after the review so it can quote it, and from the same
+    # findings and guard queries everything else uses — nothing here is asked of a model
+    # a second time.
+    author_report_path = ""
+    try:
+        author_report_md = author_report.build(
+            filename=filename,
+            findings=layout_findings,
+            queries=editor_queries,
+            ai_review_md=ai_review_md,
+            recommended_journal=(recommended[0]["name"] if recommended else ""),
+        )
+        author_report_path = out_dir / f"user_{user_id}_{ts}_authorreport.docx"
+        markdown_to_docx(author_report_md, str(author_report_path))
+        author_report_path = str(author_report_path)
+    except Exception as _report_exc:                             # noqa: BLE001
+        warnings.append(f"The author's report could not be written: "
+                        f"{skip_reason(_report_exc)}")
+
     best_journal = recommended[0]["name"] if recommended else "the journal"
     cover_letter = ""
     if cover_letter_enabled:
@@ -1201,6 +1222,7 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         "author_redline_path": str(author_redline_path),
         "journal_report_path": str(journal_report_path),
         "review_report_path": str(review_report_path),
+        "author_report_path": author_report_path,
         "ai_review_path": str(ai_review_path) if ai_review_path else "",
         "jats_path": str(jats_path),
         "report_md": report,
