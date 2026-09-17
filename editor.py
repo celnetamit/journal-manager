@@ -2300,11 +2300,27 @@ def generate_redline_docx(
                 if kind:
                     marker.font.color.rgb = _docx_shared.RGBColor(*colour)
                     marker.font.size = _docx_shared.Pt(9)
-                doc.add_comment(
-                    marker, text="\n".join(notes),
-                    author=f"AI Editor — {kind}" if kind else "AI Editor",
-                    initials=f"AE{kind[0]}" if kind else "AE",
-                )
+                # On the author's copy the comment says whose question it is, in the
+                # one place Word always shows: the comment's author name, which heads
+                # every balloon and every line of the review pane.
+                #
+                # The quality team, 17 Sep: "Author mention karo taki lage ki ye author
+                # ke liye hai." They are right, and the reason is stronger than
+                # labelling. These files go out in the same email as the editorial one,
+                # and a comment signed "AI Editor" reads to an author as somebody
+                # else's note that they are being copied on — so the questions only
+                # they can answer are the ones they skim past.
+                if audience == AUTHOR:
+                    comment_author = (f"Query to Author — {kind}" if kind
+                                      else "Query to Author")
+                    initials = f"AU{kind[0]}" if kind else "AU"
+                    body = "Author: " + "\n\nAuthor: ".join(notes)
+                else:
+                    comment_author = f"AI Editor — {kind}" if kind else "AI Editor"
+                    initials = f"AE{kind[0]}" if kind else "AE"
+                    body = "\n".join(notes)
+                doc.add_comment(marker, text=body, author=comment_author,
+                                initials=initials)
 
     # The ORCID block above the references. Before the hyperlinking pass so its own URLs
     # are treated like any other, and after every tracked change has been aligned — this

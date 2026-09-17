@@ -191,6 +191,7 @@ def build(
     out.append("The copyediting is in your tracked-changes file, with every insertion "
                "highlighted. Each change is yours to accept or reject in Word — the "
                "final decision on your own manuscript is yours. Questions that only "
-               "you can answer are left as comments beside the text.")
+               "you can answer are comments beside the text, signed **Query to "
+               "Author**; in Word they are listed together under Review → Comments.")
     out.append("")
     return "\n".join(out)

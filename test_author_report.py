@@ -79,7 +79,10 @@ def test_no_review_says_so_instead_of_leaving_a_blank_section():
 
 def test_the_report_always_points_at_the_redline():
     """A report that does not say where the edits are sends the author hunting."""
-    assert "tracked-changes" in A.build("paper.docx")
+    report = A.build("paper.docx")
+    assert "tracked-changes" in report
+    # And it names the signature the comments actually carry, so they can be found.
+    assert "Query to Author" in report
 
 
 def test_one_fault_repeated_is_one_line():
