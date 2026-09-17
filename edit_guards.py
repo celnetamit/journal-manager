@@ -1818,7 +1818,55 @@ def apply_case_changes_everywhere(
 
     if not changes:
         return edited, []
+    return _write_case_changes(edited, changes)
 
+
+def apply_case_changes_to_cells(
+    original: List[str], edited: List[str], cells: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """The same recasing, carried into the table cells.
+
+    Job #107 is job #106's finding again, and it survived a guard written for it: the
+    author wrote `cfu/g` three times, ¶37 came back `CFU/g`, and the two in the table —
+    `T. Bacteria (cfu/g)`, `HUB (cfu/g)` — stayed as they were. The guard did exactly
+    what it was written to do and never saw them, because the pipeline carries body
+    paragraphs and table cells as two separate lists.
+
+    A unit is not consistent within the prose; it is consistent within the *paper*, and
+    a table is where a reader looks the unit up. So the recasing is learned from the
+    body, where the sentence makes it unambiguous, and applied to both — the same
+    reasoning `collapse_duplicated_symbols` already uses two steps further down.
+    """
+    body_end = _references_start(original)
+    body_end = len(original) if body_end is None else body_end
+    changes = _learn_case_changes(original[:body_end], edited[:body_end])
+    if not changes or not cells:
+        return cells, []
+    out, queries = _write_case_changes(cells, changes)
+    for query in queries:
+        query["guard"] = "apply_case_changes_to_cells"
+        query["query"] = query["query"].replace("elsewhere.", "in the table.")
+    return out, queries
+
+
+def _learn_case_changes(original: List[str], edited: List[str]) -> Dict[str, str]:
+    changes: Dict[str, str] = {}
+    for was, now in zip(original, edited):
+        if not was or not now or was == now:
+            continue
+        mine, theirs = set(re.findall(r"[A-Za-z]+", was)), set(
+            re.findall(r"[A-Za-z]+", now))
+        for before in mine:
+            after = before.upper()
+            if (after in theirs and before not in theirs
+                    and _is_a_recasing(before, after)):
+                changes.setdefault(before, after)
+    return changes
+
+
+def _write_case_changes(
+    edited: List[str], changes: Dict[str, str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
     out = list(edited)
     queries: List[Dict[str, object]] = []
     for before, after in changes.items():
@@ -1841,6 +1889,228 @@ def apply_case_changes_everywhere(
                           f"consistent throughout ({touched} more). If `{before}` was "
                           f"right, the change can be rejected everywhere at once."),
                 "guard": "apply_case_changes_everywhere",
+                "suggestion": None,
+            })
+    return out, queries
+
+
+#: An author-date citation as authors actually write them, in the two shapes that
+#: matter: wholly parenthetical — `(FAO, 2015)`, `(Smith et al., 2020)`, `(Nellemann &
+#: Corcoran, 2010)` — and narrative, where the name is in the sentence and only the year
+#: is bracketed: `Haller (2017)`.
+_PARENTHETICAL_CITE = re.compile(
+    r"\((?P<body>[A-Z][A-Za-zÀ-ÿ'’\-\.]*(?:[^()]{0,80}?))[,;]?\s*"
+    r"(?P<year>(?:19|20)\d{2}[a-z]?)\)")
+_NARRATIVE_CITE = re.compile(
+    r"(?P<body>[A-Z][A-Za-zÀ-ÿ'’\-]+(?:\s+(?:et\s+al\.?|and|&)\s+[A-Z][A-Za-zÀ-ÿ'’\-]+)?)"
+    r"\s*\((?P<year>(?:19|20)\d{2}[a-z]?)\)")
+
+#: Words that sit in front of a year and are not anybody's name. Every one of these
+#: was a false finding on the corpus: `Survey (2025)`, `Data (2024)`, `Needs (1943)`,
+#: and eight month names from dates the pass had reformatted.
+_NOT_A_SURNAME = {
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "survey", "data", "report", "table", "figure", "fig", "eq", "equation",
+    "needs", "since", "during", "between", "from", "until", "the", "this", "these",
+    "accessed", "retrieved", "published", "vol", "volume", "issue", "no", "pp",
+    "note", "source", "adapted", "based", "see", "cf", "eg", "ie", "www", "https",
+}
+
+#: A bracketed number, which is what the citation pass turns those into.
+_BRACKETED_NUMBER = re.compile(r"\[\s*\d{1,3}(?:\s*[,;–—-]\s*\d{1,3})*\s*\]")
+
+
+def _cited_identity(body: str, year: str) -> Optional[Tuple[str, str]]:
+    """`(surname, year)` for an in-text citation, matching `_reference_identity`."""
+    first = re.match(r"\s*([A-Za-zÀ-ÿ'’\-]{2,})", body or "")
+    if not first:
+        return None
+    return first.group(1).lower().replace("’", "'"), year[:4]
+
+
+def _first_year(body: str) -> Optional[str]:
+    m = re.search(r"\b(?:19|20)\d{2}\b", body or "")
+    return m.group(0) if m else None
+
+
+def _cited_as_written(body: str) -> str:
+    """The name as the author typed it. `FAO` is not `Fao`, and a query that renames
+    the source makes the author look for something they never wrote."""
+    first = re.match(r"\s*([A-Za-zÀ-ÿ'’\-]{2,})", body or "")
+    return first.group(1) if first else (body or "").strip()
+
+
+def _citation_slots(text: str) -> List[Tuple]:
+    """Every citation in a paragraph, in order: `(start, end, kind, identity)`.
+
+    Overlaps are resolved by preferring the longer match, because `Haller (2017)` and
+    `(2017)` both match and only the first names the work.
+    """
+    found: List[Tuple] = []
+    for pattern, kind in ((_NARRATIVE_CITE, "author-date"),
+                          (_PARENTHETICAL_CITE, "author-date")):
+        for m in pattern.finditer(text or ""):
+            # `(Baumeister, 1995; Deci, 2000; Leary, 2009; Maslow, 1954)` is four
+            # citations in one pair of brackets. Read whole, its surname is Baumeister
+            # and its year is 1954 — a work nobody cited, reported as missing.
+            body = m.group("body")
+            head = body.split(";")[0] if ";" in body else body
+            identity = _cited_identity(head, m.group("year") if ";" not in body
+                                       else _first_year(body) or m.group("year"))
+            found.append((m.start(), m.end(), kind, identity,
+                          _cited_as_written(head)))
+    for m in _BRACKETED_NUMBER.finditer(text or ""):
+        found.append((m.start(), m.end(), "number", None, ""))
+
+    found.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    kept: List[Tuple] = []
+    for slot in found:
+        if kept and slot[0] < kept[-1][1]:
+            continue
+        kept.append(slot)
+    return kept
+
+
+def _is_listed(surname: str, listed: set) -> bool:
+    """Whether the bibliography carries this name, allowing for how it was typed.
+
+    A prefix match either way, from four characters: two entries in the corpus are
+    keyed `Mittala, A. K., & Pandeyb, M.` — the author's own typing — and the paper
+    cites them as Mittal and Pandey. The reference is plainly there, and telling the
+    author it is missing would send them looking for a page they are already on.
+    """
+    if surname in listed:
+        return True
+    if len(surname) < 4:
+        return False
+    return any(name.startswith(surname) or surname.startswith(name)
+               for name in listed if len(name) >= 4)
+
+
+def _names_near(text: str, position: int, surname: str, listed: set) -> bool:
+    """Whether this citation names anybody the bibliography lists.
+
+    A narrative citation can carry its whole author list in the sentence — `as per
+    A. Boardman, Greenberg, Vining, & Weimer (2001)` — and the name the year sits
+    beside is the *last* of them. Boardman is the one in the bibliography, so reading
+    only Weimer reports a reference that is there. Everything capitalised in the
+    sixty characters before the citation is considered.
+    """
+    if _is_listed(surname, listed):
+        return True
+    window = text[max(0, position - 60):position + 1]
+    return any(_is_listed(name.lower().replace("’", "'"), listed)
+               for name in re.findall(r"[A-Z][A-Za-zÀ-ÿ'’\-]{2,}", window))
+
+
+def refuse_citations_without_a_reference(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """A citation number is a pointer. It may not be minted for a work that is not there.
+
+    Job #107, ¶18: the author wrote `...plays a foundational role in sustaining life
+    (FAO, 2015).` and the citation pass returned `...sustaining life [3].` There is no
+    FAO entry anywhere in the nineteen references — so `[3]` now points at Akpe et al.,
+    *Bacterial degradation of petroleum hydrocarbons in crude oil polluted soil amended
+    with cassava peels*, which has nothing to do with global food production.
+
+    That is not a formatting slip. It is a false attribution, printed, in a paper that
+    will be cited itself. And it is invisible to every check that came before: the
+    number is well formed, the bibliography is intact, the count of citations is
+    unchanged. Only the *relationship* between the citation and the list is wrong.
+
+    The quality team's rule, which is the right one: **until the reference exists, no
+    number is given.** The author's own `(FAO, 2015)` is put back and a query goes to
+    them asking where the reference is. The paper then says exactly what its author
+    said, and the one person who can supply the missing entry is asked for it.
+
+    Paired by position within the paragraph rather than by matching text, because the
+    same sentence was copyedited at the same time. Where the count of citations differs
+    between the two versions, nothing is rewritten and the query is raised on its own —
+    a guard that guesses which number replaced which name would eventually put a name
+    back in the wrong place, which is the defect it exists to prevent.
+    """
+    start = _references_start(original)
+    if start is None:
+        return edited, []
+
+    # Every surname the bibliography carries, anywhere in any entry — and *only* the
+    # surname, not the surname-and-year. Measured on 91 redlines, the pair was wrong in
+    # four different ways at once: the year in `(Baumeister, 1995; Deci, 2000; Maslow,
+    # 1954)` belongs to Maslow; `Carton et al., 2008` is listed under 2010; the entry
+    # for `Virani (2022)` carries no year at all; and a reformat can move which author
+    # an entry opens with. Every one of those is a reference that *is there*.
+    #
+    # So the claim this guard makes is the narrow one it can actually prove: there is no
+    # reference for this name at all. A citation to a different work by the same author
+    # passes, and that is the right trade — a false "your reference is missing" sends an
+    # author looking for something that is on the page in front of them.
+    listed = set()
+    for entry in original[start + 1:] + edited[start + 1:]:
+        for name in re.findall(r"[A-Za-zÀ-ÿ'’\-]{3,}", entry or ""):
+            listed.add(name.lower().replace("’", "'"))
+    if not listed:
+        # No readable bibliography: this guard has nothing to check against, and
+        # restoring citations on that basis would be worse than leaving them.
+        return edited, []
+
+    out = list(edited)
+    queries: List[Dict[str, object]] = []
+    seen: set = set()
+
+    for i in range(min(start, len(edited))):
+        was, now = original[i] or "", out[i] or ""
+        if not was or not now:
+            continue
+        before_slots = _citation_slots(was)
+        unlisted = [s for s in before_slots
+                    if s[2] == "author-date" and s[3]
+                    and s[3][0] not in _NOT_A_SURNAME
+                    and not _names_near(was, s[0], s[3][0], listed)]
+        if not unlisted:
+            continue
+
+        after_slots = _citation_slots(now)
+        if len(after_slots) != len(before_slots):
+            # The copyedit added or removed a citation here. Pairing by position would
+            # be pairing the wrong things, and a guard that puts a name back in the
+            # wrong place is the defect it exists to prevent.
+            continue
+
+        # Only the ones that actually *became a number*. An author-date the copyedit
+        # left alone has minted no pointer and broken nothing — flagging it would bury
+        # the real finding under every uncited name in the manuscript.
+        minted = [(slot, target) for slot, target in zip(before_slots, after_slots)
+                  if slot in unlisted and target[2] == "number"]
+        if not minted:
+            continue
+
+        restored = 0
+        for slot, target in sorted(minted, key=lambda pair: -pair[1][0]):
+            now = now[:target[0]] + was[slot[0]:slot[1]] + now[target[1]:]
+            restored += 1
+        out[i] = now
+
+        for (_, _, _, identity, written), _target in minted:
+            if identity in seen:
+                continue
+            seen.add(identity)
+            _, year = identity
+            surname = written or identity[0].title()
+            queries.append({
+                "index": i,
+                "snippet": f"{surname} ({year})",
+                "query": (
+                    f"`{surname} ({year})` is cited here but there is no "
+                    f"reference for it in the list. "
+                    + ("The author's own citation has been kept as it was: a number "
+                       "cannot be given until the reference exists, or it would point "
+                       "at a different work. "
+                       if restored else
+                       "The citation has been left alone. ")
+                    + "Please supply the reference, or remove the citation."),
+                "guard": "refuse_citations_without_a_reference",
                 "suggestion": None,
             })
     return out, queries

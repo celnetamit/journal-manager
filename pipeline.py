@@ -40,6 +40,8 @@ from proofread import proofread as run_proofread
 from edit_guards import (
     _REF_URL,
     apply_case_changes_everywhere,
+    apply_case_changes_to_cells,
+    refuse_citations_without_a_reference,
     _reference_identity,
     _references_start,
     fix_trailing_citations,
@@ -645,6 +647,15 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
             warnings=warnings,
         )
 
+    # Immediately after the numbering, and before anything else reads it: a number
+    # minted for a work that has no reference is a pointer at somebody else's paper.
+    # Job #107 turned the author's `(FAO, 2015)` into `[3]`, and `[3]` is Akpe et al.
+    # on crude-oil-polluted soil. The author's own citation goes back and they are
+    # asked for the reference — no number until the reference exists.
+    edited_paragraphs, _citation_queries = refuse_citations_without_a_reference(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_citation_queries)
+
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_reference_year_only(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_drop_redundant_paren_citation(edited_paragraphs, enabled_rule_ids)
@@ -705,6 +716,17 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     edited_paragraphs, _case_queries = apply_case_changes_everywhere(
         original_paragraphs, edited_paragraphs)
     guard_queries.extend(_case_queries)
+
+    # And into the table, which is where a reader looks a unit up. Job #107 was job
+    # #106's finding again for exactly this reason: the guard above did its work and
+    # never saw `T. Bacteria (cfu/g)`, because the pipeline carries cells separately.
+    _cells_before_case = [table_edits.get(a, o) for a, o
+                          in zip(table_cell_addresses, table_cell_originals)]
+    _cells_recased, _cell_case_queries = apply_case_changes_to_cells(
+        original_paragraphs, edited_paragraphs, _cells_before_case)
+    for _addr, _now in zip(table_cell_addresses, _cells_recased):
+        table_edits[_addr] = _now
+    guard_queries.extend(_cell_case_queries)
 
     # A caption's values name the data the figure shows. Everything else in it — the
     # spelling, the capitalisation, the stop at the end — is the copyedit's to fix.

@@ -1131,3 +1131,109 @@ def test_et_al_is_never_recased():
     edited = ["References", "Shojaeiarani J, Bergholz TM, Kraft AL. Spin coating."]
     out, queries = G.apply_case_changes_everywhere(original, edited)
     assert out == edited and queries == []
+
+
+# --------------------------------------------------------------------------------
+# A citation number is a pointer, and may not be minted for a work that is not listed
+# (job #107).
+
+_BIB = [
+    "REFERENCES",
+    "Haller H. Soil Remediation and Sustainable Development. Mid Sweden University; 2017.",
+    "Evely A. Dead planet, living planet. C. Nellemann, E. Corcoran, editors. 2010.",
+    "Akpe AR, Ekundayo AO. Bacterial degradation of petroleum hydrocarbons in crude oil "
+    "polluted soil amended with cassava peels. 2013.",
+]
+
+
+def test_a_number_is_not_minted_for_a_missing_reference():
+    """Job #107, ¶18, exactly as it shipped."""
+    original = ["Soil, responsible for providing nutrients to approximately 95% of "
+                "global food production, plays a foundational role in sustaining life "
+                "(FAO, 2015)."] + _BIB
+    edited = ["Soil, responsible for providing nutrients to approximately 95% of "
+              "global food production, plays a foundational role in sustaining life "
+              "[3]."] + _BIB
+    out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert "(FAO, 2015)" in out[0]
+    assert "[3]" not in out[0]
+    assert len(queries) == 1
+    assert "FAO (2015)" in queries[0]["query"]
+
+
+def test_a_citation_that_is_listed_keeps_its_number():
+    original = ["According to Haller (2017) and Nellemann & Corcoran (2010), "
+                "ecosystems are affected."] + _BIB
+    edited = ["According to Haller [1] and Nellemann and Corcoran [2], "
+              "ecosystems are affected."] + _BIB
+    out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert out[0] == edited[0]
+    assert queries == []
+
+
+def test_a_group_of_citations_is_read_as_several():
+    """`(Baumeister, 1995; Deci, 2000; Maslow, 1954)` read whole gives Baumeister the
+    year 1954 — a work nobody cited, reported as missing."""
+    bib = ["REFERENCES", "Baumeister RF, Leary MR. The need to belong. 1995."]
+    original = ["Belonging shapes behaviour (Baumeister, 1995; Maslow, 1954)."] + bib
+    edited = ["Belonging shapes behaviour [1, 2]."] + bib
+    _out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert [q["snippet"] for q in queries] == []
+
+
+def test_an_entry_the_author_mistyped_still_counts_as_a_reference():
+    bib = ["REFERENCES",
+           "Mittala, A. K., & Pandeyb, M. Role of Regional Rural Banks in India."]
+    original = ["This follows Mittal and Pandey (2018)."] + bib
+    edited = ["This follows Mittal and Pandey [9]."] + bib
+    out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert out[0] == edited[0] and queries == []
+
+
+def test_the_first_author_of_a_narrative_list_is_the_one_that_counts():
+    bib = ["REFERENCES", "Boardman AE, Greenberg DH. Cost-benefit analysis. 2001."]
+    original = ["As per A. Boardman, Greenberg, Vining, & Weimer (2001), this helps."] + bib
+    edited = ["As per Boardman et al. [4], this helps."] + bib
+    out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert out[0] == edited[0] and queries == []
+
+
+def test_a_citation_left_as_the_author_wrote_it_is_not_a_finding():
+    """Nothing was minted, so nothing points anywhere wrong."""
+    original = ["Soil feeds the world (FAO, 2015)."] + _BIB
+    edited = ["Soil feeds the world (FAO, 2015)."] + _BIB
+    out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert out[0] == edited[0] and queries == []
+
+
+def test_prose_in_brackets_is_not_a_citation():
+    original = ["The method is sound. (Note: The publication year is listed as 2025)."] + _BIB
+    edited = ["The method is sound. (Note: The publication year is listed as 2025)."] + _BIB
+    _out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert queries == []
+
+
+def test_a_manuscript_with_no_reference_list_is_left_alone():
+    original = ["Soil feeds the world (FAO, 2015)."]
+    edited = ["Soil feeds the world [3]."]
+    out, queries = G.refuse_citations_without_a_reference(original, edited)
+    assert out == edited and queries == []
+
+
+# --------------------------------------------------------------------------------
+# A unit recased in the prose is recased in the table too (job #107).
+
+def test_a_recasing_reaches_the_table_cells():
+    original = ["Counts were expressed in cfu/g."]
+    edited = ["Counts were expressed in CFU/g."]
+    cells = ["T. Bacteria (cfu/g)", "HUB (cfu/g)", "4.02 x 102"]
+    out, queries = G.apply_case_changes_to_cells(original, edited, cells)
+    assert out[:2] == ["T. Bacteria (CFU/g)", "HUB (CFU/g)"]
+    assert out[2] == "4.02 x 102"
+    assert len(queries) == 1 and "table" in queries[0]["query"]
+
+
+def test_the_table_is_left_alone_when_the_prose_was_not_recased():
+    out, queries = G.apply_case_changes_to_cells(
+        ["Counts in cfu/g."], ["Counts in cfu/g."], ["T. Bacteria (cfu/g)"])
+    assert out == ["T. Bacteria (cfu/g)"] and queries == []
