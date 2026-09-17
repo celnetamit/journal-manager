@@ -27,6 +27,7 @@ import token_census as _token_census
 import usage as _usage
 import auth
 import author_report
+import reference_gaps
 import subject_domain
 # Only for the progress reports a platform job sends back while it runs. `mng_bridge`
 # imports `auth` and `config` and nothing from here, so there is no cycle — and an
@@ -469,6 +470,9 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     # structure must not stop the copyedit, which is what the author is waiting for.
     structure = None
     layout_findings: list = []
+    #: Which reference paragraph is missing which field. Filled by the reference check
+    #: and used at the very end, where the gap is written into the entry itself.
+    reference_gaps_by_index: dict = {}
     try:
         structure = read_structure(input_path)
         layout_findings = house_check(structure)
@@ -486,9 +490,13 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         # Crossref supplies a complete entry as a *suggestion* where the title matches
         # confidently, which the editor accepts or ignores.
         from house_layout import find_references as _find_refs
-        layout_findings += check_references(
+        _ref_findings = check_references(
             _find_refs(structure),
             fetch=fetch_crossref_record if use_crossref_refs else None)
+        layout_findings += _ref_findings
+        for _f in _ref_findings:
+            if getattr(_f, "missing", None) and isinstance(_f.paragraph, int):
+                reference_gaps_by_index.setdefault(_f.paragraph, []).extend(_f.missing)
     except Exception as struct_exc:                              # noqa: BLE001
         warnings.append(
             f"House-style layout check was skipped: {skip_reason(struct_exc)}")
@@ -1092,6 +1100,27 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     except Exception as _census_exc:                             # noqa: BLE001
         warnings.append(f"The technical-token check was skipped: "
                         f"{skip_reason(_census_exc)}")
+
+    # Last of everything, after every guard and every census: write each reference's
+    # missing field into the entry, where the field belongs. The check that finds these
+    # has been saying so in a margin comment for weeks, and a comment is the wrong
+    # place — a reader scanning twenty-five complete-looking entries has nothing on the
+    # page telling them where the hole is.
+    #
+    # After the token census on purpose: a bracketed note added to an entry is new text
+    # and would otherwise be read as a change to the author's reference by every check
+    # above.
+    try:
+        edited_paragraphs, _marked = reference_gaps.apply(
+            edited_paragraphs, reference_gaps_by_index)
+        if _marked:
+            warnings.append(
+                f"{_marked} reference(s) carry a bracketed note where a field is "
+                f"missing — author names at the head of the entry, volume, issue and "
+                f"pages at the end. Each is a tracked insertion and is rejected in one "
+                f"click.")
+    except Exception as _gaps_exc:                               # noqa: BLE001
+        warnings.append(f"Reference gap marking was skipped: {skip_reason(_gaps_exc)}")
 
     progress(0.68, "Generating redline document...")
     out_dir = app_config.output_dir()

@@ -27,6 +27,7 @@ import docx
 from docx import shared as _docx_shared
 import docxmodel as _docxmodel
 import usage as _usage
+import copy as _copy
 import greek_italics as _greek
 import hyperlinks as _hyperlinks
 import orcid as _orcid
@@ -2203,6 +2204,84 @@ def _for_audience(queries, audience: Optional[str]):
     return [q for q in (queries or []) if q.get("audience") == AUTHOR]
 
 
+#: `[author names missing]`, `[volume, issue, pages missing]` — written into an entry
+#: by `reference_gaps`, and coloured here rather than there because a colour is a
+#: property of a run and that module works on text.
+_GAP_MARKER = re.compile(r"\[[^\[\]]{3,60}?\bmissing\]")
+
+#: Not yellow: yellow is what an ordinary insertion wears on the author's copy.
+_GAP_HIGHLIGHT = "cyan"
+
+
+def _colour_gap_markers(doc) -> int:
+    """Give every `[… missing]` note its own highlight.
+
+    Done across the paragraph rather than run by run, because by the time this runs the
+    tracked-change diff has already cut the note into pieces: `[17` + an inserted
+    `] [author names missing` + `] Study on…`. A per-run search finds nothing at all,
+    which is exactly what the first version did — and silently, since a note with no
+    colour still reads correctly.
+    """
+    marked = 0
+    for para in list(doc.element.body.iter(qn("w:p"))):
+        runs = [r for r in para.iter(qn("w:r"))
+                if len([n for n in r if n.tag in (qn("w:t"), qn("w:delText"))]) == 1]
+        if not runs:
+            continue
+        texts = []
+        for run in runs:
+            node = [n for n in run if n.tag in (qn("w:t"), qn("w:delText"))][0]
+            texts.append(node.text or "")
+        whole = "".join(texts)
+        spans = [(m.start(), m.end()) for m in _GAP_MARKER.finditer(whole)]
+        if not spans:
+            continue
+
+        at = 0
+        for run, text in zip(runs, texts):
+            here, at = (at, at + len(text))
+            overlap = [(max(s, here) - here, min(e, at) - here)
+                       for s, e in spans if s < at and e > here]
+            if not overlap or not text:
+                continue
+            pieces = []
+            last = 0
+            for begin, finish in overlap:
+                if begin > last:
+                    pieces.append((text[last:begin], False))
+                pieces.append((text[begin:finish], True))
+                last = finish
+            if last < len(text):
+                pieces.append((text[last:], False))
+            parent = run.getparent()
+            index = list(parent).index(run)
+            made = []
+            for piece_text, is_marker in pieces:
+                copy_run = _copy.deepcopy(run)
+                for child in list(copy_run):
+                    if child.tag in (qn("w:t"), qn("w:delText")):
+                        child.text = piece_text
+                        child.set(qn("xml:space"), "preserve")
+                    elif child.tag != qn("w:rPr"):
+                        copy_run.remove(child)
+                if is_marker:
+                    rPr = copy_run.find(qn("w:rPr"))
+                    if rPr is None:
+                        rPr = OxmlElement("w:rPr")
+                        copy_run.insert(0, rPr)
+                    for old in rPr.findall(qn("w:highlight")):
+                        rPr.remove(old)
+                    highlight = OxmlElement("w:highlight")
+                    highlight.set(qn("w:val"), _GAP_HIGHLIGHT)
+                    rPr.append(highlight)
+                    marked += 1
+                made.append(copy_run)
+            for offset, piece in enumerate(made):
+                parent.insert(index + offset, piece)
+            parent.remove(run)
+    return marked
+
+
 def _bold_the_label(comment, label: str) -> None:
     """Make the `Author:` that opens each note bold.
 
@@ -2369,6 +2448,11 @@ def generate_redline_docx(
 
     if audience == AUTHOR:
         _highlight_insertions(doc)
+
+    # The reference gap notes get their own colour, so they are not the yellow every
+    # other insertion wears. The team asked for a different colour precisely so that
+    # `[author names missing]` reads as a hole in the entry rather than as an edit.
+    _colour_gap_markers(doc)
 
     # Greek letters set to the convention: lowercase quantity symbols italic, capitals
     # upright, and units (μm, μL, Cu Kα) left alone. Last, so it sees every run the
