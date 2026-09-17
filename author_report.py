@@ -144,6 +144,7 @@ def build(
     queries: Optional[List[Dict[str, Any]]] = None,
     ai_review_md: str = "",
     recommended_journal: str = "",
+    subject: str = "",
 ) -> str:
     """The report, as the limited Markdown `markdown_to_docx` renders."""
     gaps = missing_elements(findings, queries)
@@ -151,6 +152,9 @@ def build(
 
     out = ["# Report for the Author", ""]
     out.append(f"**Manuscript:** {filename}")
+    if subject:
+        out.append("")
+        out.append(f"**{subject}**")
     out.append("")
 
     out.append("## What is missing")
