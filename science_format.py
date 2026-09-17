@@ -560,10 +560,18 @@ def enforce_all_formula_subscripts(paras: List[str]) -> List[str]:
     labels = labelled_series(paras)
 
     def fix(text: str) -> str:
+        # A paper can number its hypotheses H1, H2, H3 *and* be about hydrogen. Where
+        # the paragraph itself carries real chemistry — a token of two or more element
+        # symbols, `H2O`, `CO2`, `NH4Cl` — the label rule stands down for that
+        # paragraph, because there the reading is not in doubt.
+        chemistry_here = any(
+            parses_as_formula(m.group(1)) and not _LETTER_NUMBER.fullmatch(m.group(1))
+            for m in _FORMULA_TOKEN.finditer(text))
+
         def one(m):
             token = m.group(1)
             head = _LETTER_NUMBER.fullmatch(token)
-            if head and head.group(1) in labels:
+            if head and head.group(1) in labels and not chemistry_here:
                 return token
             return _subscripted(token) if parses_as_formula(token) else token
         return _FORMULA_TOKEN.sub(one, text)

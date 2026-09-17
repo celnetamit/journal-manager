@@ -1524,3 +1524,15 @@ def test_real_chemistry_is_still_subscripted():
     out = S.enforce_all_formula_subscripts(
         ["The H2O and CO2 were purged with H2 and NH4Cl was added."])
     assert out == ["The H₂O and CO₂ were purged with H₂ and NH₄Cl was added."]
+
+
+def test_a_paper_can_number_its_hypotheses_and_still_be_about_hydrogen():
+    """The label rule stands down in a paragraph that carries real chemistry, because
+    there the reading is not in doubt."""
+    import science_format as S
+    paper = ["H1: The catalyst increases yield.",
+             "H2: The catalyst lowers activation energy.",
+             "The reaction released H2 gas and produced H2O."]
+    out = S.enforce_all_formula_subscripts(paper)
+    assert out[0] == paper[0] and out[1] == paper[1]
+    assert out[2] == "The reaction released H₂ gas and produced H₂O."
