@@ -45,6 +45,7 @@ from edit_guards import (
     apply_spelling_changes_everywhere,
     apply_spelling_changes_to_cells,
     keep_citation_numbers_when_the_list_did_not_move,
+    number_citations_that_have_a_reference,
     refuse_citations_without_a_reference,
     _reference_identity,
     _references_start,
@@ -683,6 +684,15 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
         keep_citation_numbers_when_the_list_did_not_move(
             original_paragraphs, edited_paragraphs))
     guard_queries.extend(_numbering_queries)
+
+    # Last of the three, and the mirror of the first: a citation written as author and
+    # year whose work *is* in the numbered list gets its number. Job #112 left thirteen
+    # of them — `Canale and Totten's (2005)` in a Vancouver manuscript that numbers that
+    # very work [4]. After the two above, so it never numbers a citation one of them
+    # has just put back for having no reference at all.
+    edited_paragraphs, _add_number_queries = number_citations_that_have_a_reference(
+        original_paragraphs, edited_paragraphs)
+    guard_queries.extend(_add_number_queries)
 
     edited_paragraphs = enforce_author_limit(edited_paragraphs, enabled_rule_ids)
     edited_paragraphs = enforce_reference_year_only(edited_paragraphs, enabled_rule_ids)

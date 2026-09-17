@@ -1914,8 +1914,13 @@ _PARENTHETICAL_CITE = re.compile(
     r"\((?P<body>[A-Z][A-Za-zÀ-ÿ'’\-\.]*(?:[^()]{0,80}?))[,;]?\s*"
     r"(?P<year>(?:19|20)\d{2}[a-z]?)\)")
 _NARRATIVE_CITE = re.compile(
-    r"(?P<body>[A-Z][A-Za-zÀ-ÿ'’\-]+(?:\s+(?:et\s+al\.?|and|&)\s+[A-Z][A-Za-zÀ-ÿ'’\-]+)?)"
-    r"\s*\((?P<year>(?:19|20)\d{2}[a-z]?)\)")
+    # `Smith (2020)`, `Smith and Jones (2020)`, `Smith et al. (2020)`, and
+    # `Canale and Totten's (2005)`. The tail repeats and the second name is optional:
+    # `et al.` carries no name after it, and requiring one left six of job #112's
+    # thirteen unnumbered citations invisible to both citation guards.
+    r"(?P<body>[A-Z][A-Za-zÀ-ÿ'’\-]+"
+    r"(?:\s+(?:et\s+al\.?|and|&)(?:\s+[A-Z][A-Za-zÀ-ÿ'’\-]+)?)*)"
+    r"[’']?s?\s*\((?P<year>(?:19|20)\d{2}[a-z]?)\)")
 
 #: Words that sit in front of a year and are not anybody's name. Every one of these
 #: was a false finding on the corpus: `Survey (2025)`, `Data (2024)`, `Needs (1943)`,
@@ -2471,5 +2476,102 @@ def keep_citation_numbers_when_the_list_did_not_move(
             f"numbers have been put back. This usually means the numbering pass counted "
             f"a citation that has no reference; that query is beside it."),
         "guard": "keep_citation_numbers_when_the_list_did_not_move",
+        "suggestion": None,
+    }]
+
+
+_ENTRY_NUMBER_AT_HEAD = re.compile(r"^\s*\[?(\d{1,3})[\].]\s+")
+
+
+def _numbered_bibliography(entries: List[str]) -> Dict[Tuple[str, str], str]:
+    """`(surname, year) -> entry number`, for entries that carry one.
+
+    Only where the pair is unambiguous. Two works by the same author in the same year
+    are a real thing (2005a, 2005b), and guessing between them puts the reader at the
+    wrong paper — which is the defect this whole family of guards exists to prevent.
+    """
+    found: Dict[Tuple[str, str], List[str]] = {}
+    for entry in entries:
+        head = _ENTRY_NUMBER_AT_HEAD.match(entry or "")
+        if not head:
+            continue
+        identity = _reference_identity(
+            _ENTRY_NUMBER_AT_HEAD.sub("", entry or "", count=1))
+        if identity:
+            found.setdefault(identity, []).append(head.group(1))
+    return {k: v[0] for k, v in found.items() if len(set(v)) == 1}
+
+
+def number_citations_that_have_a_reference(
+    original: List[str], edited: List[str],
+) -> Tuple[List[str], List[Dict[str, object]]]:
+    """An author-date citation whose work *is* listed gets its number.
+
+    The mirror of `refuse_citations_without_a_reference`, and job #112 is why it is
+    needed: thirteen citations were left in author-date form — `Canale and Totten's
+    (2005)`, `Ferguson et al. (2005)`, `Prabhu and Fernandes (2007)` — in a manuscript
+    set to Vancouver whose reference list numbers every one of them. The numbering pass
+    simply did not reach them. A reader meeting `Canale and Totten's (2005)` in a
+    numbered paper has no way to the reference but the alphabet.
+
+    Only where the manuscript's own list supplies the answer: the entry must carry a
+    number, and the surname and year must match exactly one entry. Nothing is renamed
+    and nothing is moved — the number is added after the citation the author wrote, and
+    it is a tracked change like any other, so an editor rejects it in one click.
+    """
+    start = _references_start(original)
+    if start is None:
+        return edited, []
+    numbers = _numbered_bibliography(list(edited[start + 1:]) +
+                                     list(original[start + 1:]))
+    if not numbers:
+        return edited, []
+
+    out = list(edited)
+    added: List[str] = []
+    for i in range(min(start, len(out))):
+        text = out[i] or ""
+        if not text:
+            continue
+        pieces = []
+        last = 0
+        for m in _NARRATIVE_CITE.finditer(text):
+            identity = _cited_identity(m.group("body"), m.group("year"))
+            if identity is None or identity[0] in _NOT_A_SURNAME:
+                continue
+            number = numbers.get(identity)
+            if not number:
+                continue
+            # Already numbered — by the author, or by the pass, or by this guard on a
+            # previous run. `[4]` within a few characters is the test, because the
+            # number can follow the bracket or the possessive: `(2005) [4]`, `(2005)[4]`.
+            if _BRACKETED_NUMBER.match(text[m.end():m.end() + 6].lstrip()):
+                continue
+            pieces.append((m.end(), f" [{number}]"))
+            added.append(f"{_cited_as_written(m.group('body'))} ({m.group('year')})"
+                         f" → [{number}]")
+        if not pieces:
+            continue
+        rebuilt = []
+        for at, insert in pieces:
+            rebuilt.append(text[last:at])
+            rebuilt.append(insert)
+            last = at
+        rebuilt.append(text[last:])
+        out[i] = "".join(rebuilt)
+
+    if not added:
+        return out, []
+    shown = "; ".join(added[:6])
+    return out, [{
+        "index": 0,
+        "snippet": added[0],
+        "query": (
+            f"{len(added)} citation(s) were written as author and year in a manuscript "
+            f"numbered to Vancouver, and each of those works is in the reference list. "
+            f"The number has been added after the citation the author wrote — "
+            f"{shown}{'; …' if len(added) > 6 else ''}. Reject the change if the "
+            f"citation was meant to stand without a number."),
+        "guard": "number_citations_that_have_a_reference",
         "suggestion": None,
     }]

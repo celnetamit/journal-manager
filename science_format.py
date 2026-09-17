@@ -511,6 +511,40 @@ def parses_as_formula(token: str) -> bool:
     return len(set(symbols)) >= 2 or token in _DIATOMIC
 
 
+#: A token that could be a formula or could be a label: one or two letters and a
+#: number, which is the shape of `H2` and of `H2` the hypothesis alike.
+_LETTER_NUMBER = re.compile(r"(?<![A-Za-z0-9₀-₉])([A-Z][a-z]?)(\d{1,2})(?![A-Za-z0-9₀-₉])")
+
+
+def labelled_series(paras: List[str]) -> set:
+    """Letters this manuscript uses to number things, which are never formulas here.
+
+    Job #112 was a paper on quench distortion with no chemistry in it at all, and it
+    came back with `H₂ (secondary)`, `O₂: Specify a parametric...` and `O₃: Specify
+    inverse heat-transfer estimation`. Its hypotheses are H1, H2, H3 and its objectives
+    O1 to O4 — and exactly the three that happen to spell hydrogen, oxygen and ozone
+    were subscripted. H1, H3 and O4 came through untouched, which is the tell: a
+    formula does not come in a numbered series with non-formulas beside it.
+
+    So the evidence is the manuscript's own. A letter used with two or more different
+    numbers, where at least one of those cannot be a formula, is numbering something.
+    `H1` is not a molecule, so `H2` next to it is a hypothesis; but a paper writing
+    `H2O` and `H2` and nothing else keeps its chemistry, because nothing there fails
+    to parse.
+    """
+    seen: Dict[str, set] = {}
+    for para in paras:
+        for m in _LETTER_NUMBER.finditer(para or ""):
+            seen.setdefault(m.group(1), set()).add(m.group(2))
+    labels = set()
+    for letter, numbers in seen.items():
+        if len(numbers) < 2:
+            continue
+        if any(not parses_as_formula(letter + n) for n in numbers):
+            labels.add(letter)
+    return labels
+
+
 def enforce_all_formula_subscripts(paras: List[str]) -> List[str]:
     """`NH2CSNH2` -> `NH₂CSNH₂`, for any formula, not only the curated ones.
 
@@ -519,11 +553,20 @@ def enforce_all_formula_subscripts(paras: List[str]) -> List[str]:
     token is parsed against the periodic table instead, so `D8`, `M4` and `R2` are
     rejected because `D`, `M` and `R` are not element symbols — which is the same
     result the curated list gave, reached by a rule rather than by enumeration.
+
+    A letter the manuscript is using to number things is left alone — see
+    `labelled_series`, and job #112, whose hypotheses became hydrogen and ozone.
     """
+    labels = labelled_series(paras)
+
     def fix(text: str) -> str:
-        return _FORMULA_TOKEN.sub(
-            lambda m: _subscripted(m.group(1)) if parses_as_formula(m.group(1))
-            else m.group(1), text)
+        def one(m):
+            token = m.group(1)
+            head = _LETTER_NUMBER.fullmatch(token)
+            if head and head.group(1) in labels:
+                return token
+            return _subscripted(token) if parses_as_formula(token) else token
+        return _FORMULA_TOKEN.sub(one, text)
     return [fix(p) if p else p for p in paras]
 
 

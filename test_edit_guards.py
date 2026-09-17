@@ -1447,3 +1447,80 @@ def test_every_shape_of_caption_is_recognised():
         if kind in ("table", "figure"):
             assert not any(f.rule.startswith(kind) for f in
                            H.check_cited_artwork_exists(st)), caption
+
+
+# --------------------------------------------------------------------------------
+# An author-date citation whose work is listed gets its number (job #112).
+
+_NUMBERED = ["REFERENCES",
+             "[4] Canale LCF, Totten GE. Overview of distortion and residual stress "
+             "due to quench processing. Int J Mater Prod Technol. 2005; 24: 4–52.",
+             "[5] Ferguson BL, Li Z, Freborg AM. Modelling heat treatment of steel "
+             "parts. Comput Mater Sci. 2005; 34(3): 274–281."]
+
+
+def test_a_listed_work_cited_by_name_gets_its_number():
+    original = ["Canale and Totten's (2005) review identifies non-uniform heat "
+                "transfer as the largest contributor."] + _NUMBERED
+    out, queries = G.number_citations_that_have_a_reference(original, list(original))
+    assert "Canale and Totten's (2005) [4]" in out[0]
+    assert queries and "[4]" in queries[0]["query"]
+
+
+def test_the_et_al_form_is_found_too():
+    """Six of job #112's thirteen were `Ferguson et al. (2005)`, and the pattern
+    demanded a capitalised name after `et al.`"""
+    original = ["Ferguson et al. (2005) modelled the heat treatment."] + _NUMBERED
+    out, _q = G.number_citations_that_have_a_reference(original, list(original))
+    assert "Ferguson et al. (2005) [5]" in out[0]
+
+
+def test_a_citation_that_already_has_its_number_is_left_alone():
+    original = ["As Canale and Totten (2005) [4] showed, heat transfer matters."] + _NUMBERED
+    out, queries = G.number_citations_that_have_a_reference(original, list(original))
+    assert out[0] == original[0] and queries == []
+
+
+def test_a_work_that_is_not_listed_gets_no_number():
+    original = ["Soil feeds the world (FAO, 2015)."] + _NUMBERED
+    out, queries = G.number_citations_that_have_a_reference(original, list(original))
+    assert out[0] == original[0] and queries == []
+
+
+def test_two_entries_for_one_author_and_year_are_left_to_a_person():
+    """Smith 2020a and 2020b are a real thing, and guessing puts the reader at the
+    wrong paper."""
+    listed = ["REFERENCES",
+              "[1] Smith J. First paper. J Things. 2020; 1: 1.",
+              "[2] Smith J. Second paper. J Things. 2020; 1: 9."]
+    original = ["As Smith (2020) showed, things happen."] + listed
+    out, queries = G.number_citations_that_have_a_reference(original, list(original))
+    assert out[0] == original[0] and queries == []
+
+
+def test_an_unnumbered_reference_list_is_left_alone():
+    listed = ["REFERENCES", "Canale LCF, Totten GE. Overview of distortion. 2005."]
+    original = ["As Canale and Totten (2005) showed, heat transfer matters."] + listed
+    out, queries = G.number_citations_that_have_a_reference(original, list(original))
+    assert out[0] == original[0] and queries == []
+
+
+# --------------------------------------------------------------------------------
+# A label is not a molecule (job #112).
+
+def test_a_numbered_hypothesis_is_not_hydrogen():
+    import science_format as S
+    paper = ["H1 (primary): There exists a range of open-area fraction.",
+             "H2 (secondary): Within that range, ovality is reduced.",
+             "H3 (boundary): Below a critical fraction, distortion increases.",
+             "O1: State the problem.", "O2: Specify the design.",
+             "O3: Specify the analysis.", "O4: Specify the economics."]
+    out = S.enforce_all_formula_subscripts(paper)
+    assert out == paper
+
+
+def test_real_chemistry_is_still_subscripted():
+    import science_format as S
+    out = S.enforce_all_formula_subscripts(
+        ["The H2O and CO2 were purged with H2 and NH4Cl was added."])
+    assert out == ["The H₂O and CO₂ were purged with H₂ and NH₄Cl was added."]
