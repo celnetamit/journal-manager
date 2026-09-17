@@ -2203,6 +2203,27 @@ def _for_audience(queries, audience: Optional[str]):
     return [q for q in (queries or []) if q.get("audience") == AUTHOR]
 
 
+def _bold_the_label(comment, label: str) -> None:
+    """Make the `Author:` that opens each note bold.
+
+    The quality team, 17 Sep: the word has to be the first thing seen, and in a review
+    pane full of grey text a bold label is what the eye lands on. The comment is built
+    with plain text and then its opening run is split, because `add_comment` takes a
+    string — one run per paragraph — and there is nowhere to ask for formatting.
+    """
+    for paragraph in comment.paragraphs:
+        text = paragraph.text or ""
+        if not text.startswith(label):
+            continue
+        for run in list(paragraph.runs):
+            run._r.getparent().remove(run._r)
+        head = paragraph.add_run(label)
+        head.bold = True
+        rest = text[len(label):]
+        if rest:
+            paragraph.add_run(rest)
+
+
 #: Highlight on the author's copy. Tracked changes are already the mechanism that
 #: leaves the decision with them — every insertion and deletion is theirs to accept or
 #: reject in Word — but a manuscript read with markup off looks untouched, and the
@@ -2319,8 +2340,10 @@ def generate_redline_docx(
                     comment_author = f"AI Editor — {kind}" if kind else "AI Editor"
                     initials = f"AE{kind[0]}" if kind else "AE"
                     body = "\n".join(notes)
-                doc.add_comment(marker, text=body, author=comment_author,
-                                initials=initials)
+                comment = doc.add_comment(marker, text=body, author=comment_author,
+                                          initials=initials)
+                if audience == AUTHOR:
+                    _bold_the_label(comment, "Author:")
 
     # The ORCID block above the references. Before the hyperlinking pass so its own URLs
     # are treated like any other, and after every tracked change has been aligned — this
