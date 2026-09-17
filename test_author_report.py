@@ -103,3 +103,19 @@ def test_the_parts_of_the_paper_come_before_the_artwork():
         Finding("front.abstract-missing"),
     ])
     assert report.index("Abstract is missing") < report.index("Table 6")
+
+
+def test_every_kind_of_bullet_renders_as_a_bullet(tmp_path):
+    """Job #112's author report printed a literal `*` in front of every Minor Issue:
+    the review model writes `*   ` and only `- ` was being rendered."""
+    import docx
+    from editor import markdown_to_docx
+    out = tmp_path / "r.docx"
+    markdown_to_docx("# T\n\n- dash item\n*   star item\n+ plus item\n"
+                     "\nThe symbol `h(t)` is estimated.\n", str(out))
+    d = docx.Document(str(out))
+    bullets = [p.text for p in d.paragraphs if p.style.name == "List Bullet"]
+    assert bullets == ["dash item", "star item", "plus item"]
+    body = " ".join(p.text for p in d.paragraphs)
+    assert "*" not in body and "`" not in body
+    assert "h(t)" in body

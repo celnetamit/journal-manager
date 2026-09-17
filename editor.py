@@ -3169,8 +3169,17 @@ def build_journal_report(recommended: List[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+#: A Markdown bullet at the start of a line, in all three of its spellings.
+_BULLET = re.compile(r"^[-*+]\s+")
+
+#: `h(t)` in a review means a symbol, and Word has no code span. The backticks are
+#: dropped rather than printed: on job #112 they reached the author as punctuation.
+_CODE_SPAN = re.compile(r"`([^`]+)`")
+
+
 def _add_markdown_runs(paragraph, text: str) -> None:
     """Add runs to a paragraph, rendering **bold** spans in the limited markdown."""
+    text = _CODE_SPAN.sub(r"\1", text)
     for i, segment in enumerate(re.split(r"\*\*(.+?)\*\*", text)):
         if not segment:
             continue
@@ -3192,9 +3201,12 @@ def markdown_to_docx(md_text: str, out_path: str) -> str:
             document.add_heading(line[3:].strip(), level=2)
         elif line.startswith("### "):
             document.add_heading(line[4:].strip(), level=3)
-        elif line.lstrip().startswith("- "):
+        elif _BULLET.match(line):
+            # `- `, `* ` and `+ ` are all bullets in Markdown, and the review model
+            # writes `*   `. Rendering only `- ` printed the asterisks as text on job
+            # #112's author report — every Minor Issue opened with a literal `*`.
             para = document.add_paragraph(style="List Bullet")
-            _add_markdown_runs(para, line.lstrip()[2:].strip())
+            _add_markdown_runs(para, _BULLET.sub("", line.lstrip(), count=1).strip())
         else:
             para = document.add_paragraph()
             # strip surrounding underscores used for italic placeholders
