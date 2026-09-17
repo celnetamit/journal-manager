@@ -1086,32 +1086,44 @@ def verify_reference_block(
                 counts[ident] = counts.get(ident, 0) + 1
         return counts
 
-    end = min(len(original), len(edited))
-    before = census(original[start + 1:end])
-    after = census(edited[start + 1:end])
+    # The whole of each list, not a window cut to the shorter one. The cap was there
+    # when this compared paragraph against paragraph; with entries matched as a set it
+    # only hides things — and it would have hidden this guard's own work: the restored
+    # entries are appended past the original's length, so on the second pass they fell
+    # outside the window, looked missing again, and would have been appended twice.
+    before = census(original[start + 1:])
+    after = census(edited[start + 1:])
     if not before:
         return edited, []
 
-    missing = sorted(k for k, n in before.items() if after.get(k, 0) < n)
-    if not missing:
+    lost, surplus = _references_lost(original[start + 1:], edited[start + 1:])
+    if not lost:
         return edited, []
 
+    # Only what is actually missing goes back, and it goes back *as the author wrote
+    # it*, at the end of the list. Restoring the whole block was the old behaviour and
+    # it was costing far more than it saved: measured across 91 redlines it threw away
+    # the reformatting of 24 bibliographies, and in every case examined the "lost"
+    # reference was present under a different leading author. The quality team saw the
+    # result on job #107 as the references not being touched at all.
     out = list(edited)
-    out[start + 1:end] = original[start + 1:end]
-    named = "; ".join(f"{s.title()} ({y})" for s, y in missing[:5])
-    duplicated = sorted(k for k, n in after.items() if n > before.get(k, 0))
-    extra = ("; ".join(f"{s.title()} ({y})" for s, y in duplicated[:5])
-             if duplicated else "")
+    out.extend(lost)
+
+    named = "; ".join(_first_words(text) for text in lost[:5])
+    extra = "; ".join(_first_words(text) for text in surplus[:5])
     return out, [{
         "index": start + 1,
-        "snippet": (original[start + 1] or "")[:200],
+        "snippet": lost[0][:200],
         "query": (
-            f"{len(missing)} reference(s) went missing while the bibliography was being "
-            f"reformatted — {named}"
-            + (f" — and {extra} appeared more than once" if extra else "")
-            + ". The entry count was unchanged, so this would not have shown up in a "
-              "count. The author's reference list has been restored unformatted; please "
-              "reformat it by hand or re-run once the list is stable."),
+            f"{len(lost)} reference(s) the author listed went missing while the "
+            f"bibliography was being reformatted — {named}. The entry count was "
+            f"unchanged, so a count would not have caught it."
+            + (f" In their place the list carries {extra}, which the author did not "
+               f"list there — usually a neighbouring entry written twice; please "
+               f"delete the surplus copy." if surplus else "")
+            + " The missing entries have been put back at the end of the list, exactly "
+              "as the author wrote them, and the rest of the reformatting has been "
+              "kept. Please place them in order and check the numbering."),
         "guard": "verify_reference_block",
         "suggestion": None,
     }]
@@ -2114,3 +2126,156 @@ def refuse_citations_without_a_reference(
                 "suggestion": None,
             })
     return out, queries
+
+
+#: Words that appear in half the bibliographies ever written and say nothing about
+#: which work an entry is.
+_REF_STOPWORDS = {
+    "journal", "international", "research", "science", "sciences", "studies",
+    "review", "reviews", "analysis", "study", "using", "based", "available",
+    "press", "university", "publishing", "volume", "issue", "pages", "edition",
+    "https", "http", "www", "doi", "org", "accessed", "retrieved", "proceedings",
+    "conference", "report", "technology", "engineering", "management", "effect",
+    "effects", "development", "application", "applications",
+}
+
+
+def _first_words(entry: str, words: int = 6) -> str:
+    """Enough of an entry to recognise it in a query, without quoting the whole thing."""
+    parts = (entry or "").split()
+    return " ".join(parts[:words]) + ("…" if len(parts) > words else "")
+
+
+def _reference_shape(entry: str) -> Optional[Dict[str, object]]:
+    """What an entry is *about*, in a form that survives being reformatted.
+
+    `_reference_identity` — the first token and a year — is not that, and the corpus
+    says so plainly. Across 91 redlines it reported a reference as lost in 24 of them,
+    and the losses read: `Akio (1973)` replaced by `Nakajima (1973)`, `Yalemtesfa
+    (2017)` by `Guade (2017)`, `Csa (2020)` by `Central (2020)`. Those are Akio
+    Nakajima, Yalemtesfa Guade and the Central Statistical Agency — one work each,
+    reformatted so that a different word comes first. Every one of those manuscripts had
+    its whole bibliography restored unformatted as a result.
+
+    So a work is identified by what does not move: the years it names, every name-like
+    token in it, and the uncommon words of its title.
+    """
+    text = (entry or "").strip()
+    if len(text) <= 20:
+        return None
+    years = set(re.findall(r"\b(?:19|20)\d{2}\b", text))
+    names = {w.lower() for w in re.findall(r"[A-Za-zÀ-ÿ'’\-]{3,}", text)}
+    title = {w for w in names if len(w) >= 5 and w not in _REF_STOPWORDS}
+    # A year is the usual anchor but it cannot be required. `Warrens, M. J. (2014). New
+    # interpretations of Cohen's kappa. Journal of Mathematics` came back as `Warrens MJ.
+    # New interpretations of Cohen's kappa. J Math.` — the reformat dropped the year, so
+    # the new entry had no shape at all and the reference sitting on the page was
+    # reported as having gone missing. A yearless entry is a defect for another guard to
+    # report; it is not a lost reference.
+    # A yearless paragraph has to look like a reference before it is treated as one.
+    # `Local strain(SB12)+50kgDAP` sits after the References heading in two manuscripts
+    # — it is a table row — and reporting it as a lost reference is how a guard ends up
+    # ignored.
+    if not years and (len(title) < 3 or len(text.split()) < 6):
+        return None
+    return {"years": years, "names": names, "title": title, "text": text}
+
+
+def _reads_the_same(a: str, b: str, bar: float = 0.6) -> bool:
+    """Whether two entries are recognisably the same string of words.
+
+    Only reached for entries with no year on one side, where there is nothing else
+    solid to compare. `difflib` rather than a token test because the difference there
+    is usually inside a word — a corrected surname — which no set of tokens can see.
+    """
+    import difflib
+    def flat(text):
+        return re.sub(r"[^a-z0-9 ]", " ", (text or "").lower())
+    return difflib.SequenceMatcher(None, flat(a), flat(b)).ratio() >= bar
+
+
+def _same_work(a: Dict[str, object], b: Dict[str, object]) -> bool:
+    """Whether two entries are the same work, allowing for any reformat we perform."""
+    shared_title = a["title"] & b["title"]
+    if a["years"] and b["years"] and not (a["years"] & b["years"]):
+        # Different years is usually a different work — but the pass does correct a
+        # wrong year from the catalogue, so a title that plainly matches still counts.
+        if len(shared_title) < 3:
+            return False
+    elif not (a["years"] and b["years"]):
+        # One side has no year, so the words have to carry the match on their own.
+        # Two shared title words plus a plainly similar entry is enough: `Anathanarayan
+        # and Panikers, Textbook of Microbiology 10th edition` became `Ananthanarayan,
+        # Paniker. Textbook of Microbiology. 10th edition.` — the pass corrected the
+        # spelling of the name, which is the right edit and left only `textbook` and
+        # `microbiology` in common.
+        if len(shared_title) >= 3:
+            return True
+        if len(shared_title) >= 2 and _reads_the_same(str(a["text"]), str(b["text"])):
+            return True
+        return False
+    if not (a["title"] | b["title"]):
+        return bool(a["names"] & b["names"])
+    overlap = len(shared_title) / max(1, min(len(a["title"]), len(b["title"])))
+    # Either the title is recognisably the same work, or enough of the names are. The
+    # two together are what make this survive an entry that was abbreviated to `et al.`
+    # *and* re-led with a different author.
+    return overlap >= 0.5 or len(shared_title) >= 4 or len(a["names"] & b["names"]) >= 3
+
+
+def _match_score(a: Dict[str, object], b: Dict[str, object]) -> int:
+    """How strongly two entries look like the same work. 0 means not at all.
+
+    Whether they are the same work is `_same_work`'s decision and only its decision:
+    this once had its own year test in front, which scored a pair of *identical*
+    yearless entries at zero and reported a reference that had not been touched as
+    lost. Two answers to one question is one answer too many.
+    """
+    if not _same_work(a, b):
+        return 0
+    return len(a["title"] & b["title"]) * 3 + len(a["names"] & b["names"]) + (
+        2 if a["years"] & b["years"] else 0)
+
+
+def _references_lost(
+    before: List[str], after: List[str],
+) -> Tuple[List[str], List[str]]:
+    """`(the author's entries nothing accounts for, new entries nothing asked for)`.
+
+    The second half matters as much as the first. When a work goes missing it is almost
+    always because a neighbour was written twice, and naming the surplus entry is what
+    lets an editor put the list right in one pass instead of two.
+
+    Best-match first, not first-match-wins. Taking the first candidate in order lost
+    `Gibson-Beverly, G., & Schwartz, J. P. (2008)` on a real manuscript: an earlier
+    entry sharing its year and one author name reached it first and consumed it, and
+    the entry — sitting in the new list, correctly reformatted, three lines up — was
+    reported as gone. Pairs are made strongest-first so a weak match cannot take a
+    partner that a strong one needs.
+
+    One-to-one, so a genuine duplication — job #60's Tlili appearing twice while
+    Vygotsky left — still shows up as a loss.
+    """
+    shapes_before = [s for s in (_reference_shape(p) for p in before) if s]
+    shapes_after = [s for s in (_reference_shape(p) for p in after) if s]
+
+    pairs = []
+    for i, want in enumerate(shapes_before):
+        for j, have in enumerate(shapes_after):
+            score = _match_score(want, have)
+            if score:
+                pairs.append((score, i, j))
+    pairs.sort(key=lambda p: (-p[0], p[1], p[2]))
+
+    matched_before, matched_after = set(), set()
+    for _score, i, j in pairs:
+        if i in matched_before or j in matched_after:
+            continue
+        matched_before.add(i)
+        matched_after.add(j)
+
+    lost = [str(shape["text"]) for i, shape in enumerate(shapes_before)
+            if i not in matched_before]
+    unaccounted = [str(shape["text"]) for j, shape in enumerate(shapes_after)
+                   if j not in matched_after]
+    return lost, unaccounted

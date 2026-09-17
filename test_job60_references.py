@@ -50,17 +50,27 @@ def test_the_heading_is_found_even_with_a_colon():
 
 
 def test_works_that_went_missing_are_restored():
+    """Only the missing works come back, and the reformatting is kept.
+
+    This used to restore the author's whole reference list, and the quality team met
+    the result on job #107 as "the references were not touched at all": measured across
+    91 redlines, that behaviour was throwing away the reformatting of 24 bibliographies,
+    almost always because an entry had been reformatted to lead with a different author
+    and was read as lost.
+    """
     out, queries = G.verify_reference_block(_ORIGINAL, _edited_with_losses())
     assert any("Vygotsky" in p for p in out)
     assert any("Recommendation on open educational" in p for p in out)
-    assert sum(1 for p in out if p.startswith("Seale")) == 1
-    assert queries and "Vygotsky (1978)" in queries[0]["query"]
+    # The reformatted entries are still reformatted — nothing was thrown away.
+    assert any(p.startswith("1. Seale") for p in out)
+    assert queries and "Vygotsky" in queries[0]["query"]
 
 
 def test_the_query_names_both_sides_of_the_swap():
     _out, queries = G.verify_reference_block(_ORIGINAL, _edited_with_losses())
     q = queries[0]["query"]
-    assert "went missing" in q and "appeared more than once" in q
+    assert "went missing" in q
+    assert "did not list" in q   # the surplus copy, so it can be deleted in one pass
     assert "count" in q          # says why a count would not have caught it
 
 
@@ -87,3 +97,69 @@ def test_a_manuscript_with_no_reference_section_is_untouched():
     paras = ["The findings show a gap.", "Digital pedagogies have grown."]
     out, queries = G.verify_reference_block(paras, list(paras))
     assert queries == [] and out == paras
+
+
+def test_a_reference_reformatted_to_lead_with_another_author_is_not_lost():
+    """Job #107's actual cause, and the reason a quarter of all bibliographies were
+    being restored unformatted.
+
+    `Evely A. Dead planet, living planet ... C. Nellemann, E. Corcoran, editors. 2010.`
+    reformatted to open with the editors is the same work. Under the old identity — the
+    first word and the year — it was Evely leaving and Nellemann arriving.
+    """
+    original = [
+        "Text.", "REFERENCES",
+        "Evely A. Dead planet, living planet. Biodiversity and ecosystem restoration "
+        "for sustainable development. C. Nellemann, E. Corcoran, editors. UNEP; 2010.",
+    ]
+    edited = [
+        "Text.", "REFERENCES",
+        "1. Nellemann C, Corcoran E, editors. Dead planet, living planet: biodiversity "
+        "and ecosystem restoration for sustainable development. UNEP; 2010.",
+    ]
+    out, queries = G.verify_reference_block(original, edited)
+    assert out == edited and queries == []
+
+
+def test_an_entry_whose_year_the_reformat_dropped_is_not_lost():
+    """`Warrens, M. J. (2014). New interpretations of Cohen's kappa. Journal of
+    Mathematics` came back as `Warrens MJ. New interpretations of Cohen's kappa. J
+    Math.` — the year is gone, which is a defect, but the reference is on the page."""
+    original = ["Text.", "REFERENCES",
+                "Warrens, M. J. (2014). New interpretations of Cohen's kappa. "
+                "Journal of Mathematics, 2014, 1-3."]
+    edited = ["Text.", "REFERENCES",
+              "1. Warrens MJ. New interpretations of Cohen's kappa. J Math."]
+    out, queries = G.verify_reference_block(original, edited)
+    assert out == edited and queries == []
+
+
+def test_a_table_row_after_the_heading_is_not_a_reference():
+    """Two manuscripts carry a table after the References heading. `Local
+    strain(SB12)+50kgDAP` is not a work that can go missing."""
+    original = ["Text.", "REFERENCES", "Local strain(SB12)+50kgDAP",
+                "Smith J. A real reference with a title. J Things. 2020; 1: 2."]
+    edited = ["Text.", "REFERENCES", "Local strain (SB-12) + 50 kg DAP",
+              "1. Smith J. A real reference with a title. J Things. 2020; 1: 2."]
+    _out, queries = G.verify_reference_block(original, edited)
+    assert queries == []
+
+
+def test_a_corrected_surname_is_still_the_same_book():
+    original = ["Text.", "REFERENCES",
+                "Anathanarayan and Panikers, Textbook of Microbiology 10th edition"]
+    edited = ["Text.", "REFERENCES",
+              "1. Ananthanarayan, Paniker. Textbook of Microbiology. 10th edition."]
+    out, queries = G.verify_reference_block(original, edited)
+    assert out == edited and queries == []
+
+
+def test_running_the_guard_twice_does_not_restore_twice():
+    """The pipeline runs this before the re-sort and again at the end. The second run
+    has to see what the first one put back — it sits past the original's length, and a
+    window cut to the shorter list would have hidden it and appended a second copy."""
+    once, _q = G.verify_reference_block(_ORIGINAL, _edited_with_losses())
+    twice, queries = G.verify_reference_block(_ORIGINAL, once)
+    assert twice == once
+    assert queries == []
+    assert sum(1 for p in twice if "Vygotsky" in p and p.startswith("Vygotsky")) == 1
