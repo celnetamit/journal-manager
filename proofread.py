@@ -275,8 +275,16 @@ def _opens_a_statistic(text: str, m: "re.Match") -> bool:
 
 
 def mechanical_findings(paragraphs: List[str],
-                        lang_type: str = "") -> List[ProofFinding]:
-    """Everything that can be decided by looking, without a model."""
+                        lang_type: str = "",
+                        table_text: str = "") -> List[ProofFinding]:
+    """Everything that can be decided by looking, without a model.
+
+    `table_text` optional hai aur sirf caption dhoondhne ke kaam aata hai. Table
+    cells `doc.paragraphs` me hote hi nahi (pipeline ka apna comment bhi yahi
+    kehta hai), aur manuscripts me caption aksar table ke andar likha hota hai —
+    uske bina rule keh deta hai "caption hai hi nahi". Khaali chhod dene par
+    bartav bilkul purana rehta hai.
+    """
     out: List[ProofFinding] = []
     joined = " ".join(paragraphs)
 
@@ -394,7 +402,7 @@ def mechanical_findings(paragraphs: List[str],
                     text[max(0, m.start() - 24):m.end() + 24].strip(),
                     m.group(1)))
 
-    out.extend(_consistency_findings(paragraphs, joined, lang_type))
+    out.extend(_consistency_findings(paragraphs, joined, lang_type, table_text))
     out.extend(_acronym_findings(paragraphs))
     out.extend(_abstract_abbreviation_findings(paragraphs))
     out.extend(_reference_style_findings(paragraphs))
@@ -403,7 +411,8 @@ def mechanical_findings(paragraphs: List[str],
 
 
 def _consistency_findings(paragraphs: List[str], joined: str,
-                          lang_type: str = "") -> List[ProofFinding]:
+                          lang_type: str = "",
+                          table_text: str = "") -> List[ProofFinding]:
     """Clashes that only exist across the whole manuscript, not in one paragraph."""
     out: List[ProofFinding] = []
     low = joined.lower()
@@ -445,7 +454,7 @@ def _consistency_findings(paragraphs: List[str], joined: str,
                 f"{k!r} ({v}x)" for k, v in counts.items()),
             suggestion=f"use {keep!r} throughout"))
 
-    out.extend(_cross_reference_findings(paragraphs, joined))
+    out.extend(_cross_reference_findings(paragraphs, joined, table_text))
     return out
 
 
@@ -587,6 +596,11 @@ def _acronym_findings(paragraphs: List[str]) -> List["ProofFinding"]:
             if _is_reference_block(text or ""):
                 continue
             if pattern.search(text or ""):
+                # Title me acronym aur body me uski definition bilkul aam hai —
+                # `AI-Powered Architectural Ideation` defect nahi. Abstract ko maaf
+                # nahi karte: wahan bina definition ke acronym asli defect hai.
+                if _first_use_is_title(paragraphs, i):
+                    continue
                 out.append(ProofFinding(
                     "acronym.used_before_definition", "warning", i,
                     f"“{acr}” is used here but only defined later, in paragraph "
@@ -756,7 +770,10 @@ def _mentioned_numbers(label: str, text: str) -> set:
     # Two digits, and a word boundary after them: "Cancer Facts & Figures 2020" is a
     # reference title, and `\d+` read it as a citation of figure 2020. No manuscript
     # in a 1,597-paper corpus has a hundred figures.
-    head = rf"(?i)\b(?:{label}s?|{label[:3]}s?\.)\s*(\d{{1,2}})\b"
+    # `Fig 4 ESR spectra…` — short form bina point ke. Caption use pehchanta
+    # hai; mention na pehchane to figure "captioned but never cited" ban jaata
+    # hai. Dono taraf ek hi shakl maanni zaroori hai.
+    head = _mention_pattern(label)
     for m in re.finditer(head, text):
         out.add(m.group(1))
         rest = text[m.end():]
@@ -782,7 +799,128 @@ def _mentioned_numbers(label: str, text: str) -> set:
     return out
 
 
-def _cross_reference_findings(paragraphs: List[str], joined: str) -> List[ProofFinding]:
+# Number ke baad caption ka virām. Manuscripts me ye har shakl me milta hai —
+# naap kar: `Fig. 8: `, `Figure 1.- `, `Table 23.Type`, `Table 2-Measurements`,
+# `Figure 9,Sister`, `Figure 2: 2017 May flood…` (text digit se shuru), aur
+# `Table 6.` (aage kuch nahi).
+#
+# Pehle yahan `(?=[A-Z])` tha — delimiter ke baad bada akshar zaroori. Usse teen
+# tarah ke asli caption chhoot gaye aur naye false positive bane. Ab virām dheela
+# hai, kyunki caption ki asli pehchaan yahan nahi hai: wo `_prose_at` (vaakya hai
+# ya naam) aur position (paragraph ke shuru me) se hoti hai. Do guard kaafi hain;
+# teesra sirf sahi caption kaat raha tha.
+_AFTER = r"(?:\s*[.:,)\]]?\s*[-–—]?\s*|\s+)"
+
+# Ek hi caption do number de sakta hai: `Fig. 9,10 Shear strength…`
+_ALSO = re.compile(r"^\s*[,&]\s*(\d{1,2})\b|^\s*(?:and|to|[-–—])\s*(\d{1,2})\b", re.I)
+
+# `Figure`, `Fig.`, `Fig` — teeno; `Table`, `Tab.`, `Tab` bhi.
+def _cap_head(label: str) -> str:
+    return r"(?:%s|%s)\s*\.?\s*" % (label, label[:3])
+
+
+def _prose_at(text: str, label: str) -> bool:
+    """Kya ye `Fig. N <kriya>` wala vaakya hai, caption nahi?
+
+    Caption ek naam hota hai ("Fig. 8: Second order kinetic model"), vaakya nahi
+    ("Fig.8 was obtained by plotting t/qt against t."). Dono line ke shuru me aate
+    hain, isliye antar agle shabd se hi pata chalta hai.
+    """
+    return bool(re.match(
+        r"(?i)^\s*%s(\d{1,2})\s*(?:was|were|is|are|shows?|presents?|depicts?|"
+        r"illustrates?|gives?|represents?|indicates?|displays?|summaris\w*|"
+        r"summariz\w*|can\b|has\b|have\b|below\b|above\b|and\b|&)" % _cap_head(label),
+        text))
+
+
+def _caption_numbers(paragraphs: List[str], label: str,
+                    table_text: str = "") -> Tuple[Set[str], Set[int]]:
+    """`label` ke caption numbers, aur kaunse paragraph caption hain.
+
+    Caption sirf paragraph ke shuru me manzoor hai — ya usi line par pehle manzoor
+    kiye gaye caption ke baad (ek line par do caption wali wajah).
+    """
+    nums: Set[str] = set()
+    at: Set[int] = set()
+    # `(\d{1,2})(?:\.\d+)?` — sub-number wale caption (`Figure 4.1:`) bhi figure 4
+    # ka caption hain; warna 4 "captioned hi nahi" ban jaata tha.
+    pat = re.compile(r"(?i)%s(\d{1,2})(?:\.\d{1,2})?(?=%s|$)" % (_cap_head(label), _AFTER))
+
+    for i, text in enumerate(paragraphs):
+        s = (text or "").strip()
+        if not s or _prose_at(s, label):
+            continue
+        pos = 0
+        accepted_here = False
+        for m in pat.finditer(s):
+            # Pehla caption line ke shuru me hona chahiye. Uske baad wala tabhi,
+            # jab beech me sirf us caption ka apna text ho (yaani hum usi line par
+            # aage badh rahe hain).
+            if m.start() > pos + (0 if not accepted_here else 200):
+                break
+            if not accepted_here and m.start() > 2:
+                break
+            nums.add(m.group(1))
+            at.add(i)
+            accepted_here = True
+            pos = m.end()
+            # `Fig. 9,10 …` — ek caption, do number.
+            tail = s[m.end():]
+            while True:
+                more = _ALSO.match(tail)
+                if not more:
+                    break
+                nums.add(more.group(1) or more.group(2))
+                tail = tail[more.end():]
+                pos = len(s) - len(tail)
+
+    # Wajah 1 — table ke andar ke caption. Sirf numbers; koi paragraph index nahi,
+    # kyunki ye body ki list me hai hi nahi.
+    if table_text:
+        for m in re.finditer(r"(?i)%s(\d{1,2})(?:\.\d{1,2})?(?=%s)" % (_cap_head(label), _AFTER), table_text):
+            nums.add(m.group(1))
+
+    return nums, at
+
+
+def _mention_pattern(label: str) -> str:
+    r"""ce4 ke `_mentioned_numbers` ka head-pattern, ek zaroori sudhaar ke saath.
+
+    Purana pattern short form me **point zaroori** maangta tha (`Figs?\.`), to
+    `Fig 4 ESR spectra…` mention gina hi nahi jaata. Ab caption `Fig 4` ko pehchan
+    leta hai — aur agar mention use na pehchane to figure "captioned but never
+    cited" ban jaata hai. Ye asymmetry khud ek naya false positive tha; dono taraf
+    ek hi shakl maanni zaroori hai.
+    """
+    return r"(?i)\b(?:%ss?|%ss?\.?)\s*(\d{1,2})\b" % (label, label[:3])
+
+
+def _first_use_is_title(paragraphs: List[str], idx: int) -> bool:
+    """Wajah 4 — acronym title me aaya.
+
+    Title me acronym aur body me uski definition bilkul aam hai. Par **Abstract ko
+    maaf nahi karna**: wahan bina definition ke acronym asli defect hai, aur pehla
+    roop (`idx <= 1`) do sahi findings ko FP bata raha tha kyunki un documents me
+    Abstract hi paragraph 0/1 tha.
+    """
+    # Title sirf poore manuscript me hota hai. Jab ye rule ek TUKDA paata hai
+    # (job #59 ka test paragraph 153-163 quote karta hai), to uski pehli line ek
+    # section heading hai — aur heading me bina definition ke acronym theek wahi
+    # defect hai jiske liye ye rule likha gaya. Isliye pehle poochho: ye poora
+    # document hai bhi ya nahi. Naapa: jin do manuscripts par ye FP tha unme 78
+    # aur 81 paragraph the; fixture me 4.
+    if len(paragraphs) < 20:
+        return False
+    if idx is None or idx > 1 or idx >= len(paragraphs):
+        return False
+    text = (paragraphs[idx] or "").strip()
+    if re.match(r"(?i)^abstract\b", text):
+        return False
+    return len(text.split()) <= 25
+
+
+def _cross_reference_findings(paragraphs: List[str], joined: str,
+                              table_text: str = "") -> List[ProofFinding]:
     """A figure or table referred to in the text but never captioned, or the reverse.
 
     The captions are found by looking for a paragraph that *starts* with the label,
@@ -791,13 +929,7 @@ def _cross_reference_findings(paragraphs: List[str], joined: str) -> List[ProofF
     out: List[ProofFinding] = []
 
     for label in ("Figure", "Table"):
-        captioned = set()
-        caption_at = set()
-        for i, text in enumerate(paragraphs):
-            m = re.match(rf"(?i)^\s*(?:{label}|{label[:3]}\.)\s*(\d+)", text.strip())
-            if m:
-                captioned.add(m.group(1))
-                caption_at.add(i)
+        captioned, caption_at = _caption_numbers(paragraphs, label, table_text)
 
         # Mentions are counted everywhere EXCEPT the captions. A caption reads
         # "Figure 2. Apparatus used", which matches the mention pattern too — so
@@ -1059,14 +1191,15 @@ def collapse_repeats(findings: List[ProofFinding]) -> List[ProofFinding]:
 def proofread(paragraphs: List[str], generate=None,
               settings: Optional[Dict[str, Any]] = None,
               use_llm: bool = True,
-              lang_type: str = DEFAULT_LANG) -> List[ProofFinding]:
+              lang_type: str = DEFAULT_LANG,
+              table_text: str = "") -> List[ProofFinding]:
     """Mechanical findings always; the model pass when one is available.
 
     Collapsed here rather than inside `mechanical_findings`, which stays the raw,
     exactly-testable primitive — the same split `house_layout` makes between its
     individual checks and `check_all`.
     """
-    findings = collapse_repeats(mechanical_findings(paragraphs, lang_type))
+    findings = collapse_repeats(mechanical_findings(paragraphs, lang_type, table_text))
     if use_llm and generate is not None:
         findings += llm_findings(paragraphs, generate, settings or {},
                                  lang_type=lang_type)

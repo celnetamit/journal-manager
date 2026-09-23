@@ -955,8 +955,18 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     progress(0.66, "Proofreading...")
     proof_findings: list = []
     try:
+        # Caption aksar table ke andar likha hota hai, aur table cells
+        # `doc.paragraphs` me hote hi nahi — isliye cross-reference check un
+        # figures par "no caption in the manuscript" bol raha tha jinka caption
+        # maujood tha. 1,524 asli manuscripts par naapa: aise 281 findings, har
+        # ek galat. `repair_cell_originals` me saare cells hain (sirf wo nahi jo
+        # copyedit ke layak the), aur jahan edit hua wahan uska naya roop.
+        _caption_cells = " \n".join(
+            table_edits.get(_addr, _text) or ""
+            for _addr, _text in zip(repair_cell_addresses, repair_cell_originals))
         proof_findings = run_proofread(
             edited_paragraphs,
+            table_text=_caption_cells,
             generate=_generate_text if ai_review_enabled else None,
             settings=llm_settings,
             use_llm=ai_review_enabled,
