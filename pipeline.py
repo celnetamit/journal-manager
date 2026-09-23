@@ -1237,7 +1237,10 @@ def run_pipeline(opts: Dict[str, Any], input_path: str,
     try:
         author_report_md = author_report.build(
             filename=filename,
-            findings=layout_findings,
+            # Both lists. `layout_findings` alone was the second reason a missing
+            # figure could never reach the author: the rule that finds one lives in
+            # the proofreader, and its findings were not being passed.
+            findings=list(layout_findings) + list(proof_findings),
             queries=editor_queries,
             ai_review_md=ai_review_md,
             recommended_journal=(recommended[0]["name"] if recommended else ""),

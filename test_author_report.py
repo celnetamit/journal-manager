@@ -32,7 +32,7 @@ def test_the_missing_things_are_named_and_the_formatting_ones_are_not():
     report = A.build(
         "paper.docx",
         findings=[Finding("front.abstract-missing"),
-                  Finding("table.cited-but-missing",
+                  Finding("crossref.table-missing",
                           "the text refers to Table 6, and no such caption is in "
                           "the manuscript"),
                   Finding("references.hanging-indent", "0.25\" hanging indent")],
@@ -63,7 +63,9 @@ def test_the_review_is_cut_to_what_the_author_acts_on():
 
 def test_a_clean_manuscript_says_so_rather_than_showing_an_empty_heading():
     report = A.build("paper.docx", findings=[], queries=[], ai_review_md=_REVIEW)
-    assert "Nothing." in report
+    # Ye sentence 23 Sep 2026 ko badla. Purana bina shart "Nothing." kehta tha
+    # aur usi page par review "no reference list is provided" likh deta tha.
+    assert "Our automatic checks found nothing missing" in report
 
 
 def test_the_same_gap_reported_twice_is_written_once():
@@ -99,7 +101,7 @@ def test_one_fault_repeated_is_one_line():
 
 def test_the_parts_of_the_paper_come_before_the_artwork():
     report = A.build("paper.docx", findings=[
-        Finding("table.cited-but-missing", "the text refers to Table 6"),
+        Finding("crossref.table-missing", "the text refers to Table 6"),
         Finding("front.abstract-missing"),
     ])
     assert report.index("Abstract is missing") < report.index("Table 6")

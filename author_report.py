@@ -37,15 +37,21 @@ from typing import Any, Dict, List, Optional
 MISSING_RULES = {
     "front.abstract-missing": "The Abstract is missing.",
     "front.keywords-missing": "There is no Keywords line.",
-    "table.cited-but-missing": None,      # the finding's own message is the sentence
-    "figure.cited-but-missing": None,
+    # The names these two carried until 23 Sep 2026 -- `table.cited-but-missing`
+    # and `figure.cited-but-missing` -- are produced nowhere in this codebase. The
+    # proofreader calls them `crossref.*-missing`. So the one case this module was
+    # written for, in its own words "a missing Table 6 leaves nothing to track",
+    # could never appear in it. Measured on 505 real manuscripts: 17% cite a figure
+    # or table that has no caption, and not one author was told.
+    "crossref.table-missing": None,       # the finding's own message is the sentence
+    "crossref.figure-missing": None,
     "table.caption": None,
 }
 
 #: The order an author will use them in: the parts of the paper first, then the works
 #: they cite, then the artwork. Not the order the checks happen to run in.
 ORDER = ("front.abstract-missing", "front.keywords-missing",
-         "table.cited-but-missing", "figure.cited-but-missing", "table.caption")
+         "crossref.table-missing", "crossref.figure-missing", "table.caption")
 
 #: One sentence instead of N identical ones.
 COLLAPSE = {
@@ -54,8 +60,13 @@ COLLAPSE = {
 
 #: Guards whose query is a gap in the manuscript rather than an edit to review.
 MISSING_GUARDS = {
+    # A citation with no reference entry is the author's to supply.
     "refuse_citations_without_a_reference",
-    "verify_reference_block",
+    # `verify_reference_block` is deliberately NOT here. It reports "N reference(s)
+    # the author listed went missing while the bibliography was being reformatted"
+    # -- our own loss, not a gap in the manuscript -- and it was appearing under a
+    # heading that tells the author "only you can supply them". It stays in the
+    # editor's queries, where the person who can fix it will see it.
 }
 
 #: The review sections an author is meant to act on. `Confidence` and the referee's
@@ -166,8 +177,14 @@ def build(
         for sentence in gaps:
             out.append(f"- {sentence}")
     else:
-        out.append("Nothing. Every section, table and figure the text refers to is "
-                   "present, and every work cited has a reference.")
+        # Scoped on purpose. The old sentence claimed nothing was missing, full
+        # stop -- and on job #114 it sat four lines above the reviewer writing "no
+        # reference list is provided". A page that contradicts itself is worth less
+        # than a page that says what it checked.
+        out.append("Our automatic checks found nothing missing: every section, table "
+                   "and figure the text refers to was found, and every work cited has "
+                   "a reference entry. The reviewer's notes below may still raise gaps "
+                   "that only a reader can see.")
     out.append("")
 
     out.append("## Technical review")
